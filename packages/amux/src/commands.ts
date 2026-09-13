@@ -1468,6 +1468,9 @@ export const RuntimeCommandSchema = S.StructWithRest(S.Struct({ _tag: S.String }
   S.Record(S.String, JsonValueSchema),
 ]);
 
+/** Every command a caller can send to the daemon: core commands plus plugin verbs. */
+export const WireCommand = S.Union([Command, RuntimeCommandSchema]);
+
 interface CommandEntry {
   readonly meta: CommandMeta;
   readonly schema: S.Codec<any>;

@@ -37,7 +37,7 @@ import {
   Schema as S,
 } from "effect";
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts";
-import { parseWorkspaceJson, type WorkspaceSnapshot } from "./workspace.ts";
+import { parseWorkspaceJson, type WorkspaceCommandContext, type WorkspaceSnapshot } from "./workspace.ts";
 import { captureRootRuntime, type RootRuntimeContext, defaultRootRuntime } from "./env.ts";
 
 /**
@@ -81,6 +81,10 @@ const EXCLUDED_SESSION_FRAME_TAGS: Set<AttachFrame["_tag"]> = new Set([
   "ping",
   "pong",
   "workspace",
+  "command.request",
+  "command.response",
+  "run.request",
+  "run.response",
 ]);
 
 const isDeliverableFrame = (
@@ -116,7 +120,7 @@ export interface AttachClientContract {
     {
       readonly id: string;
       readonly command: JsonValue;
-      readonly source: "socket" | "cli";
+      readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;
     },
@@ -124,6 +128,17 @@ export interface AttachClientContract {
     never
   >;
   respondCommand(id: string, result?: JsonValue, error?: string): void;
+  /** Ask the daemon to run one command on this attach connection. */
+  runCommand(
+    command: JsonValue,
+    options?: {
+      readonly expectedRevision?: number;
+      readonly context?: WorkspaceCommandContext;
+    },
+  ): Effect.Effect<
+    { readonly result?: JsonValue; readonly workspace?: string },
+    AttachError
+  >;
   input(session: string, data: string | Uint8Array): void;
   resize(session: string, cols: number, rows: number): void;
   sync(session: string, after?: number): void;
@@ -185,10 +200,14 @@ class AttachClientConnection {
   private readonly _commandQ: Queue.Queue<{
     readonly id: string;
     readonly command: JsonValue;
-    readonly source: "socket" | "cli";
+    readonly source: "key" | "socket" | "cli";
     readonly pane?: string;
     readonly agent?: string;
   }>;
+  private readonly _pendingRuns = new Map<
+    string,
+    Deferred.Deferred<{ readonly result?: JsonValue; readonly workspace?: string }, AttachError>
+  >;
   private _onClose: ((error: Error | null) => void) | undefined;
   private _onError: ((message: string) => void) | undefined;
   private readonly _socket: Bun.Socket<undefined>;
@@ -205,7 +224,7 @@ class AttachClientConnection {
       readonly command: Queue.Queue<{
         readonly id: string;
         readonly command: JsonValue;
-        readonly source: "socket" | "cli";
+        readonly source: "key" | "socket" | "cli";
         readonly pane?: string;
         readonly agent?: string;
       }>;
@@ -277,7 +296,7 @@ class AttachClientConnection {
     {
       readonly id: string;
       readonly command: JsonValue;
-      readonly source: "socket" | "cli";
+      readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;
     },
@@ -292,6 +311,35 @@ class AttachClientConnection {
     this._send(
       error !== undefined ? { ...base, error } : result !== undefined ? { ...base, result } : base,
     );
+  }
+
+  runCommand(
+    command: JsonValue,
+    options?: {
+      readonly expectedRevision?: number;
+      readonly context?: WorkspaceCommandContext;
+    },
+  ): Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, AttachError> {
+    return Effect.gen({ self: this }, function* () {
+      if (this._closed)
+        return yield* new AttachError({ message: "attach client is closed" });
+      const id = `run-${(yield* Random.next).toString(36).slice(2)}`;
+      const done =
+        yield* Deferred.make<
+          { readonly result?: JsonValue; readonly workspace?: string },
+          AttachError
+        >();
+      this._pendingRuns.set(id, done);
+      this._send({
+        _tag: "run.request" as const,
+        id,
+        command,
+        ...options,
+      } as Extract<AttachFrame, { readonly _tag: "run.request" }>);
+      return yield* Deferred.await(done).pipe(
+        Effect.ensuring(Effect.sync(() => this._pendingRuns.delete(id))),
+      );
+    });
   }
 
   input(session: string, data: string | Uint8Array): void {
@@ -325,7 +373,8 @@ class AttachClientConnection {
         return yield* Deferred.await(pong).pipe(
           Effect.timeout(timeoutMs),
           Effect.orElseSucceed(() => false),
-        ).pipe(Effect.ensuring(Effect.sync(() => this._pongs.delete(nonce))));
+          Effect.ensuring(Effect.sync(() => this._pongs.delete(nonce))),
+        );
       }),
     );
   }
@@ -408,9 +457,14 @@ class AttachClientConnection {
     Deferred.doneUnsafe(this._closedSignal, Effect.void);
     for (const pong of this._pongs.values()) Deferred.doneUnsafe(pong, Effect.succeed(false));
     this._pongs.clear();
+    const closed = new AttachError({ message: "attach client is closed" });
+    for (const pending of this._pendingRuns.values())
+      Deferred.doneUnsafe(pending, Effect.fail(closed));
+    this._pendingRuns.clear();
     for (const { queues } of this._queued.values())
       for (const queue of queues) this._shutdownQueue(queue);
     this._shutdownQueue(this._workspaceQ);
+    this._shutdownQueue(this._commandQ);
     this._queued.clear();
     this._onClose?.(error);
     scope?.();
@@ -463,6 +517,17 @@ class AttachClientConnection {
                   }
                 : { id: frame.id, command: frame.command, source: frame.source };
         Queue.offerUnsafe(this._commandQ, request);
+      }),
+      Match.tag("run.response", (frame) => {
+        const pending = this._pendingRuns.get(frame.id);
+        if (!pending) return;
+        this._pendingRuns.delete(frame.id);
+        const { _tag: _, id: __, error, ...output } = frame;
+        if (error !== undefined) {
+          Deferred.doneUnsafe(pending, Effect.fail(new AttachError({ message: error })));
+          return;
+        }
+        Deferred.doneUnsafe(pending, Effect.succeed(output));
       }),
       Match.tag("workspace", (frame) => {
         try {
@@ -535,7 +600,7 @@ const makeScoped = (
     const commandQ = yield* Queue.unbounded<{
       readonly id: string;
       readonly command: JsonValue;
-      readonly source: "socket" | "cli";
+      readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;
     }>();

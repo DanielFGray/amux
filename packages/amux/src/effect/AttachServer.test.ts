@@ -172,7 +172,7 @@ testEffect("one blocked session handler does not stall another session on the sa
     const result = yield* Effect.gen(function* () {
       const server = yield* startAttachServer({
         path,
-        onFrame: (_client, frame) =>
+        onFrame: (_client, _connection, frame) =>
           frame._tag === "input" && frame.session === "slow" ? Effect.sleep(200) : Effect.void,
       });
       const messages: string[] = [];
@@ -243,7 +243,7 @@ testEffect("native attach server routes output and releases clients on close", (
       const server = yield* startAttachServer({
         path,
         idleTimeoutSeconds: 60,
-        onFrame: (client, frame) => Effect.sync(() => input.push({ client, frame })),
+        onFrame: (client, _connection, frame) => Effect.sync(() => input.push({ client, frame })),
       });
       const messages: string[] = [];
       const first = yield* Effect.promise(() => connect(path, (message) => messages.push(message)));

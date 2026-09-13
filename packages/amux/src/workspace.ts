@@ -143,11 +143,11 @@ export interface WorkspaceCommandContext {
   /** The pane the caller runs in, when the call came from inside one. */
   pane?: string;
   /**
-   * Who issued this batch: the interactive CLI or a control-socket client.
+   * Who issued this command: a key press, the attached client, or the CLI.
    * Forwarded onto client `command.request` frames so {@link Commands.run}
-   * builds the same invocation record the key path does.
+   * builds the same invocation record on every surface.
    */
-  source?: "socket" | "cli";
+  source?: "key" | "socket" | "cli";
   /** The daemon-owned session that caused a command from its process. This is
    * only attribution for durable feedback, never a workspace target. Distinct
    * from {@link agent} (`AMUX_AGENT_ID`): this is `AMUX_SESSION`, which is the
@@ -227,7 +227,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
   cwd: NonEmptyString,
   agent: S.optional(NonEmptyString),
   pane: S.optional(NonEmptyString),
-  source: S.optional(S.Literals(["socket", "cli"])),
+  source: S.optional(S.Literals(["key", "socket", "cli"])),
   originSession: S.optional(NonEmptyString),
   noFocus: S.optional(S.Boolean),
   blockedAgents: S.optional(S.Array(NonEmptyString)),

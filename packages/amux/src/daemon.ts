@@ -97,6 +97,7 @@ import {
   COMMAND_META,
   fieldDeclaresPaneTarget,
   isCoreCommand,
+  WireCommand,
   type Command,
   type CommandMeta,
   type RuntimeCommand,
@@ -728,6 +729,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           onAgentSession: (record) => persistAgentSession(record).pipe(Effect.ignore),
           onDeferredResume: (sessionId, cols, rows) =>
             flushPendingAgentResume(sessionId, cols, rows).pipe(Effect.orElseSucceed(() => false)),
+          onClientCommand: (client, connection, request) =>
+            handleAttachCommand(client, connection, request),
           agentLog,
         },
         agentLog,
@@ -1289,6 +1292,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     spawnEvent(spec);
   let killSession = (sessionId: string): Effect.Effect<void, DaemonError> => killEvent(sessionId);
   let stopWhenEmpty: Effect.Effect<void> = Effect.void;
+  let handleAttachCommand: (
+    client: string,
+    connection: string,
+    request: Extract<AttachFrame, { readonly _tag: "run.request" }>,
+  ) => Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, string> = () =>
+    Effect.fail("daemon is not accepting attach commands");
 
   // Two requests, strictly ordered: the host must be committed in `starting`
   // before the transaction-driven restore half can run under it.
@@ -1376,19 +1385,19 @@ export const makeDaemonService = Effect.fnUntraced(function* (
    *  Names the caller (ctx.pane), not the resolved target; the routed command
    *  carries any pinned pane arg separately. */
   const clientInvocation = (ctx: {
-    readonly source?: "socket" | "cli";
+    readonly source?: "key" | "socket" | "cli";
     readonly pane?: string;
     readonly agent?: string;
   }): Effect.Effect<
     {
-      readonly source: "socket" | "cli";
+      readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;
     },
     ControlError
   > => {
     if (ctx.source === undefined)
-      return controlFail("client-routed command needs context.source (socket | cli)");
+      return controlFail("client-routed command needs context.source (key | socket | cli)");
     const pane = ctx.pane;
     const agent = ctx.agent;
     if (pane !== undefined && agent !== undefined)
@@ -1452,6 +1461,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     value: Command | RuntimeCommand,
     expectedRevision?: number,
     context?: WorkspaceCommandRequestContext,
+    caller?: { readonly client: string; readonly connection: string },
   ) {
     const meta = (COMMAND_META as Record<string, CommandMeta>)[value._tag];
     if (!meta) {
@@ -1489,19 +1499,19 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         return yield* controlFail(`daemon command '${value._tag}' has no handler`);
       }
       // Not a core command: only a plugin verb reaches here (the control
-      // socket's wire schema admits nothing else), and the daemon runs no
-      // plugins — the tag can only mean something to a client that loaded
-      // it. Any attached one will do: see runOnClient's doc comment.
+      // socket's wire schema admits nothing else). Client-target plugin verbs
+      // run on an attached client. Prefer the connection that asked; a
+      // control-socket caller (CLI) still picks any attached client.
       const connections = yield* model.attachedConnections;
-      const first = connections[0];
-      if (!first) return yield* controlFail(`no client attached, cannot run '${value._tag}'`);
+      const target = caller ?? connections[0];
+      if (!target) return yield* controlFail(`no client attached, cannot run '${value._tag}'`);
       const host = yield* requireHost;
       const cur = yield* model.get;
       const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
       const invocation = yield* clientInvocation(ctx);
       const result = yield* host.runOnClient(
-        first.client,
-        first.connection,
+        target.client,
+        target.connection,
         value as JsonValue,
         invocation,
       );
@@ -1589,12 +1599,17 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         routed = { ...command, pane: target.pane.id } as JsonValue;
       }
       const connections = yield* model.attachedConnections;
-      const first = connections[0];
-      if (!first) return yield* controlFail(`no client attached, cannot run '${command._tag}'`);
+      const target = caller ?? connections[0];
+      if (!target) return yield* controlFail(`no client attached, cannot run '${command._tag}'`);
       const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
       const host = yield* requireHost;
       const invocation = yield* clientInvocation(ctx);
-      const result = yield* host.runOnClient(first.client, first.connection, routed, invocation);
+      const result = yield* host.runOnClient(
+        target.client,
+        target.connection,
+        routed,
+        invocation,
+      );
       return result === undefined ? {} : { result };
     }
     if (meta.target === "workspace") {
@@ -1729,6 +1744,30 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     }
     return yield* controlFail("session commands are not yet implemented for batch");
   });
+
+  handleAttachCommand = (client, connection, request) =>
+    Effect.gen(function* () {
+      const decoded = yield* S.decodeUnknownEffect(WireCommand)(
+        request.command,
+      ).pipe(Effect.mapError((error) => `invalid command: ${errorMessage(error)}`));
+      const cur = yield* model.get;
+      const context =
+        request.context === undefined
+          ? undefined
+          : yield* parseWorkspaceCommandContext(request.context, cur.workspace).pipe(
+              Effect.mapError((error) => error.message),
+            );
+      return yield* runRemote(decoded, request.expectedRevision, context, {
+        client,
+        connection,
+      }).pipe(
+        Effect.map(
+          (output) =>
+            output as { readonly result?: JsonValue; readonly workspace?: string },
+        ),
+        Effect.mapError((error) => error.message),
+      );
+    });
 
   const controlHandlers = ControlRpcs.toLayer({
     Ping: () =>

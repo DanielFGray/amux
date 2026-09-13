@@ -232,20 +232,18 @@ const Pong = S.TaggedStruct("pong", {
 /**
  * Ask an attached client to run a command against its own registry.
  *
- * The daemon runs no plugins (see ARCHITECTURE.md), so a plugin-registered
- * command can only be executed where the plugin loaded: a connected client.
- * `command` is opaque JSON here — the client decodes it against whatever
- * schema the tag's owner (core or plugin) registered.
+ * Client-target verbs (core and plugin) still register and run only on the
+ * client. The daemon forwards opaque command JSON; the client decodes it
+ * against whatever schema the tag's owner registered.
  */
 const CommandRequest = S.TaggedStruct("command.request", {
   id: S.String,
   command: JsonValueSchema,
   /**
-   * Who asked: socket client or CLI. Required so the receiving client can
-   * build a {@link CommandInvocation} without guessing. Key dispatch never
-   * crosses this wire.
+   * Who asked. Required so the receiving client can build a
+   * {@link CommandInvocation} without guessing.
    */
-  source: S.Literals(["socket", "cli"]),
+  source: S.Literals(["key", "socket", "cli"]),
   /** Calling session id, when the batch context carried one. */
   agent: S.optional(S.String),
   /** Calling pane id, when known — Realm still keys off this today. */
@@ -256,6 +254,31 @@ const CommandRequest = S.TaggedStruct("command.request", {
 const CommandResponse = S.TaggedStruct("command.response", {
   id: S.String,
   result: S.optional(JsonValueSchema),
+  error: S.optional(S.String),
+});
+
+/**
+ * Client → daemon: run one command (the attach equivalent of control Batch).
+ *
+ * Separate from {@link CommandRequest}: that pair is daemon → client with an
+ * invocation record only. This pair carries expectedRevision and the full
+ * caller context, and the reply may include a workspace snapshot — fields the
+ * daemon→client direction does not use.
+ */
+const RunRequest = S.TaggedStruct("run.request", {
+  id: S.String,
+  command: JsonValueSchema,
+  expectedRevision: S.optional(S.Int),
+  /** {@link WorkspaceCommandContext} as JSON; decoded at the daemon entry. */
+  context: S.optional(JsonValueSchema),
+});
+
+/** Daemon → client: answer to a {@link RunRequest}, correlated by `id`. */
+const RunResponse = S.TaggedStruct("run.response", {
+  id: S.String,
+  result: S.optional(JsonValueSchema),
+  /** Encoded workspace snapshot when the command mutated the model. */
+  workspace: S.optional(S.String),
   error: S.optional(S.String),
 });
 
@@ -285,9 +308,13 @@ export const AttachFrame = S.Union([
   Pong,
   CommandRequest,
   CommandResponse,
+  RunRequest,
+  RunResponse,
 ]);
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
 export type AgentEmit = S.Schema.Type<typeof AgentEmit>;
+export type RunRequest = S.Schema.Type<typeof RunRequest>;
+export type RunResponse = S.Schema.Type<typeof RunResponse>;
 
 function taggedSchemaTag(ast: AST.AST): string | undefined {
   if (ast._tag !== "Objects") return undefined;

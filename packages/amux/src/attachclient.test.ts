@@ -1731,9 +1731,10 @@ testEffect("every subscriber to a session receives every frame", () =>
 );
 
 /**
- * Sessionless plugin capture is answered by whichever client is attached —
- * the daemon has no pty grid for that leaf. Stub the client's command
- * surface so the RPC path is what is under test, not OpenTUI pixels.
+ * Sessionless plugin capture is answered by the attached client the CLI Batch
+ * (or attach run) routes to — the daemon has no pty grid for that leaf. Stub
+ * the client's command surface so the RPC path is what is under test, not
+ * OpenTUI pixels.
  */
 testEffect("pane.capture of a plugin pane returns what the attached client answers", () =>
   Effect.gen(function* () {
@@ -1977,5 +1978,215 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
       { _tag: "plugin.inspect", command: "pane.zoom" },
       { _tag: "plugin.inspect" },
     ]);
+  }),
+);
+
+/**
+ * Attached clients send commands on the attach connection. A workspace mutation
+ * returns the new snapshot; a stale expectedRevision fails the same way Batch did.
+ */
+testEffect("attached client workspace commands travel on attach with revision checks", () =>
+  Effect.gen(function* () {
+    const { env } = yield* startSession("attach-run-workspace");
+    const client = yield* attach("attach-run-workspace", env);
+    const before = client.workspace();
+
+    const renamed = yield* run(
+      client.runWorkspace(command("space.rename", { name: "via-attach" }), {
+        size: { cols: 80, rows: 24 },
+        shell: ["sh"],
+        cwd: "/tmp",
+        source: "socket",
+      }),
+      env,
+    );
+    expect(renamed.snapshot.revision).toBeGreaterThan(before.revision);
+    expect(renamed.snapshot.spaces[0]!.name).toBe("via-attach");
+
+    const stale = yield* run(
+      Effect.flip(
+        client.attach.runCommand(command("space.rename", { name: "stale" }) as never, {
+          expectedRevision: before.revision,
+          context: {
+            size: { cols: 80, rows: 24 },
+            shell: ["sh"],
+            cwd: "/tmp",
+            source: "socket",
+          },
+        }),
+      ),
+      env,
+    );
+    expect(stale.message).toContain("stale workspace revision");
+  }),
+);
+
+/**
+ * A key-sourced client-target command must run on the pressing connection, not
+ * connections[0]. Two attached clients: only the second answers.
+ */
+testEffect("key-sourced client command runs on the pressing client, not the first attached", () =>
+  Effect.gen(function* () {
+    const { env } = yield* startSession("attach-key-client-target");
+    const first = yield* attach("attach-key-client-target", env, "first");
+    const second = yield* attach("attach-key-client-target", env, "second");
+    let firstHits = 0;
+    let secondHits = 0;
+    yield* Effect.forkScoped(
+      Stream.runForEach(first.commandRequests, ({ id, command: raw }) =>
+        Effect.sync(() => {
+          const tag =
+            raw && typeof raw === "object" && "_tag" in raw
+              ? String((raw as { _tag: unknown })._tag)
+              : "";
+          if (tag === "pane.capture") {
+            firstHits += 1;
+            first.respondCommand(id, "from-first");
+          } else first.respondCommand(id, undefined, `unexpected ${tag}`);
+        }),
+      ),
+    );
+    yield* Effect.forkScoped(
+      Stream.runForEach(second.commandRequests, ({ id, command: raw, source }) =>
+        Effect.sync(() => {
+          const tag =
+            raw && typeof raw === "object" && "_tag" in raw
+              ? String((raw as { _tag: unknown })._tag)
+              : "";
+          if (tag === "pane.capture") {
+            expect(source).toBe("key");
+            secondHits += 1;
+            second.respondCommand(id, "from-second");
+          } else second.respondCommand(id, undefined, `unexpected ${tag}`);
+        }),
+      ),
+    );
+
+    const opened = yield* run(
+      first.runWorkspace(
+        command("pane.open-plugin", {
+          type: "amux.editor",
+          descriptor: { file: "/note.txt" },
+        }),
+        {
+          size: { cols: 80, rows: 24 },
+          shell: ["sh"],
+          cwd: "/tmp",
+          source: "socket",
+        },
+      ),
+      env,
+    );
+    const pane = (opened.result as { pane: string }).pane;
+
+    const captured = yield* run(
+      second.run(command("pane.capture", { pane }), {
+        size: { cols: 80, rows: 24 },
+        shell: ["sh"],
+        cwd: "/tmp",
+        source: "key",
+        pane,
+      }),
+      env,
+    );
+    expect(captured).toBe("from-second");
+    expect(secondHits).toBe(1);
+    expect(firstHits).toBe(0);
+  }),
+);
+
+/** View commands stay off the attach command path — the daemon refuses them. */
+testEffect("a view command on the attach run path is refused", () =>
+  Effect.gen(function* () {
+    const { env } = yield* startSession("attach-view-refused");
+    const client = yield* attach("attach-view-refused", env);
+    const error = yield* run(
+      Effect.flip(
+        client.attach.runCommand(command("app.command-palette") as never, {
+          context: {
+            size: { cols: 80, rows: 24 },
+            shell: ["sh"],
+            cwd: "/tmp",
+            source: "key",
+          },
+        }),
+      ),
+      env,
+    );
+    expect(error.message).toContain("view command");
+  }),
+);
+
+/**
+ * A key-sourced client-target command holds the attach round-trip open while
+ * its handler runs. That handler must be able to issue another session command
+ * (runWorkspace) without deadlocking on the client's serial command queue —
+ * `run` must not share that queue with `runWorkspace`.
+ */
+testEffect("key client command whose handler runs a nested session command completes", () =>
+  Effect.gen(function* () {
+    const { env } = yield* startSession("attach-nested-run");
+    const client = yield* attach("attach-nested-run", env);
+    let outerHits = 0;
+    let nestedHits = 0;
+    yield* Effect.forkScoped(
+      Stream.runForEach(client.commandRequests, ({ id, command: raw, source }) =>
+        Effect.gen(function* () {
+          const tag =
+            raw && typeof raw === "object" && "_tag" in raw
+              ? String((raw as { _tag: unknown })._tag)
+              : "";
+          if (tag !== "pane.capture") {
+            client.respondCommand(id, undefined, `unexpected ${tag}`);
+            return;
+          }
+          expect(source).toBe("key");
+          outerHits += 1;
+          const renamed = yield* client.runWorkspace(
+            command("space.rename", { name: "nested-from-handler" }),
+            {
+              size: { cols: 80, rows: 24 },
+              shell: ["sh"],
+              cwd: "/tmp",
+              source: "key",
+            },
+          );
+          nestedHits += 1;
+          expect(renamed.snapshot.spaces[0]!.name).toBe("nested-from-handler");
+          client.respondCommand(id, "captured-after-nested");
+        }),
+      ),
+    );
+
+    const opened = yield* run(
+      client.runWorkspace(
+        command("pane.open-plugin", {
+          type: "amux.editor",
+          descriptor: { file: "/note.txt" },
+        }),
+        {
+          size: { cols: 80, rows: 24 },
+          shell: ["sh"],
+          cwd: "/tmp",
+          source: "socket",
+        },
+      ),
+      env,
+    );
+    const pane = (opened.result as { pane: string }).pane;
+
+    const captured = yield* run(
+      client.run(command("pane.capture", { pane }), {
+        size: { cols: 80, rows: 24 },
+        shell: ["sh"],
+        cwd: "/tmp",
+        source: "key",
+        pane,
+      }),
+      env,
+    );
+    expect(captured).toBe("captured-after-nested");
+    expect(outerHits).toBe(1);
+    expect(nestedHits).toBe(1);
   }),
 );

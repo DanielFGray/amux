@@ -17,7 +17,7 @@
  */
 
 import { captureRootRuntime } from "../env.ts";
-import { Context, Deferred, Effect, Exit, Layer, Match, Schema as S, Scope } from "effect";
+import { Cause, Context, Deferred, Effect, Exit, Layer, Match, Schema as S, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { createServer, type Server } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -29,6 +29,7 @@ import {
   type AttachFrame,
   type PermissionAnswer,
   type JsonValue,
+  type RunRequest,
 } from "./AttachProtocol.ts";
 import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import { AgentLog, AgentLogDefault, type AgentLogError, type AgentLogService } from "./AgentLog.ts";
@@ -160,6 +161,15 @@ export interface AttachHostOptions<
     cols: number,
     rows: number,
   ) => Effect.Effect<boolean, never>;
+  /**
+   * An attached client asked to run a command on this connection (run.request).
+   * Return the Batch-shaped output, or fail with a message for run.response.error.
+   */
+  readonly onClientCommand?: (
+    client: string,
+    connection: string,
+    request: RunRequest,
+  ) => Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, string>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -207,11 +217,12 @@ export interface AttachHostService {
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly capture: (id: string) => Effect.Effect<string, PtyError>;
   /**
-   * Run a plugin-registered command on one attached client's own registry —
-   * the daemon runs no plugins, so this is the only way a plugin verb can
-   * execute at all. `client`/`connection` name a specific attachment (see
-   * `DaemonModel.attachedConnections`); the caller decides who to ask.
-   * The caller record travels on the wire so the client builds the same
+   * Run a client-target command on one attached client's own registry.
+   * Client-target handlers (core and plugin) still live only on the client;
+   * this forwards opaque command JSON for that client to decode and run.
+   * `client`/`connection` name a specific attachment (see
+   * `DaemonModel.attachedConnections`); the caller decides who to ask. The
+   * caller record travels on the wire so the client builds the same
    * invocation record key dispatch would.
    */
   readonly runOnClient: (
@@ -219,7 +230,7 @@ export interface AttachHostService {
     connection: string,
     command: JsonValue,
     invocation: {
-      readonly source: "socket" | "cli";
+      readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;
     },
@@ -402,7 +413,7 @@ export const makeAttachHost = <
       // not a protocol violation. Logging it keeps the attachment alive;
       // failing here would tear down the socket and every other session with
       // it.
-      onFrame: (_client, frame) =>
+      onFrame: (client, connection, frame) =>
         Match.value(frame).pipe(
           Match.tag("command.response", (frame) => {
             const pending = pendingCommands.get(frame.id);
@@ -412,6 +423,27 @@ export const makeAttachHost = <
               ? Deferred.fail(pending, frame.error)
               : Deferred.succeed(pending, frame.result);
           }),
+          Match.tag("run.request", (request) =>
+            // Fork: runRemote may call runOnClient and wait for command.response
+            // on this same socket; holding the connection lane would deadlock.
+            Effect.forkIn(
+              Effect.gen(function* () {
+                const reply = options.onClientCommand
+                  ? yield* Effect.exit(options.onClientCommand(client, connection, request))
+                  : Exit.fail("daemon is not accepting attach commands");
+                const frame =
+                  Exit.isFailure(reply)
+                    ? {
+                        _tag: "run.response" as const,
+                        id: request.id,
+                        error: errorMessage(Cause.squash(reply.cause)),
+                      }
+                    : { _tag: "run.response" as const, id: request.id, ...reply.value };
+                yield* hub.publishTo(client, connection, frame);
+              }),
+              host,
+            ).pipe(Effect.asVoid),
+          ),
           Match.tag("resize", (resize) =>
             Effect.gen(function* () {
               if (options.onDeferredResume) {
@@ -448,7 +480,7 @@ export const makeAttachHost = <
       connection: string,
       command: JsonValue,
       invocation: {
-        readonly source: "socket" | "cli";
+        readonly source: "key" | "socket" | "cli";
         readonly pane?: string;
         readonly agent?: string;
       },

@@ -63,7 +63,7 @@ export interface SessionClientContract extends DaemonSession {
     {
       readonly id: string;
       readonly command: JsonValue;
-      readonly source: "socket" | "cli";
+      readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;
     },
@@ -219,25 +219,22 @@ const make = (
       }
       return workspace;
     };
-    const runQueuedWorkspaceCommand = (request: {
+    const runQueuedCommand = (request: {
       readonly command: Command | RuntimeCommand;
       readonly context: WorkspaceCommandContext;
     }) =>
       Effect.gen(function* () {
-        const { outputs } = yield* control.Batch({
-          values: [request.command],
+        const output = yield* attach.runCommand(request.command as JsonValue, {
           expectedRevision: workspace.revision,
           context: request.context,
         });
-        const next = outputs[0]?.workspace;
-        if (next === undefined)
-          return unchangedOutput(workspace, outputs[0]?.result as JsonValue | undefined);
+        const next = output.workspace;
+        if (next === undefined) return unchangedOutput(workspace, output.result);
         const parsed = yield* parseWorkspaceJson(next);
         accept(parsed);
-        const result = outputs[0]?.result;
-        return result === undefined
+        return output.result === undefined
           ? { snapshot: structuredClone(workspace) }
-          : { snapshot: structuredClone(workspace), result: result as JsonValue };
+          : { snapshot: structuredClone(workspace), result: output.result };
       }).pipe(Effect.mapError((error) => new SessionClientError({ message: errorMessage(error) })));
     yield* Effect.forkScoped(
       Effect.forever(
@@ -245,7 +242,7 @@ const make = (
           Effect.flatMap((request) =>
             Effect.exit(
               Effect.raceFirst(
-                runQueuedWorkspaceCommand(request),
+                runQueuedCommand(request),
                 Deferred.await(closed).pipe(Effect.flatMap(() => Effect.fail(closingError()))),
               ),
             ).pipe(Effect.flatMap((exit) => Deferred.done(request.done, exit))),
@@ -292,10 +289,22 @@ const make = (
             Deferred.await(closed).pipe(Effect.flatMap(() => Effect.fail(closingError()))),
           );
         }),
+      // No expectedRevision and no queue: a client-target runOnClient can call
+      // back into session.run while the outer command is still open; serializing
+      // both on commandQueue deadlocks. Workspace mutations stay on runWorkspace.
       run: (command, context) =>
-        control.Batch({ values: [command], context }).pipe(
-          Effect.map(({ outputs }) => outputs[0]?.result),
-          Effect.mapError(toControlError),
+        Effect.gen(function* () {
+          const output = yield* Effect.raceFirst(
+            attach.runCommand(command as JsonValue, { context }),
+            Deferred.await(closed).pipe(Effect.flatMap(() => Effect.fail(closingError()))),
+          );
+          if (output.workspace !== undefined) {
+            const parsed = yield* parseWorkspaceJson(output.workspace);
+            accept(parsed);
+          }
+          return output.result;
+        }).pipe(
+          Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
         ),
       resumeAgent: (input) =>
         Effect.sync(() => {

@@ -95,6 +95,49 @@ test("a forwarded command retains the session that caused it", () => {
   ]);
 });
 
+test("command.request carries a key source across the wire", () => {
+  const encoded = encodeAttachFrame({
+    _tag: "command.request",
+    id: "cap-1",
+    command: { _tag: "pane.capture" },
+    source: "key",
+    pane: "s1:p1",
+  });
+  expect(decodeAttachFrames(encoded).frames).toEqual([
+    {
+      _tag: "command.request",
+      id: "cap-1",
+      command: { _tag: "pane.capture" },
+      source: "key",
+      pane: "s1:p1",
+    },
+  ]);
+});
+
+test("run.request and run.response round-trip with workspace output", () => {
+  const request: AttachFrame = {
+    _tag: "run.request",
+    id: "run-1",
+    command: { _tag: "pane.zoom" },
+    expectedRevision: 3,
+    context: {
+      size: { cols: 80, rows: 24 },
+      shell: ["sh"],
+      cwd: "/tmp",
+      source: "key",
+      pane: "s1:p1",
+    },
+  };
+  const response: AttachFrame = {
+    _tag: "run.response",
+    id: "run-1",
+    workspace: '{"revision":4}',
+    result: null,
+  };
+  expect(decodeAttachFrames(encodeAttachFrame(request)).frames).toEqual([request]);
+  expect(decodeAttachFrames(encodeAttachFrame(response)).frames).toEqual([response]);
+});
+
 test("foreground frames carry a negative pgid and sid across the wire", () => {
   const encoded = encodeAttachFrame({
     _tag: "foreground",

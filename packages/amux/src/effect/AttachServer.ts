@@ -37,7 +37,11 @@ export interface AttachServerOptions<
   readonly path: string;
   /** Seconds without inbound traffic before the attach is considered dead. */
   readonly idleTimeoutSeconds?: number;
-  readonly onFrame?: (client: string, frame: AttachFrame) => Effect.Effect<void, FrameError>;
+  readonly onFrame?: (
+    client: string,
+    connection: string,
+    frame: AttachFrame,
+  ) => Effect.Effect<void, FrameError>;
   /**
    * A client adopted a session and asked for its screen to be replayed to it
    * alone. The owner serializes the session's current screen and answers with
@@ -267,7 +271,11 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
               terminate(socket, { _tag: "error", message: "hello is required first" });
               return;
             }
-            yield* options.onFrame?.(socket.data.client, clientFrame) ?? Effect.void;
+            yield* options.onFrame?.(
+              socket.data.client,
+              socket.data.connection,
+              clientFrame,
+            ) ?? Effect.void;
           }),
         ),
       );

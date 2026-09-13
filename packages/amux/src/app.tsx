@@ -801,7 +801,8 @@ function buildApp(
         resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash",
       ],
       cwd: spaces.active?.dir ?? process.cwd(),
-      // Attached client's control socket — not the CLI.
+      // Attached client's default source. CurrentInvocation overrides source
+      // (and pane/agent) when a handler forwards under an existing call.
       source: "socket" as const,
       blockedAgents: spaces.allSessions
         .filter((session) => session.state === ProcessState.Blocked)
@@ -812,21 +813,39 @@ function buildApp(
     return focused != null ? { ...base, pane: focused.id } : base;
   };
 
+  const callerWorkspaceContext = Effect.gen(function* () {
+    const inv = yield* Effect.serviceOption(CurrentInvocation);
+    const base = workspaceContext();
+    return Option.match(inv, {
+      onNone: () => base,
+      onSome: (i) => {
+        if (i.pane !== undefined && i.agent !== undefined)
+          return { ...base, source: i.source, pane: i.pane, agent: i.agent };
+        if (i.pane !== undefined) return { ...base, source: i.source, pane: i.pane };
+        if (i.agent !== undefined) return { ...base, source: i.source, agent: i.agent };
+        return { ...base, source: i.source };
+      },
+    });
+  });
+
   const runPanelCommand = <T extends CommandTag>(
     value: Extract<Command, { _tag: T }>,
     input?: string,
   ): Effect.Effect<CommandResult<T>, CommandError> =>
-    session
-      .runWorkspace(value, {
-        ...workspaceContext(),
-        input,
-      })
-      .pipe(
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-        Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
-        Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
-        Effect.map(({ result }) => result as CommandResult<T>),
-      );
+    Effect.gen(function* () {
+      const context = yield* callerWorkspaceContext;
+      return yield* session
+        .runWorkspace(value, {
+          ...context,
+          input,
+        })
+        .pipe(
+          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+          Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
+          Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
+          Effect.map(({ result }) => result as CommandResult<T>),
+        );
+    });
 
   const runCommand = <T extends CommandTag>(
     value: Extract<Command, { _tag: T }>,
@@ -836,10 +855,13 @@ function buildApp(
       value,
       () => runPanelCommand(value, input),
       () =>
-        session.run(value, workspaceContext()).pipe(
-          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-          Effect.map((result) => result as CommandResult<T>),
-        ),
+        Effect.gen(function* () {
+          const context = yield* callerWorkspaceContext;
+          return yield* session.run(value, context).pipe(
+            Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+            Effect.map((result) => result as CommandResult<T>),
+          );
+        }),
     );
 
   /** Push the live pane-host size through ensureVisible so niri column widths
@@ -861,12 +883,15 @@ function buildApp(
     value: RuntimeCommand,
     input?: string,
   ): Effect.Effect<unknown, CommandError> =>
-    session.runWorkspace(value, { ...workspaceContext(), input }).pipe(
-      Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-      Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
-      Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
-      Effect.map(({ result }) => result),
-    );
+    Effect.gen(function* () {
+      const context = yield* callerWorkspaceContext;
+      return yield* session.runWorkspace(value, { ...context, input }).pipe(
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
+        Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
+        Effect.map(({ result }) => result),
+      );
+    });
 
   const [configState, setConfigState] = createSignal<Config>(config);
 
@@ -1651,7 +1676,12 @@ function buildApp(
         if (values === null) return setPromptRequest(null);
         runDetached(
           "pane.send-keys",
-          commands.run(command("pane.send-keys", { keys: values[0] ?? "" }), keyInvocation()),
+          Effect.gen(function* () {
+            const context = yield* callerWorkspaceContext;
+            return yield* session
+              .run(command("pane.send-keys", { keys: values[0] ?? "" }), context)
+              .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
+          }).pipe(Effect.provideService(CurrentInvocation, keyInvocation())),
           showCommandError,
           rootRuntime,
         );
@@ -1686,10 +1716,13 @@ function buildApp(
     "pane.open-plugin": runCommand,
     "process-plugin.pane.open": runCommand,
     "process-plugin.action.invoke": (value) =>
-      session.run(value, workspaceContext()).pipe(
-        Effect.asVoid,
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-      ),
+      Effect.gen(function* () {
+        const context = yield* callerWorkspaceContext;
+        yield* session.run(value, context).pipe(
+          Effect.asVoid,
+          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        );
+      }),
     "pane.next": runCommand,
     "pane.last": runCommand,
     "pane.focus": runCommand,
@@ -1902,10 +1935,13 @@ function buildApp(
     // Through the daemon and back, so that every client attached to this
     // workspace reloads — including the one the agent is not looking at.
     "plugin.reload": (value) =>
-      session.run(value, workspaceContext()).pipe(
-        Effect.asVoid,
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-      ),
+      Effect.gen(function* () {
+        const context = yield* callerWorkspaceContext;
+        yield* session.run(value, context).pipe(
+          Effect.asVoid,
+          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        );
+      }),
     // Client-local: scratch materialize + adopt/reload. Arrives here both from
     // a local invoke and from the daemon's runOnClient forward (CLI/agent).
     "plugin.eval": ({ plugin, source }) =>
@@ -2092,7 +2128,20 @@ function buildApp(
       group: opts.group ?? meta.group,
       hidden: opts.hidden,
       fixed: opts.fixed,
-      run: Effect.suspend(() => commands.run(cmd, keyInvocation())),
+      run: Effect.suspend(() => {
+        // Client-target verbs must reach runRemote so the gate sees them; the
+        // daemon returns the work on this attach connection via runOnClient.
+        // View stays local. Workspace/session/server handlers already forward.
+        if (meta.target === "client") {
+          return Effect.gen(function* () {
+            const context = yield* callerWorkspaceContext;
+            return yield* session
+              .run(cmd, context)
+              .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
+          }).pipe(Effect.provideService(CurrentInvocation, keyInvocation()));
+        }
+        return commands.run(cmd, keyInvocation());
+      }),
     };
   }
 

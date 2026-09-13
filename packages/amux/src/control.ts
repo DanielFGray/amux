@@ -16,7 +16,7 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import { Layer, Schema as S } from "effect";
 import { TextEdit } from "@danielfgray/amux-text-buffer";
-import { Command, RuntimeCommandSchema } from "./commands.ts";
+import { WireCommand } from "./commands.ts";
 import { DaemonEvent } from "./effect/EventBus.ts";
 import { AgentEvent } from "./effect/AttachProtocol.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
@@ -79,8 +79,6 @@ const BatchOutputSchema = S.Struct({
 
 const BatchResultSchema = S.Struct({ outputs: S.Array(BatchOutputSchema) });
 
-/** `Command` plus the permissive plugin-verb fallback — see `RuntimeCommandSchema`. */
-const WireCommand = S.Union([Command, RuntimeCommandSchema]);
 
 export class ControlRpcs extends RpcGroup.make(
   Rpc.make("Ping", { success: AttachInfoSchema, error: ControlError }),
