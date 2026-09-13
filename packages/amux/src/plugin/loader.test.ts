@@ -89,6 +89,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
     plugins: [],
     permissions: [],
+    layoutRules: [],
     ...overrides,
   };
 }

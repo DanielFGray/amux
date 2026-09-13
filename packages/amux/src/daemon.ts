@@ -466,8 +466,6 @@ export const makeDaemonService = Effect.fnUntraced(
             owner: { id: "amux.core", generation: 0 },
             name: defaultTilingAlgorithm.id,
             value: {
-              priority: Number.MAX_SAFE_INTEGER,
-              selector: () => true,
               algorithm: defaultTilingAlgorithm,
             },
           },

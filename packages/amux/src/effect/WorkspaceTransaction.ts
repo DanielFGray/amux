@@ -18,12 +18,8 @@ import { BunFileSystem } from "@effect/platform-bun";
 import { DaemonModel } from "./DaemonModel.ts";
 import { loadConfig } from "../config.ts";
 import { resolveOptions } from "../options.ts";
-import {
-  resolveTilingAlgorithm,
-  TilingAlgorithmsTag,
-  type DaemonCommandRegistration,
-  type TilingAlgorithmContext,
-} from "../plugin/services.ts";
+import { resolveTilingAlgorithm } from "../layout-rules.ts";
+import { TilingAlgorithmsTag, type DaemonCommandRegistration } from "../plugin/services.ts";
 import {
   applyWorkspaceCommand,
   buildWorkspaceReadPackage,
@@ -33,9 +29,9 @@ import {
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
   type WorkspaceSpace,
-  workspaceWindows,
   type PluginWorkspaceReducer,
 } from "../workspace.ts";
+import type { TilingAlgorithm } from "../tiling-algorithm.ts";
 import {
   PLUGIN_REDUCE_TIMEOUT_MS,
   WorkspaceChangeError,
@@ -502,26 +498,30 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                 config.options,
                 new Map([["behaviour.tilingAlgorithm", registeredAlgorithmIds]]),
               )["behaviour.tilingAlgorithm"];
-              const target = value as { readonly space?: string; readonly window?: number };
-              const workspaceId = target.space ?? cur.workspace.state.activeSpace ?? undefined;
-              const targetWindow = [...workspaceWindows(cur.workspace)].find(
-                ({ space, window }) =>
-                  (target.space === undefined || space.id === target.space) &&
-                  (target.window === undefined || window.number === target.window),
+              const commandSpace = Option.flatMap(
+                S.decodeUnknownOption(S.Struct({ space: S.optional(S.String) }))(value),
+                (fields) => Option.fromNullishOr(fields.space),
               );
-              const algorithmContext: TilingAlgorithmContext = {
-                width: context.size.cols,
-                height: context.size.rows,
-                workspaceId,
-                sessionCount: targetWindow?.window.sessions.length,
-                selectedId,
-              };
+              const spaceId =
+                Option.getOrUndefined(commandSpace) ?? cur.workspace.state.activeSpace ?? undefined;
+              const workspaceName =
+                spaceId === undefined
+                  ? undefined
+                  : cur.workspace.spaces.find((space) => space.id === spaceId)?.name;
               const algorithm = resolveTilingAlgorithm(
+                config.layoutRules,
+                selectedId,
                 Option.getOrElse(
-                  Option.map(tilingAlgorithms, (service) => service.all()),
-                  () => [],
+                  Option.map(tilingAlgorithms, (service) =>
+                    service.all().map((entry) => entry.value.algorithm),
+                  ),
+                  (): readonly TilingAlgorithm[] => [],
                 ),
-                algorithmContext,
+                {
+                  cols: context.size.cols,
+                  rows: context.size.rows,
+                  workspaceName,
+                },
               );
 
               const path = yield* nodePath;

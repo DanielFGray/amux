@@ -10,6 +10,7 @@ import { Config as EffectConfig, Effect, Option, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
+import { LayoutRuleSchema, type LayoutRule } from "./layout-rules.ts";
 import { errorMessage } from "./error-message.ts";
 
 /**
@@ -68,6 +69,27 @@ export interface Config {
    * instead, so an approval given in one repository cannot follow an agent into
    * the next. This is where a refusal that should hold everywhere belongs. */
   permissions: PermissionRule[];
+  /**
+   * Ordered tiling election rules. Each entry names an algorithm id and a
+   * `when` condition (optional inclusive non-negative integer
+   * `minCols`/`maxCols`/`minRows`/`maxRows`, optional space **name** as
+   * `workspace`). The first rule whose condition holds and whose algorithm a
+   * plugin registered wins; otherwise `options["behaviour.tilingAlgorithm"]`
+   * if registered, else the built-in default. Malformed entries are skipped on
+   * load (same silent drop as `permissions`). If two spaces share a name, a
+   * `workspace` rule applies to both.
+   *
+   * @example
+   * ```json
+   * {
+   *   "layoutRules": [
+   *     { "algorithm": "default", "when": { "maxCols": 80 } },
+   *     { "algorithm": "niri", "when": { "minCols": 81, "workspace": "desk" } }
+   *   ]
+   * }
+   * ```
+   */
+  layoutRules: LayoutRule[];
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -77,6 +99,7 @@ export const DEFAULT_CONFIG: Config = {
   // the user names one, by path or by installed package.
   plugins: [],
   permissions: [],
+  layoutRules: [],
 };
 
 /**
@@ -133,6 +156,7 @@ const ConfigSchema = S.Struct({
     S.withDecodingDefaultType(Effect.succeed(DEFAULT_PLUGINS_JSON)),
   ),
   permissions: S.Array(JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
+  layoutRules: S.Array(JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
 });
 
 /**
@@ -193,15 +217,21 @@ export function decodeConfig(loaded: JsonValue): Config {
     const rule = decodePermissionRule(entry);
     return Option.isSome(rule) ? [rule.value] : [];
   });
+  const layoutRules = decoded.layoutRules.flatMap((entry) => {
+    const rule = decodeLayoutRule(entry);
+    return Option.isSome(rule) ? [rule.value] : [];
+  });
   return {
     options: { ...decoded.options },
     keys: { prefix, leader, bindings },
     plugins,
     permissions,
+    layoutRules,
   };
 }
 
 const decodePermissionRule = S.decodeUnknownOption(PermissionRuleSchema);
+const decodeLayoutRule = S.decodeUnknownOption(LayoutRuleSchema);
 
 const decodePluginEntry = (entry: JsonValue): Option.Option<PluginSpec> => {
   const spec = S.decodeUnknownOption(PluginSpecSchema)(entry);

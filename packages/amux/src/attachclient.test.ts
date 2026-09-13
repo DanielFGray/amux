@@ -57,6 +57,7 @@ const editorPluginConfig: AmuxConfig = {
   keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
   plugins: [{ path: editorPlugin, enabled: true }],
   permissions: [],
+  layoutRules: [],
 };
 
 /** A live `SessionHandle` as the persisted entry an attach frame carries. The

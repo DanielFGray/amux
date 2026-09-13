@@ -5,8 +5,9 @@
  * renders is exactly what the elected algorithm hands back from `Layout`,
  * and every arrangement command (split, close, swap, preset, resize,
  * directional focus) is routed to whichever algorithm currently holds the
- * pane-host slot. Election works like root-slot frame election (ADR 0002):
- * live-context selectors, first match wins, re-evaluated every render.
+ * pane-host slot. Election is config layout rules plus the
+ * `behaviour.tilingAlgorithm` option (see layout-rules.ts), re-evaluated on
+ * every workspace command.
  *
  * The boundary is one layout operation → one answer, as an Effect, so a
  * future plugin-host process can carry the same Schemas over a socket.

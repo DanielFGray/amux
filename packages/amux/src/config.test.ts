@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { Effect, Layer, Path } from "effect";
+import { Effect, Layer, Path, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { DEFAULT_CONFIG, decodeConfig, loadConfig, saveConfig } from "./config.ts";
 import { resolveOptions } from "./options.ts";
 import { testEffect } from "./test-effect.ts";
+import { JsonValueSchema } from "./effect/AttachProtocol.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -91,6 +92,42 @@ test("options are stored as written and judged on the way out", () => {
 test("an empty file is every default", () => {
   expect(decodeConfig({})).toEqual(DEFAULT_CONFIG);
   expect(resolveOptions(decodeConfig({}).options)["behaviour.scrollRows"]).toBe(3);
+});
+
+test("a config without layoutRules decodes to no rules", () => {
+  expect(decodeConfig({}).layoutRules).toEqual([]);
+  expect(decodeConfig({ permissions: [] }).layoutRules).toEqual([]);
+});
+
+test("layoutRules round-trip through decodeConfig", () => {
+  const loaded = S.decodeSync(JsonValueSchema)({
+    layoutRules: [
+      { algorithm: "default", when: { maxCols: 80 } },
+      { algorithm: "niri", when: { minCols: 81, workspace: "desk" } },
+    ],
+  });
+  expect(decodeConfig(loaded).layoutRules).toEqual([
+    { algorithm: "default", when: { maxCols: 80 } },
+    { algorithm: "niri", when: { minCols: 81, workspace: "desk" } },
+  ]);
+});
+
+test("malformed layoutRules entries are skipped", () => {
+  const loaded = S.decodeSync(JsonValueSchema)({
+    layoutRules: [{ algorithm: "niri", when: { maxCols: 80 } }, { algorithm: 7 }, null],
+  });
+  expect(decodeConfig(loaded).layoutRules).toEqual([{ algorithm: "niri", when: { maxCols: 80 } }]);
+});
+
+test("layoutRules reject negative or non-integer bounds", () => {
+  const negative = S.decodeSync(JsonValueSchema)({
+    layoutRules: [{ algorithm: "niri", when: { maxCols: -1 } }],
+  });
+  expect(decodeConfig(negative).layoutRules).toEqual([]);
+  const fractional = S.decodeSync(JsonValueSchema)({
+    layoutRules: [{ algorithm: "niri", when: { maxCols: 80.5 } }],
+  });
+  expect(decodeConfig(fractional).layoutRules).toEqual([]);
 });
 
 test("no plugins are active by default", () => {

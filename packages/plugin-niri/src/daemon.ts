@@ -24,8 +24,6 @@ export const niriDaemonPlugin: PluginDefinition = definePlugin({
   effect: () =>
     Effect.gen(function* () {
       yield* registerTilingAlgorithm({
-        priority: 0,
-        selector: (ctx) => ctx.selectedId === niriTilingAlgorithm.id,
         algorithm: niriTilingAlgorithm,
       });
       yield* registerLayoutKindSchema("scroll", NiriArrangementSchema);

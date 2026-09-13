@@ -20,7 +20,8 @@ import { layoutPanes, makeLayout, DescriptorSchema } from "./layout.ts";
 import { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";
 import { tilingAlgorithmFromMethods } from "./tiling-algorithm.ts";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
-import { resolveTilingAlgorithm, type DaemonCommandRegistration } from "./plugin/services.ts";
+import { resolveTilingAlgorithm } from "./layout-rules.ts";
+import type { DaemonCommandRegistration } from "./plugin/services.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
@@ -132,27 +133,14 @@ test("daemon tiling election routes tiled commands and rebuild through the elect
       return defaultTilingMethods.swap!(layout, size, from, step);
     },
   });
-  const registration = {
-    owner: { id: "test", generation: 0 },
-    name: algorithm.id,
-    value: {
-      priority: 0,
-      selector: (ctx: { selectedId: string }) => ctx.selectedId === "test",
-      algorithm,
-    },
-  };
-  const elected = resolveTilingAlgorithm([registration], {
-    width: 80,
-    height: 24,
-    selectedId: "test",
+  const elected = resolveTilingAlgorithm([], "test", [algorithm], {
+    cols: 80,
+    rows: 24,
   });
   expect(elected).toBe(algorithm);
-  expect(
-    resolveTilingAlgorithm(
-      [{ ...registration, value: { ...registration.value, selector: () => false } }],
-      { width: 80, height: 24, selectedId: "test" },
-    ),
-  ).toBe(defaultTilingAlgorithm);
+  expect(resolveTilingAlgorithm([], "missing", [algorithm], { cols: 80, rows: 24 })).toBe(
+    defaultTilingAlgorithm,
+  );
 
   let workspace = run(workspaceFromSession(wideBase()));
   workspace = applyWorkspaceCommand(

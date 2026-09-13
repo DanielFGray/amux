@@ -19,7 +19,6 @@ export { SessionFactsTag } from "../session-facts.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
-import { defaultTilingAlgorithm } from "../tiling-algorithm-default.ts";
 import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
 import type { PluginActionRegistration } from "../effect/WorkspaceTransaction.ts";
 import type { ResultCodec } from "../workspace-changes.ts";
@@ -151,17 +150,7 @@ export interface DaemonCommandsService extends RegistryService<DaemonCommandRegi
   readonly all: () => readonly Contribution<DaemonCommandRegistration>[];
 }
 
-export interface TilingAlgorithmContext {
-  readonly width: number;
-  readonly height: number;
-  readonly workspaceId?: string;
-  readonly sessionCount?: number;
-  readonly selectedId: string;
-}
-
 export interface TilingAlgorithmRegistration {
-  readonly priority: number;
-  readonly selector: (ctx: TilingAlgorithmContext) => boolean;
   readonly algorithm: TilingAlgorithm;
 }
 
@@ -292,18 +281,6 @@ export const registerTilingAlgorithm = (
   registration: TilingAlgorithmRegistration,
 ): Effect.Effect<void, never, TilingAlgorithmsTag | CurrentPlugin | Scope.Scope> =>
   TilingAlgorithmsTag.pipe(Effect.flatMap((algorithms) => algorithms.register(registration)));
-
-export function resolveTilingAlgorithm(
-  entries: readonly Contribution<TilingAlgorithmRegistration>[],
-  context: TilingAlgorithmContext,
-): TilingAlgorithm {
-  return (
-    [...entries]
-      .filter(({ value }) => value.selector(context))
-      .sort((left, right) => left.value.priority - right.value.priority)[0]?.value.algorithm ??
-    defaultTilingAlgorithm
-  );
-}
 
 export interface PluginService {
   readonly key: string;

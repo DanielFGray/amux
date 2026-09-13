@@ -179,6 +179,7 @@ test("configured editor contributes editor.open to CLI help without a missing da
         keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
         plugins: [{ path: join(import.meta.dir, "../../editor"), enabled: true }],
         permissions: [],
+        layoutRules: [],
       }),
     );
     const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"], {

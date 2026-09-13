@@ -1,7 +1,21 @@
 import { testEffect } from "../test-effect.ts";
-import { Duration, Effect, Exit, Fiber, Layer, Ref, Scope, Stream } from "effect";
+import {
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Path,
+  Ref,
+  Scope,
+  Stream,
+  ConfigProvider,
+  Schema as S,
+} from "effect";
 import { expect } from "bun:test";
 import * as TestClock from "effect/testing/TestClock";
+import { BunFileSystem } from "@effect/platform-bun";
+import * as FileSystem from "effect/FileSystem";
 import { layerDaemonModel } from "./DaemonModel.ts";
 import {
   WorkspaceTransaction,
@@ -26,6 +40,10 @@ import type { WorktreeSpec } from "../git.ts";
 import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
 import { PLUGIN_REDUCE_TIMEOUT_MS, PluginReducerError } from "../workspace-changes.ts";
 import type { ManagedSession, SessionSpec } from "./SessionRegistry.ts";
+import { TilingAlgorithmsTag } from "../plugin/services.ts";
+import { defaultTilingAlgorithm, defaultTilingMethods } from "../tiling-algorithm-default.ts";
+import { tilingAlgorithmFromMethods } from "../tiling-algorithm.ts";
+import { JsonValueSchema } from "./AttachProtocol.ts";
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
@@ -513,4 +531,82 @@ testEffect("transaction prepare maps declaredAgent to SessionSpec.agent", () =>
     expect(seen[0]?.agent).toBe("claude");
     expect(Object.hasOwn(seen[0]!, "declaredAgent")).toBe(false);
   }),
+);
+
+testEffect("a maxCols layout rule elects different algorithms for narrow and wide viewports", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const pathSvc = yield* Path.Path;
+    const configHome = yield* fs.makeTempDirectory({ prefix: "amux-layout-rules-" });
+    const amuxDir = pathSvc.join(configHome, "amux");
+    yield* fs.makeDirectory(amuxDir, { recursive: true });
+    const configText = yield* S.encodeEffect(S.fromJsonString(JsonValueSchema))({
+      layoutRules: [{ algorithm: "narrow", when: { maxCols: 80 } }],
+      options: { "behaviour.tilingAlgorithm": "wide" },
+    });
+    yield* fs.writeFileString(pathSvc.join(amuxDir, "config.json"), configText);
+
+    const elected: string[] = [];
+    const makeAlgo = (id: string) =>
+      tilingAlgorithmFromMethods({
+        ...defaultTilingMethods,
+        id,
+        split(layout, size, at, direction, pane) {
+          elected.push(id);
+          return defaultTilingMethods.split!(layout, size, at, direction, pane);
+        },
+      });
+    const narrow = makeAlgo("narrow");
+    const wide = makeAlgo("wide");
+    const tilingAlgorithms = {
+      all: () =>
+        [
+          {
+            owner: { id: "test", generation: 0 },
+            name: "narrow",
+            value: { algorithm: narrow },
+          },
+          {
+            owner: { id: "test", generation: 0 },
+            name: "wide",
+            value: { algorithm: wide },
+          },
+          {
+            owner: { id: "amux.core", generation: 0 },
+            name: defaultTilingAlgorithm.id,
+            value: { algorithm: defaultTilingAlgorithm },
+          },
+        ] as const,
+      register: () => Effect.void,
+    };
+
+    const initial = singlePaneState();
+    const { layer } = testLayer(initial);
+    const withAlgos = layer.pipe(
+      Layer.provideMerge(Layer.succeed(TilingAlgorithmsTag, tilingAlgorithms)),
+    );
+
+    yield* Effect.gen(function* () {
+      const tx = yield* WorkspaceTransaction;
+      const narrowResult = yield* tx.run(
+        command("pane.split", { axis: "row" }),
+        initial.workspace.revision,
+        {
+          ...context,
+          size: { cols: 40, rows: 24 },
+        },
+      );
+      yield* tx.run(command("pane.split", { axis: "row" }), narrowResult.snapshot.revision, {
+        ...context,
+        size: { cols: 120, rows: 24 },
+      });
+      expect(elected).toEqual(["narrow", "wide"]);
+    }).pipe(
+      Effect.provide(withAlgos),
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown({ XDG_CONFIG_HOME: configHome }),
+      ),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, Path.layer))),
 );

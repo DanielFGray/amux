@@ -89,6 +89,7 @@ async function started(id: string) {
       { path: editor, enabled: true },
     ],
     permissions: [],
+    layoutRules: [],
   };
   await mkdir(join(configHome, "amux"), { recursive: true });
   await writeFile(

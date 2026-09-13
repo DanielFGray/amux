@@ -58,7 +58,6 @@ export {
   type DaemonCommandRegistration,
   type DaemonCommandsService,
   type EnumValueRegistration,
-  type TilingAlgorithmContext,
   type TilingAlgorithmRegistration,
   type TilingAlgorithmsService,
   type DaemonSessionCommandContext,
@@ -106,6 +105,14 @@ export {
   type TilingAnswer,
 } from "./tiling-operation.ts";
 export { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";
+export {
+  LayoutRuleSchema,
+  LayoutRuleWhenSchema,
+  resolveTilingAlgorithm,
+  type LayoutRule,
+  type LayoutRuleWhen,
+  type LayoutElectionViewport,
+} from "./layout-rules.ts";
 export type { Meta } from "./commands.ts";
 export type {
   CoreWorkspaceAction,
