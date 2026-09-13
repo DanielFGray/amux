@@ -2,7 +2,18 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Layer, Path, Scope } from "effect";
+import {
+  ConfigProvider,
+  Duration,
+  Effect,
+  Layer,
+  Option,
+  Path,
+  Result,
+  Schedule,
+  Scope,
+  Stream,
+} from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "../daemon.ts";
@@ -40,6 +51,41 @@ const run = <A, E>(
 ) => Effect.runPromise(Effect.scoped(provideEnv(effect, e)));
 
 const hangFixture = fileURLToPath(new URL("./hang-fixture.ts", import.meta.url));
+const orphanParentFixture = fileURLToPath(
+  new URL("./orphan-parent-fixture.ts", import.meta.url),
+);
+
+/** Read `HOST_PID=<n>` from a fixture's stdout before the process exits. */
+const readHostPid = (
+  stdout: ReadableStream<Uint8Array>,
+): Effect.Effect<number, Error> =>
+  Stream.fromAsyncIterable(stdout, (error) =>
+    error instanceof Error ? error : new Error(String(error)),
+  ).pipe(
+    Stream.decodeText(),
+    Stream.mapAccum(
+      () => "",
+      (buf, chunk) => {
+        const next = buf + chunk;
+        return [next, [next]] as const;
+      },
+    ),
+    Stream.filterMap((buf) => {
+      const match = /HOST_PID=(\d+)/.exec(buf);
+      return Result.fromOption(
+        match ? Option.some(Number(match[1])) : Option.none(),
+        () => undefined,
+      );
+    }),
+    Stream.take(1),
+    Stream.runHead,
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.fail(new Error("orphan parent exited without HOST_PID")),
+        onSome: (pid) => Effect.succeed(pid),
+      }),
+    ),
+  );
 
 /** Attach client that records output frames — daemon path for reading a PTY. */
 const attach = (path: string, client: string) => {
@@ -276,3 +322,65 @@ test("Status reports plugin-host restart with stable fields", async () => {
 
   await Effect.runPromise(daemon.stop);
 }, 30_000);
+
+test("the host exits when its daemon dies without a Stop", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const home = tempDir("plugin-host-orphan");
+      const socketPath = join(home, "plugin-host.sock");
+      const parent = Bun.spawn([process.execPath, orphanParentFixture], {
+        env: {
+          ...process.env,
+          AMUX_PLUGIN_HOST_SOCKET: socketPath,
+        },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const hostPid = yield* readHostPid(parent.stdout).pipe(
+        Effect.timeout(Duration.millis(15_000)),
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            const stderr = yield* Effect.promise(() => new Response(parent.stderr).text());
+            parent.kill("SIGKILL");
+            yield* Effect.promise(() => parent.exited);
+            return yield* Effect.fail(
+              new Error(`${error instanceof Error ? error.message : String(error)}; stderr=${stderr}`),
+            );
+          }),
+        ),
+      );
+
+      yield* Effect.sync(() => {
+        expect(hostPid).toBeGreaterThan(0);
+      });
+      expect(yield* processAlive(hostPid)).toBe(true);
+
+      yield* Effect.sync(() => {
+        process.kill(parent.pid, "SIGKILL");
+      });
+      yield* Effect.promise(() => parent.exited);
+
+      yield* processAlive(hostPid).pipe(
+        Effect.filterOrFail(
+          (alive) => !alive,
+          () => new Error("plugin-host still alive after daemon SIGKILL"),
+        ),
+        Effect.retry(
+          Schedule.spaced("50 millis").pipe(Schedule.upTo({ duration: "5 seconds" })),
+        ),
+      );
+
+      yield* Effect.promise(() => Bun.file(socketPath).exists()).pipe(
+        Effect.filterOrFail(
+          (exists) => !exists,
+          () => new Error("plugin-host socket still present after daemon SIGKILL"),
+        ),
+        Effect.retry(
+          Schedule.spaced("50 millis").pipe(Schedule.upTo({ duration: "5 seconds" })),
+        ),
+      );
+    }),
+  ),
+  30_000);

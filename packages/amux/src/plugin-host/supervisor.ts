@@ -7,6 +7,7 @@
  * or the model.
  */
 import { fileURLToPath } from "node:url";
+import type { FileSink } from "bun";
 import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
@@ -95,6 +96,11 @@ type HostChild = {
   readonly exited: Promise<number>;
   readonly kill: (signal?: NodeJS.Signals) => void;
   readonly stderrFormat: () => string;
+  /**
+   * Write end of the host's stdin pipe. Held open for the child's life and
+   * never written; kernel close on daemon death is the host's lifeline EOF.
+   */
+  readonly stdin: FileSink;
 };
 
 const spawnHost = (
@@ -109,7 +115,7 @@ const spawnHost = (
             ...process.env,
             AMUX_PLUGIN_HOST_SOCKET: socketPath,
           },
-          stdin: "ignore",
+          stdin: "pipe",
           stdout: "ignore",
           stderr: "pipe",
         }),
@@ -120,6 +126,7 @@ const spawnHost = (
     return {
       pid: child.pid,
       exited: child.exited,
+      stdin: child.stdin,
       kill: (signal?: NodeJS.Signals) => {
         try {
           child.kill(signal);

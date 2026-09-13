@@ -6,7 +6,7 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
-import { Cause, Config, Deferred, Effect, Layer, Option, Scope } from "effect";
+import { Cause, Config, Deferred, Effect, Layer, Option, Scope, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import * as Socket from "effect/unstable/socket/Socket";
@@ -91,7 +91,16 @@ export type PluginHostHandlerFactory = (
   stopped: Deferred.Deferred<void>,
 ) => PluginHostHandlers;
 
-/** Entry: read the socket env, build handlers, race Stop against the server. */
+/**
+ * Completes when the supervisor's stdin write end closes (daemon process gone)
+ * or when a read errors. Same clean exit path as Stop: the server scope closes.
+ */
+const awaitDaemonGone: Effect.Effect<void> = Stream.fromAsyncIterable(
+  Bun.stdin.stream(),
+  (error) => error,
+).pipe(Stream.runDrain, Effect.asVoid, Effect.ignore);
+
+/** Entry: read the socket env, build handlers, race Stop / daemon-loss against the server. */
 export const runPluginHostMain = (
   handlers: PluginHostHandlerFactory = defaultPluginHostHandlers,
 ): void => {
@@ -103,7 +112,11 @@ export const runPluginHostMain = (
       return yield* Effect.die("AMUX_PLUGIN_HOST_SOCKET is required");
     }
     const stopped = yield* Deferred.make<void>();
-    yield* Effect.raceFirst(runPluginHost(socket, handlers(stopped)), Deferred.await(stopped));
+    yield* Effect.raceAll([
+      runPluginHost(socket, handlers(stopped)),
+      Deferred.await(stopped),
+      awaitDaemonGone,
+    ]);
   });
 
   BunRuntime.runMain(Effect.scoped(program).pipe(Effect.provide(BunServices.layer)));
