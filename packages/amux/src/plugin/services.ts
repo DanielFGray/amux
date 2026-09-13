@@ -21,8 +21,7 @@ import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
 import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
 import type { PluginActionRegistration } from "../effect/WorkspaceTransaction.ts";
-import type { ResultCodec } from "../workspace-changes.ts";
-import type { PaneDescriptorRegistration } from "../pane-descriptors.ts";
+import type { PaneTypeRegistration } from "../pane-descriptors.ts";
 import type { ProviderMessageRegistration } from "../session-provider-messages.ts";
 import type { DaemonEventPayload } from "../effect/EventBus.ts";
 import type { ControlError } from "../control.ts";
@@ -120,8 +119,8 @@ export interface DaemonCommandSpec {
   readonly fields: S.Struct.Fields;
   readonly meta: Meta;
   readonly resources: (args: any) => readonly string[];
-  /** Result Schema closed over as a codec via {@link commandResultCodec}. */
-  readonly result?: ResultCodec;
+  /** Result Schema — plugin builders encode through it; apply only checks presence. */
+  readonly result?: S.Top;
 }
 
 export interface DaemonCommandRegistration extends DaemonCommandSpec {
@@ -133,11 +132,16 @@ export interface DaemonCommandRegistration extends DaemonCommandSpec {
   /** New WorkspaceAction variants this command's reducer may push, with the
    *  executors the transaction routes them to. */
   readonly actions?: readonly PluginActionRegistration[];
-  /** Pane-type descriptor codecs this command's plugin owns. */
-  readonly paneDescriptors?: readonly PaneDescriptorRegistration[];
-  /** Session-provider message codecs this command's plugin owns. */
-  readonly providerMessages?: readonly ProviderMessageRegistration[];
+  /** Pane types this command's plugin owns (Schema for builders, Effect check for open-plugin). */
+  readonly paneTypes?: readonly PaneTypeRegistration[];
+  /** Session providers this command's plugin owns (Schema for firstMessage builders). */
+  readonly providers?: readonly ProviderMessageRegistration[];
 }
+
+/** Brand: only {@link defineDaemonCommand} produces a registrable daemon command. */
+export type DefinedDaemonCommand = DaemonCommandRegistration & {
+  readonly __brand: "DefinedDaemonCommand";
+};
 
 /** Per-call capabilities for a session-target daemon command. Read-only plus
  *  the live session surface — mutation of daemon-owned model state goes
@@ -265,7 +269,7 @@ export const registerCommand = <Fields extends S.Struct.Fields>(
  * a plugin actually calls this, never `register` directly.
  */
 export const registerDaemonCommand = (
-  registration: DaemonCommandRegistration,
+  registration: DefinedDaemonCommand,
 ): Effect.Effect<void, never, DaemonCommandsTag | CurrentPlugin | Scope.Scope> =>
   DaemonCommandsTag.pipe(Effect.flatMap((commands) => commands.register(registration)));
 

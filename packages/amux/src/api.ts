@@ -124,11 +124,16 @@ export type { PermissionAnswer, JsonValue } from "./effect/AttachProtocol.ts";
 export { JsonValueSchema } from "./effect/AttachProtocol.ts";
 export {
   definePluginAction,
+  preparePluginCommandApply,
   reducePluginCommand,
   workspaceTransactionPluginsFromRegistrations,
   WorkspaceTransactionError,
 } from "./effect/WorkspaceTransaction.ts";
-export type { PluginActionRegistration } from "./effect/WorkspaceTransaction.ts";
+export type {
+  PluginActionHandle,
+  PluginActionRegistration,
+  PreparedPluginCommand,
+} from "./effect/WorkspaceTransaction.ts";
 export {
   DaemonSessions,
   DaemonSessionsError,
@@ -142,24 +147,41 @@ export { PromptOptionsSchema } from "./effect/SessionRegistry.ts";
 export {
   PLUGIN_REDUCE_TIMEOUT_MS,
   PLUGIN_TILING_TIMEOUT_MS,
+  PLUGIN_DESCRIPTOR_CHECK_TIMEOUT_MS,
   PluginReducerError,
   WorkspaceChangeError,
   WorkspaceChangeSchema,
   WorkspaceReducerAnswerSchema,
-  RefSchema,
-  IdOrRefSchema,
-  commandResultCodec,
-  ownerJsonCodec,
   type WorkspaceChange,
   type WorkspaceReducerAnswer,
   type WorkspaceReadPackage,
-  type ResultCodec,
-  type OwnerJsonCodec,
   type QueuedPluginAction,
 } from "./workspace-changes.ts";
-export { paneDescriptorCodec, type PaneDescriptorRegistration } from "./pane-descriptors.ts";
 export {
-  sessionProviderMessageCodec,
+  SessionIdSchema,
+  PaneIdSchema,
+  NewPaneIdSchema,
+  makeSessionId,
+  makePaneId,
+  type SessionId,
+  type PaneId,
+  type NewPaneId,
+} from "./workspace-ids.ts";
+export {
+  encodeOwner,
+  workspaceChangeBuild,
+  EncodedFirstMessage,
+  type WorkspaceChangeBuild,
+} from "./workspace-change-builders.ts";
+export { defineDaemonCommand } from "./define-daemon-command.ts";
+export {
+  definePaneType,
+  type PaneTypeHandle,
+  type PaneTypeRegistration,
+} from "./pane-descriptors.ts";
+export {
+  defineSessionProvider,
+  type SessionProviderHandle,
   type ProviderMessageRegistration,
 } from "./session-provider-messages.ts";
 export { creationResultSchema } from "./creation-result.ts";

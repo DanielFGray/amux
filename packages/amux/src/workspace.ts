@@ -13,15 +13,19 @@ import {
 import {
   ActionTagSchema,
   PluginReducerError,
-  resolveIdOrRef,
-  resolveRefsInJson,
   WorkspaceChangeError,
   type PluginCommandApply,
   type QueuedPluginAction,
   type WorkspaceReadPackage,
   type WorkspaceReducerAnswer,
 } from "./workspace-changes.ts";
-import { randomUUID } from "node:crypto";
+import {
+  makePaneId,
+  makeSessionId,
+  NewPaneIdPartsFromStringSchema,
+  NewPaneIdSchema,
+  SessionIdSchema,
+} from "./workspace-ids.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { worktreeDirname } from "./git.ts";
 import {
@@ -57,6 +61,7 @@ import {
   swapLayout,
   windowState,
   LayoutFormatError,
+  DescriptorSchema,
   type Layout,
   type PaneContent,
   type PaneRef,
@@ -92,6 +97,7 @@ import {
 import type { TilingAnswer, TilingOperation } from "./tiling-operation.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import { commandName } from "@danielfgray/amux-agent-facts/command-name.ts";
+import { errorMessage } from "./error-message.ts";
 
 export class WorkspaceParseError extends S.TaggedError<WorkspaceParseError>()(
   "WorkspaceParseError",
@@ -223,10 +229,12 @@ function spaceCounter(id: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-/** The pane counter a persisted pane id carries, if any: `s2:p7` -> 7. */
+/** The pane counter a persisted pane id carries, if hierarchical. */
 function paneCounter(id: string): number | null {
-  const match = /:p([1-9]\d*)$/.exec(id);
-  return match ? Number(match[1]) : null;
+  return Option.match(S.decodeOption(NewPaneIdPartsFromStringSchema)(id), {
+    onNone: () => null,
+    onSome: (parts) => parts.number,
+  });
 }
 
 /** Decode the JSON string used by the control and attach protocols. */
@@ -323,7 +331,6 @@ export function workspaceFromSession(
     // else the live maximum. Either way the promise is kept — a closed id is
     // never reissued — because the persisted counter only ever advances.
     const spaceCounters = session.spaces.map((saved) => spaceCounter(saved.id) ?? 0);
-    const paneId = () => allocateId("pane", usedPaneIds);
     return {
       revision: 0,
       state: {
@@ -341,6 +348,32 @@ export function workspaceFromSession(
           Effect.gen(function* () {
             const windows: WorkspaceWindow[] = [];
             const livePaneCounters: number[] = [];
+            // Same mint rule as newPaneId: claimPaneNumber on space state. Seed
+            // the counter past every hierarchical id already present so a closed
+            // id is never reissued (including across adoption rebuilds).
+            let paneState = spaceState();
+            paneState = {
+              ...paneState,
+              nextPane: Math.max(saved.nextPane ?? 1, 1),
+            };
+            for (const id of usedPaneIds) {
+              const parts = Option.getOrUndefined(
+                S.decodeOption(NewPaneIdPartsFromStringSchema)(id),
+              );
+              if (parts !== undefined && parts.space === saved.id) {
+                paneState = {
+                  ...paneState,
+                  nextPane: Math.max(paneState.nextPane, parts.number + 1),
+                };
+              }
+            }
+            const nextAdoptPaneId = () => {
+              const [next, number] = claimPaneNumber(paneState);
+              paneState = next;
+              const id = makePaneId(saved.id, number);
+              usedPaneIds.add(id);
+              return id;
+            };
             for (const window of saved.windows) {
               const live = new Set(
                 window.sessions.filter((agent) => !agent.exited).map((agent) => agent.id),
@@ -365,7 +398,7 @@ export function workspaceFromSession(
                       const panes = window.sessions
                         .filter((agent) => !agent.exited)
                         .map((agent) => ({
-                          id: paneId(),
+                          id: nextAdoptPaneId(),
                           content: paneContentFor(agent),
                         }));
                       return presetLayout(panes, "tiled", panes[0]?.id);
@@ -421,7 +454,12 @@ export function workspaceFromSession(
                   ...numbers.map((number) => number + 1),
                   1,
                 ),
-                nextPane: Math.max(saved.nextPane ?? 1, ...livePaneCounters.map((c) => c + 1), 1),
+                nextPane: Math.max(
+                  paneState.nextPane,
+                  saved.nextPane ?? 1,
+                  ...livePaneCounters.map((c) => c + 1),
+                  1,
+                ),
               },
             };
           }),
@@ -731,6 +769,10 @@ export function buildWorkspaceReadPackage(
   for (const { session } of workspaceSessions(workspace)) {
     sessionsById[session.id] = session;
   }
+  const nextPaneBySpace: { [id: string]: number } = {};
+  for (const space of workspace.spaces) {
+    nextPaneBySpace[space.id] = space.state.nextPane;
+  }
   return {
     activeWindow:
       active === null
@@ -739,6 +781,7 @@ export function buildWorkspaceReadPackage(
     focusedSession: focused?.session ?? null,
     sessionsById,
     agents: agentEntries(workspace),
+    nextPaneBySpace,
   };
 }
 
@@ -836,7 +879,6 @@ const applyWorkspaceCommandOnce = (
       size: viewportSizeForCommand(next, request.size),
     };
     const agentIds = workspaceSessionIds(next);
-    const newAgentId = () => allocateId("agent", agentIds);
     // Readable hierarchical handles: a space is `s3`, a pane is `s3:p7`. The
     // counters live in the model's state so a closed id is never reissued, and a
     // pane carries the space it belongs to, so moving it to another space must
@@ -849,7 +891,7 @@ const applyWorkspaceCommandOnce = (
     const newPaneId = (space: WorkspaceSpace) => {
       const [state, counter] = claimPaneNumber(space.state);
       space.state = state;
-      return `${space.id}:p${counter}`;
+      return makePaneId(space.id, counter);
     };
     const actions: WorkspaceAction[] = [];
     let result: JsonValue | undefined;
@@ -931,49 +973,53 @@ const applyWorkspaceCommandOnce = (
         readonly id?: string;
         readonly firstMessage?: JsonValue;
       },
-    ): PersistedSession => {
-      const component = opts?.provider !== undefined;
-      const shellCmd = opts?.cmd ?? context.shell;
-      const id =
-        opts?.id !== undefined && opts.id.length > 0 && !agentIds.has(opts.id)
-          ? opts.id
-          : newAgentId();
-      agentIds.add(id);
-      const agent = {
-        id,
-        name: opts?.name ?? (component ? `${opts.provider}-agent` : commandName(shellCmd)),
-        cwd: dir,
-        // Both axes: the worker's content is frames a component draws, and it is
-        // an agent. A shell pane is neither, even when the user starts an agent
-        // in it — that one is detected from its foreground process instead.
-        cols: Math.max(1, context.size.cols),
-        rows: Math.max(1, context.size.rows),
-        exited: false,
-        exitCode: null,
-      };
-      if (!component) Object.assign(agent, { cmd: [...shellCmd] });
-      if (opts?.env !== undefined && Object.keys(opts.env).length > 0) {
-        Object.assign(agent, { env: { ...opts.env } });
-      }
-      if (opts?.transient === true) Object.assign(agent, { transient: true });
-      if (opts?.firstMessage !== undefined)
-        Object.assign(agent, { firstMessage: opts.firstMessage });
-      if (component) {
-        Object.assign(agent, {
-          kind: "component" as const,
-          provider: opts.provider,
-          // The spawning plugin names its own worker unambiguously — the
-          // highest-authority identity source presence.ts arbitrates over.
-          declaredAgent: opts.provider,
-        });
-      }
-      target.sessions.push(agent);
-      actions.push({ _tag: "spawn", agent });
-      return agent;
-    };
+    ): Effect.Effect<PersistedSession, WorkspaceChangeError> =>
+      Effect.gen(function* () {
+        const component = opts?.provider !== undefined;
+        const shellCmd = opts?.cmd ?? context.shell;
+        const id = opts?.id !== undefined && opts.id.length > 0 ? opts.id : yield* makeSessionId;
+        if (agentIds.has(id)) {
+          return yield* new WorkspaceChangeError({
+            message: `session id '${id}' already exists`,
+          });
+        }
+        agentIds.add(id);
+        const agent = {
+          id,
+          name: opts?.name ?? (component ? `${opts.provider}-agent` : commandName(shellCmd)),
+          cwd: dir,
+          // Both axes: the worker's content is frames a component draws, and it is
+          // an agent. A shell pane is neither, even when the user starts an agent
+          // in it — that one is detected from its foreground process instead.
+          cols: Math.max(1, context.size.cols),
+          rows: Math.max(1, context.size.rows),
+          exited: false,
+          exitCode: null,
+        };
+        if (!component) Object.assign(agent, { cmd: [...shellCmd] });
+        if (opts?.env !== undefined && Object.keys(opts.env).length > 0) {
+          Object.assign(agent, { env: { ...opts.env } });
+        }
+        if (opts?.transient === true) Object.assign(agent, { transient: true });
+        if (opts?.firstMessage !== undefined)
+          Object.assign(agent, { firstMessage: opts.firstMessage });
+        if (component) {
+          Object.assign(agent, {
+            kind: "component" as const,
+            provider: opts.provider,
+            // The spawning plugin names its own worker unambiguously — the
+            // highest-authority identity source presence.ts arbitrates over.
+            declaredAgent: opts.provider,
+          });
+        }
+        target.sessions.push(agent);
+        actions.push({ _tag: "spawn", agent });
+        return agent;
+      });
     const placeSessionPane = (
       entry: WindowEntry,
       agent: PersistedSession,
+      paneId: string,
       opts?: { readonly mode?: "split" | "replace" },
     ) =>
       Effect.gen(function* () {
@@ -984,7 +1030,7 @@ const applyWorkspaceCommandOnce = (
             return yield* replacePaneContent(target, content);
           }
         }
-        const pane = { id: newPaneId(entry.space), content };
+        const pane = { id: paneId, content };
         entry.window.layout = entry.window.layout.root
           ? splitLayout(entry.window.layout, 0, "row", pane)
           : appendPane(entry.window.layout, pane);
@@ -1024,6 +1070,7 @@ const applyWorkspaceCommandOnce = (
     const placePluginPane = (
       type: string,
       descriptor: JsonValue,
+      paneId: string | undefined,
       opts?: { readonly mode?: "split" | "replace" },
     ) =>
       Effect.gen(function* () {
@@ -1036,13 +1083,14 @@ const applyWorkspaceCommandOnce = (
             descriptor,
           });
         }
+        if (paneId === undefined) return null;
         const target = targetPane();
         if (!target) return null;
-        const { space, window } = target.window;
+        const { window } = target.window;
         const panes = layoutPanes(window.layout.root);
         const at = panes.findIndex((pane) => pane.id === target.pane.id);
         const ref = {
-          id: newPaneId(space),
+          id: paneId,
           content: { kind: "plugin", type, descriptor } satisfies PaneContent,
         };
         if (at === -1) {
@@ -1085,69 +1133,110 @@ const applyWorkspaceCommandOnce = (
       }
       return Result.succeed({ space: foundSpace, window: foundWindow });
     };
-    const bindRef = (
-      refs: Map<string, string>,
-      ref: string | undefined,
-      id: string,
-    ): Result.Result<void, WorkspaceChangeError> => {
-      if (ref === undefined) return Result.void;
-      if (refs.has(ref)) {
-        return Result.fail(new WorkspaceChangeError({ message: `duplicate ref '${ref}'` }));
-      }
-      refs.set(ref, id);
-      return Result.void;
-    };
     const fromChangeResult = <A>(
       value: Result.Result<A, WorkspaceChangeError>,
     ): Effect.Effect<A, WorkspaceChangeError> =>
       Result.isFailure(value) ? Effect.fail(value.failure) : Effect.succeed(value.success);
 
+    const paneIds = workspacePaneIds(next);
+    const proposedIds = new Set<string>();
+
+    const acceptProposedSessionId = (id: string): Effect.Effect<void, WorkspaceChangeError> =>
+      Effect.gen(function* () {
+        yield* S.decodeEffect(SessionIdSchema)(id).pipe(
+          Effect.mapError(
+            (error) =>
+              new WorkspaceChangeError({
+                message: `session id '${id}': ${errorMessage(error)}`,
+              }),
+          ),
+        );
+        if (proposedIds.has(id) || agentIds.has(id)) {
+          return yield* new WorkspaceChangeError({
+            message: `session id '${id}' already exists`,
+          });
+        }
+        proposedIds.add(id);
+      });
+
+    /** A proposed pane id is always a newly minted hierarchical leaf. */
+    const acceptProposedPaneId = (
+      pane: string,
+      space: WorkspaceSpace,
+    ): Effect.Effect<void, WorkspaceChangeError> =>
+      Effect.gen(function* () {
+        yield* S.decodeEffect(NewPaneIdSchema)(pane).pipe(
+          Effect.mapError(
+            (error) =>
+              new WorkspaceChangeError({
+                message: `pane id '${pane}': ${errorMessage(error)}`,
+              }),
+          ),
+        );
+        if (proposedIds.has(pane) || paneIds.has(pane)) {
+          return yield* new WorkspaceChangeError({
+            message: `pane id '${pane}' already exists`,
+          });
+        }
+        const parts = yield* S.decodeEffect(NewPaneIdPartsFromStringSchema)(pane).pipe(
+          Effect.mapError(
+            (error) =>
+              new WorkspaceChangeError({
+                message: `pane id '${pane}': ${errorMessage(error)}`,
+              }),
+          ),
+        );
+        if (parts.space !== space.id) {
+          return yield* new WorkspaceChangeError({
+            message: `pane id '${pane}' does not name space '${space.id}'`,
+          });
+        }
+        if (parts.number < space.state.nextPane) {
+          return yield* new WorkspaceChangeError({
+            message: `pane id '${pane}' is below space '${space.id}' next pane ${space.state.nextPane}`,
+          });
+        }
+        proposedIds.add(pane);
+        space.state = {
+          ...space.state,
+          nextPane: Math.max(space.state.nextPane, parts.number + 1),
+        };
+        paneIds.add(pane);
+      });
+
     const applyPluginChanges = (apply: PluginCommandApply) =>
       Effect.gen(function* () {
-        const refs = new Map<string, string>();
         for (const change of apply.changes) {
           yield* Match.valueTags(change, {
             "session.add": (c) =>
               Effect.gen(function* () {
-                if (refs.has(c.ref)) {
-                  return yield* new WorkspaceChangeError({ message: `duplicate ref '${c.ref}'` });
-                }
                 const entry = yield* fromChangeResult(windowEntryFor(c.target));
-                if (c.id !== undefined && agentIds.has(c.id)) {
-                  return yield* new WorkspaceChangeError({
-                    message: `session id '${c.id}' already exists`,
-                  });
-                }
-                let firstMessage: JsonValue | undefined;
+                yield* acceptProposedSessionId(c.id);
                 if (c.firstMessage !== undefined) {
                   if (c.provider === undefined) {
                     return yield* new WorkspaceChangeError({
                       message: "session.add firstMessage requires a provider",
                     });
                   }
-                  const codec = apply.providerMessages.get(c.provider);
-                  if (codec === undefined) {
+                  if (!apply.providers.has(c.provider)) {
                     return yield* new WorkspaceChangeError({
                       message: `unknown session provider '${c.provider}' for firstMessage`,
                     });
                   }
-                  firstMessage = yield* fromChangeResult(codec(c.firstMessage));
                 }
-                const agent = addSession(entry.window, c.dir, {
+                yield* addSession(entry.window, c.dir, {
                   provider: c.provider,
                   id: c.id,
-                  firstMessage,
+                  firstMessage: c.firstMessage,
                 });
-                refs.set(c.ref, agent.id);
               }),
             "session.place": (c) =>
               Effect.gen(function* () {
                 const entry = yield* fromChangeResult(windowEntryFor(c.target));
-                const sessionId = yield* fromChangeResult(resolveIdOrRef(c.session, refs));
-                const agent = entry.window.sessions.find((item) => item.id === sessionId);
+                const agent = entry.window.sessions.find((item) => item.id === c.session);
                 if (!agent) {
                   return yield* new WorkspaceChangeError({
-                    message: `session '${sessionId}' is not in the target window`,
+                    message: `session '${c.session}' is not in the target window`,
                   });
                 }
                 if (c.mode === "replace") {
@@ -1157,89 +1246,109 @@ const applyWorkspaceCommandOnce = (
                       message: "session.place replace requires a target pane in the named window",
                     });
                   }
-                  const paneId = yield* replacePaneContent(target, paneContentFor(agent));
-                  yield* fromChangeResult(bindRef(refs, c.ref, paneId));
+                  yield* replacePaneContent(target, paneContentFor(agent));
                   return;
                 }
-                const paneId = yield* placeSessionPane(entry, agent, { mode: "split" });
-                yield* fromChangeResult(bindRef(refs, c.ref, paneId));
+                yield* acceptProposedPaneId(c.pane, entry.space);
+                yield* placeSessionPane(entry, agent, c.pane, { mode: "split" });
               }),
             "plugin.place": (c) =>
               Effect.gen(function* () {
-                const codec = apply.paneDescriptors.get(c.type);
-                if (codec === undefined) {
+                if (!apply.paneTypes.has(c.type)) {
                   return yield* new WorkspaceChangeError({
                     message: `unknown pane type '${c.type}'`,
                   });
                 }
-                const sized = yield* fromChangeResult(codec(c.descriptor));
-                const paneId = yield* placePluginPane(c.type, sized, {
-                  mode: c.mode === "replace" ? "replace" : "split",
-                });
+                const sized = yield* S.decodeEffect(DescriptorSchema)(c.descriptor).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new WorkspaceChangeError({
+                        message: `plugin.place descriptor size for '${c.type}': ${errorMessage(error)}`,
+                      }),
+                  ),
+                );
+                if (c.mode === "replace") {
+                  const paneId = yield* placePluginPane(c.type, sized, undefined, {
+                    mode: "replace",
+                  });
+                  if (paneId === null) {
+                    return yield* new WorkspaceChangeError({
+                      message: "plugin.place requires a target pane or window",
+                    });
+                  }
+                  return;
+                }
+                const target = targetPane();
+                if (!target) {
+                  return yield* new WorkspaceChangeError({
+                    message: "plugin.place requires a target pane or window",
+                  });
+                }
+                yield* acceptProposedPaneId(c.pane, target.window.space);
+                const paneId = yield* placePluginPane(c.type, sized, c.pane, { mode: "split" });
                 if (paneId === null) {
                   return yield* new WorkspaceChangeError({
                     message: "plugin.place requires a target pane or window",
                   });
                 }
-                yield* fromChangeResult(bindRef(refs, c.ref, paneId));
               }),
             "action.push": (c) =>
               Effect.gen(function* () {
-                const resolved = yield* fromChangeResult(resolveRefsInJson(c.action, refs));
-                const tagged = S.decodeUnknownResult(ActionTagSchema)(resolved);
+                const tagged = S.decodeUnknownResult(ActionTagSchema)(c.action);
                 if (Result.isFailure(tagged)) {
                   return yield* new WorkspaceChangeError({
                     message: "action.push payload must be an object with _tag",
                   });
                 }
                 const tag = tagged.success._tag;
-                const decode = apply.actionDecoders.get(tag);
-                if (decode === undefined) {
+                if (!apply.actionTags.has(tag)) {
                   return yield* new WorkspaceChangeError({
                     message: `action tag '${tag}' is not registered for this command`,
                   });
                 }
-                const queued = yield* fromChangeResult(decode(resolved));
+                const queued: QueuedPluginAction = { _tag: tag, payload: c.action };
                 actions.push(queued);
               }),
             "result.set": (c) =>
               Effect.gen(function* () {
-                if (apply.resultCodec === undefined) {
+                if (!apply.declaresResult) {
                   return yield* new WorkspaceChangeError({
                     message: "result.set requires a declared result Schema on the command",
                   });
                 }
-                const resolved = yield* fromChangeResult(resolveRefsInJson(c.result, refs));
-                result = yield* fromChangeResult(apply.resultCodec(resolved));
+                result = c.result;
               }),
           });
         }
       });
-    const addWindow = (target: WorkspaceSpace): WorkspaceWindow => {
-      let number: number;
-      [target.state, number] = claimWindowNumber(target.state);
-      const created: WorkspaceWindow = {
-        number,
-        name: null,
-        sessions: [],
-        layout: makeLayout({ root: null }),
-        state: windowState(),
-      };
-      target.windows.push(created);
-      target.state = selectWindowState(
-        target.state,
-        target.windows.map((item) => item.number),
-        number,
-      );
-      const agent = addSession(created, target.dir);
-      const pane = newPaneId(target);
-      created.layout = makeLayout({
-        root: { type: "pane", id: pane, content: paneContentFor(agent), weight: 1 },
-        focus: pane,
+    const addWindow = (
+      target: WorkspaceSpace,
+    ): Effect.Effect<WorkspaceWindow, WorkspaceChangeError> =>
+      Effect.gen(function* () {
+        let number: number;
+        [target.state, number] = claimWindowNumber(target.state);
+        const created: WorkspaceWindow = {
+          number,
+          name: null,
+          sessions: [],
+          layout: makeLayout({ root: null }),
+          state: windowState(),
+        };
+        target.windows.push(created);
+        target.state = selectWindowState(
+          target.state,
+          target.windows.map((item) => item.number),
+          number,
+        );
+        const agent = yield* addSession(created, target.dir);
+        const pane = newPaneId(target);
+        created.layout = makeLayout({
+          root: { type: "pane", id: pane, content: paneContentFor(agent), weight: 1 },
+          focus: pane,
+        });
+        created.state.focus = pane;
+        return created;
       });
-      created.state.focus = pane;
-      return created;
-    };
     const splitAtTarget = (
       axis: "row" | "column",
       agent: PersistedSession,
@@ -1281,7 +1390,7 @@ const applyWorkspaceCommandOnce = (
         // A split inherits the caller's directory, not the space's: an agent
         // delegating from a worktree pane must not land the sibling in the repo
         // root. The flag overrides that default.
-        const agent = addSession(
+        const agent = yield* addSession(
           target.window.window,
           resolve(context.cwd, command.cwd?.trim() || "."),
         );
@@ -1292,15 +1401,19 @@ const applyWorkspaceCommandOnce = (
         break;
       }
       case "pane.open-plugin": {
-        const codec = plugins?.paneDescriptors.get(command.type);
-        if (codec === undefined) {
+        if (plugins === undefined || !plugins.paneTypes.has(command.type)) {
           return yield* new WorkspaceChangeError({
             message: `unknown pane type '${command.type}'`,
           });
         }
-        const sized = codec(command.descriptor);
-        if (Result.isFailure(sized)) return yield* sized.failure;
-        const pane = yield* placePluginPane(command.type, sized.success);
+        const target = targetPane();
+        if (!target) {
+          return yield* new WorkspaceChangeError({
+            message: "pane.open-plugin requires a target pane or window",
+          });
+        }
+        const paneId = newPaneId(target.window.space);
+        const pane = yield* placePluginPane(command.type, command.descriptor, paneId);
         if (pane === null) {
           return yield* new WorkspaceChangeError({
             message: "pane.open-plugin requires a target pane or window",
@@ -1320,7 +1433,7 @@ const applyWorkspaceCommandOnce = (
           command.title !== undefined ? { ...withEnv, name: command.title } : withEnv;
         const sessionOpts =
           command.transient === true ? { ...withTitle, transient: true as const } : withTitle;
-        const agent = addSession(
+        const agent = yield* addSession(
           target.window.window,
           resolve(context.cwd, command.cwd?.trim() || "."),
           sessionOpts,
@@ -1698,7 +1811,7 @@ const applyWorkspaceCommandOnce = (
       case "window.new": {
         const target = space();
         if (target) {
-          const created = addWindow(target);
+          const created = yield* addWindow(target);
           const pane = layoutRefs(created.layout)[0]!;
           result = {
             window: created.number,
@@ -1905,7 +2018,7 @@ const applyWorkspaceCommandOnce = (
           next.spaces.map((item) => item.id),
           created.id,
         );
-        const window = addWindow(created);
+        const window = yield* addWindow(created);
         const pane = layoutRefs(window.layout)[0]!;
         result = {
           space: created.id,
@@ -2294,13 +2407,6 @@ function removeSpace(
     space.id,
     at,
   );
-}
-
-function allocateId(prefix: string, used: Set<string>): string {
-  const id = `${prefix}-${randomUUID()}`;
-  if (used.has(id)) throw new Error(`generated duplicate ${prefix} id`);
-  used.add(id);
-  return id;
 }
 
 /** The content a session's pane shows: a pty view onto the session, or a

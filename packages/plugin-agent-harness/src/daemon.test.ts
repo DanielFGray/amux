@@ -14,6 +14,7 @@ const emptyReads = (activeWindow: WorkspaceReadPackage["activeWindow"]): Workspa
   focusedSession: null,
   sessionsById: {},
   agents: [],
+  nextPaneBySpace: activeWindow === null ? {} : { [activeWindow.space]: 1 },
 });
 
 const context = (pane?: string): WorkspaceCommandContext => {
@@ -64,6 +65,10 @@ testEffect("agent.new from a calling pane replaces; --split forces a sibling", (
     });
     expect(replace.changes.find((c) => c._tag === "session.place")).toMatchObject({
       mode: "replace",
+    });
+    expect(replace.changes.find((c) => c._tag === "session.place")).not.toHaveProperty("pane");
+    expect(replace.changes.find((c) => c._tag === "result.set")).toMatchObject({
+      result: { pane: "pane-a" },
     });
     const split = yield* agentNew.reduce!({
       command: runtimeCommand("agent.new", { split: true }),
@@ -121,5 +126,18 @@ testEffect("agent.new reduce is an Effect (contract smoke)", () =>
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
     });
     expect(answer.changes.length).toBeGreaterThan(0);
+  }),
+);
+
+testEffect("agent.new rejects undecodable fields before reduce body", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      agentNew.reduce!({
+        command: runtimeCommand("agent.new", { split: "yes" }),
+        context: context(),
+        reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
+      }),
+    );
+    expect(result._tag).toBe("Failure");
   }),
 );

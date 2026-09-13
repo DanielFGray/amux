@@ -1,26 +1,16 @@
-import { expect } from "bun:test";
 import { Effect, Layer, Ref, Schema as S } from "effect";
-import { testEffect } from "./test-effect.ts";
+import { expect } from "bun:test";
+import { testEffect } from "./testing.ts";
 import { DaemonSessions, type DaemonSessionsService } from "./daemon-sessions.ts";
-import { PromptOptionsSchema } from "./effect/SessionRegistry.ts";
-import { PersistedSessionSchema } from "./session.ts";
-import { CommandError, type RuntimeCommand } from "./commands.ts";
-import {
-  type DaemonCommandRegistration,
-  type DaemonSessionCommandContext,
-} from "./plugin/services.ts";
-import { definePluginAction } from "./effect/WorkspaceTransaction.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
+import { defineDaemonCommand, definePluginAction } from "./api.ts";
+import { CommandError } from "./commands.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
 
-const samplePersisted = {
-  id: "s1",
-  name: "s1",
-  cmd: ["echo", "hi"],
-  cols: 80,
-  rows: 24,
-  exited: false,
-  exitCode: null,
+type Tracked = {
+  readonly prompted: readonly { readonly target: string; readonly text: string }[];
+  readonly captured: readonly string[];
+  readonly messages: readonly { readonly id: string; readonly message: JsonValue }[];
 };
 
 const emptySnapshot: WorkspaceSnapshot = {
@@ -28,34 +18,6 @@ const emptySnapshot: WorkspaceSnapshot = {
   spaces: [],
   state: { activeSpace: null, nextSpace: 1 },
 };
-
-testEffect("PersistedSessionSchema round-trips", () =>
-  Effect.gen(function* () {
-    const encoded = yield* S.encodeEffect(PersistedSessionSchema)(samplePersisted);
-    const decoded = yield* S.decodeEffect(PersistedSessionSchema)(encoded);
-    expect(decoded).toEqual(samplePersisted);
-  }),
-);
-
-testEffect("PromptOptionsSchema round-trips", () =>
-  Effect.gen(function* () {
-    const value = {
-      id: "turn-1",
-      delivery: "steer" as const,
-      resume: true,
-      replace: "old",
-    };
-    const encoded = yield* S.encodeEffect(PromptOptionsSchema)(value);
-    const decoded = yield* S.decodeEffect(PromptOptionsSchema)(encoded);
-    expect(decoded).toEqual(value);
-  }),
-);
-
-interface Tracked {
-  prompted: { target: string; text: string }[];
-  captured: string[];
-  messages: { id: string; message: JsonValue }[];
-}
 
 const trackingLayer = (state: Ref.Ref<Tracked>) => {
   const service: DaemonSessionsService = {
@@ -78,9 +40,9 @@ const trackingLayer = (state: Ref.Ref<Tracked>) => {
   return Layer.succeed(DaemonSessions, service);
 };
 
-const probePromptCommand: DaemonCommandRegistration = {
+const probePromptCommand = defineDaemonCommand({
   tag: "probe.prompt",
-  fields: { target: S.String, text: S.String },
+  fields: S.Struct({ target: S.String, text: S.String }),
   meta: {
     desc: "probe",
     group: "test",
@@ -88,11 +50,8 @@ const probePromptCommand: DaemonCommandRegistration = {
     exposure: "human",
   },
   resources: () => [],
-  run: (command: RuntimeCommand, _context: DaemonSessionCommandContext) =>
+  run: (command, _context) =>
     Effect.gen(function* () {
-      if (typeof command.target !== "string" || typeof command.text !== "string") {
-        return yield* new CommandError({ message: "bad args" });
-      }
       const sessions = yield* DaemonSessions;
       yield* sessions
         .prompt(command.target, command.text)
@@ -102,7 +61,7 @@ const probePromptCommand: DaemonCommandRegistration = {
         .pipe(Effect.mapError((error) => new CommandError({ message: error.message })));
       return screen;
     }),
-};
+});
 
 const ProbeMessage = S.TaggedStruct("probe.message", {
   agent: S.String,
@@ -126,7 +85,9 @@ testEffect("session-target command reaches prompt and capture through DaemonSess
       captured: [],
       messages: [],
     });
-    const result = yield* probePromptCommand.run!(
+    const run = probePromptCommand.run;
+    if (run === undefined) return yield* new CommandError({ message: "missing run" });
+    const result = yield* run(
       { _tag: "probe.prompt", target: "a1", text: "hello" },
       { snapshot: emptySnapshot },
     ).pipe(Effect.provide(trackingLayer(state)));

@@ -1,4 +1,4 @@
-import { Effect, Layer, Option, Result, Schema as S } from "effect";
+import { Effect, Layer, Option, Schema as S } from "effect";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import {
   configHome,
@@ -12,36 +12,31 @@ import {
   CommandError,
   DaemonCommandsTag,
   DaemonSessions,
-  JsonValueSchema,
   ProcessStateSchema,
   WorkspaceTransactionError,
-  commandResultCodec,
   creationResultSchema,
+  defineDaemonCommand,
   definePlugin,
   definePluginAction,
+  defineSessionProvider,
+  encodeOwner,
+  makeSessionId,
   registerDaemonCommand,
-  sessionProviderMessageCodec,
-  type DaemonCommandRegistration,
   type PluginDefinition,
-  type JsonValue,
   type PromptOptions,
 } from "@danielfgray/amux";
 import { PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
 import { NativeControl } from "./native-control.ts";
 
-const encodeNativeControl = (
-  message: NativeControl,
-): Effect.Effect<JsonValue, WorkspaceTransactionError> =>
-  Effect.suspend(() => {
-    const encoded = S.encodeResult(NativeControl)(message);
-    if (Result.isFailure(encoded)) {
-      return Effect.fail(new WorkspaceTransactionError({ message: "NativeControl encode failed" }));
-    }
-    const wire = S.decodeUnknownResult(JsonValueSchema)(encoded.success);
-    if (Result.isFailure(wire)) {
-      return Effect.fail(new WorkspaceTransactionError({ message: "NativeControl encode failed" }));
-    }
-    return Effect.succeed(wire.success);
+const encodeNativeControl = encodeOwner(NativeControl, "NativeControl");
+
+const deliverNativeControl = (agent: string, control: NativeControl) =>
+  Effect.gen(function* () {
+    const sessions = yield* DaemonSessions;
+    const message = yield* encodeNativeControl(control).pipe(
+      Effect.mapError((error) => new WorkspaceTransactionError({ message: error.message })),
+    );
+    yield* sessions.message(agent, message);
   });
 
 const sessionTarget = { target: S.String };
@@ -76,9 +71,11 @@ const AgentPermissionAction = S.TaggedStruct("agent.permission", {
   }),
 });
 
-const agentNew = {
+const nativeProvider = defineSessionProvider("native", NativeControl);
+
+const agentNew = defineDaemonCommand({
   tag: "agent.new",
-  fields: {
+  fields: S.Struct({
     provider: S.optionalKey(S.String),
     prompt: S.optionalKey(S.String),
     // Force a sibling split even when invoked from a pane (AMUX_PANE_ID /
@@ -87,76 +84,87 @@ const agentNew = {
     /** Resume this prior agent id: recreate it in the workspace so its
      *  conversation + AgentLog (UI transcript) both come back. */
     resumeFrom: S.optionalKey(S.String),
-  },
+  }),
   meta: agentPluginMeta("start a coding agent", "workspace", "agent"),
   resources: (args) =>
-    [args.provider, args.resumeFrom].flatMap((value) => (typeof value === "string" ? [value] : [])),
-  result: commandResultCodec(creationResultSchema("agent.new")),
-  providerMessages: [sessionProviderMessageCodec("native", NativeControl)],
-  reduce: ({ command, context, reads }) =>
-    Effect.sync(() => {
+    [args.provider, args.resumeFrom].flatMap((value) => (value !== undefined ? [value] : [])),
+  result: creationResultSchema("agent.new"),
+  providers: [nativeProvider],
+  reduce: ({ command, context, reads, build }) =>
+    Effect.gen(function* () {
       const target = reads.activeWindow;
-      if (!target) return { changes: [] };
+      if (target === null) return build.answer([]);
       // This plugin registers the tag and is the only spawn provider it ever
       // names, so an omitted provider always means its own worker — not a
       // choice callers outside the palette (the CLI, an agent script) have any
       // way to make correctly, since providers are a client-local registry.
-      const provider = typeof command.provider === "string" ? command.provider : "native";
+      const provider = command.provider ?? "native";
       const resumeFrom =
-        typeof command.resumeFrom === "string" && command.resumeFrom.length > 0
+        command.resumeFrom !== undefined && command.resumeFrom.length > 0
           ? command.resumeFrom
           : undefined;
       // Same id → same AgentLog + project-store conversation. Copying onto a
       // fresh id left the chat pane blank (transcript is the durable log).
       if (resumeFrom !== undefined && reads.sessionsById[resumeFrom] !== undefined) {
-        return { changes: [] };
+        return build.answer([]);
       }
-      // session.add stores firstMessage; ResumeAgent delivers it once after
-      // spawn and clears the field (daemon.ts ResumeAgent).
-      const firstMessage: JsonValue | undefined =
-        typeof command.prompt === "string"
-          ? { _tag: "agent.prompt", text: command.prompt }
-          : undefined;
       // From inside a pane (CLI / shell with AMUX_PANE_ID, or the focused leaf
       // from the client): replace that leaf and keep the displaced PTY alive.
       // Palette / remote call without a caller: split. `split: true` always splits.
       // Cite: packages/editor/src/daemon.ts editorOpen.
-      const mode =
-        command.split === true ? "split" : context.pane !== undefined ? "replace" : "split";
-      const add = {
-        _tag: "session.add" as const,
-        ref: "session",
-        target: { space: target.space, window: target.window },
-        dir: target.dir,
-        provider,
-      };
-      if (resumeFrom !== undefined) Object.assign(add, { id: resumeFrom });
-      if (firstMessage !== undefined) Object.assign(add, { firstMessage });
-      return {
-        changes: [
+      const sessionId = resumeFrom ?? (yield* makeSessionId);
+      const windowTarget = { space: target.space, window: target.window };
+      const firstMessage =
+        command.prompt !== undefined
+          ? yield* nativeProvider.message({
+              _tag: "agent.prompt" as const,
+              text: command.prompt,
+            })
+          : undefined;
+      const add =
+        firstMessage === undefined
+          ? build.sessionAdd({
+              id: sessionId,
+              target: windowTarget,
+              dir: target.dir,
+              provider,
+            })
+          : build.sessionAdd({
+              id: sessionId,
+              target: windowTarget,
+              dir: target.dir,
+              provider,
+              firstMessage,
+            });
+      if (command.split !== true && context.pane !== undefined) {
+        const pane = context.pane;
+        return build.answer([
           add,
-          {
-            _tag: "session.place" as const,
-            ref: "pane",
-            target: { space: target.space, window: target.window },
-            session: { _tag: "WorkspaceRef" as const, ref: "session" },
-            mode,
-          },
-          {
-            _tag: "result.set" as const,
-            result: {
-              session: { _tag: "WorkspaceRef", ref: "session" },
-              pane: { _tag: "WorkspaceRef", ref: "pane" },
-            } satisfies JsonValue,
-          },
-        ],
-      };
+          build.sessionPlace({
+            mode: "replace",
+            target: windowTarget,
+            session: sessionId,
+          }),
+          yield* build.result({ session: sessionId, pane }),
+        ]);
+      }
+      const pane = build.nextPaneId(target.space);
+      return build.answer([
+        add,
+        build.sessionPlace({
+          mode: "split",
+          pane,
+          target: windowTarget,
+          session: sessionId,
+        }),
+        yield* build.result({ session: sessionId, pane }),
+      ]);
     }),
-} satisfies DaemonCommandRegistration;
+});
 
-const agentPrompt = {
+const agentPrompt = defineDaemonCommand({
   tag: "agent.prompt",
-  fields: {
+  fields: S.Struct({
     target: S.String,
     text: S.String,
     id: S.optionalKey(S.String),
@@ -166,226 +174,187 @@ const agentPrompt = {
     wait: S.optionalKey(S.Boolean),
     until: S.optionalKey(ProcessStateSchema),
     timeout: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
-  },
+  }),
   meta: agentPluginMeta("send a prompt to an agent", "session", "agent"),
-  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
+  resources: (args) => [args.target],
   run: (command, _context) =>
     Effect.gen(function* () {
-      if (typeof command.target !== "string" || typeof command.text !== "string")
-        return yield* new CommandError({ message: "agent.prompt requires target and text" });
       const options: PromptOptionsDraft = {};
-      if (typeof command.id === "string") options.id = command.id;
+      if (command.id !== undefined) options.id = command.id;
       if (command.delivery === "steer" || command.delivery === "queue")
         options.delivery = command.delivery;
-      if (typeof command.resume === "boolean") options.resume = command.resume;
-      if (typeof command.replace === "string") options.replace = command.replace;
+      if (command.resume !== undefined) options.resume = command.resume;
+      if (command.replace !== undefined) options.replace = command.replace;
       const sessions = yield* DaemonSessions;
       return yield* sessions
         .prompt(command.target, command.text, options)
         .pipe(Effect.mapError((error) => new CommandError({ message: error.message })));
     }),
-} satisfies DaemonCommandRegistration;
+});
 
-const agentWatch = {
+const agentWatch = defineDaemonCommand({
   tag: "agent.watch",
-  fields: {
+  fields: S.Struct({
     target: S.String,
     after: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
-  },
+  }),
   meta: agentPluginMeta("stream durable agent events from a replay cursor", "session", "agent"),
-  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
+  resources: (args) => [args.target],
   // The CLI consumes this declaration to parse its arguments, then follows
   // the core-owned event cursor RPC. A batch invocation has no stream return.
   run: () => Effect.void,
-} satisfies DaemonCommandRegistration;
+});
 
-const agentInterrupt = {
+const interruptAction = definePluginAction({
   tag: "agent.interrupt",
-  fields: { ...sessionTarget, reason: S.optionalKey(S.String) },
-  meta: agentPluginMeta("interrupt an agent turn", "workspace", "human"),
-  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  reduce: ({ command }) =>
-    Effect.sync(() => {
-      if (typeof command.target !== "string") return { changes: [] };
-      const action: JsonValue =
-        typeof command.reason === "string"
-          ? { _tag: "agent.interrupt", agent: command.target, reason: command.reason }
-          : { _tag: "agent.interrupt", agent: command.target };
-      return {
-        changes: [{ _tag: "action.push" as const, action }],
-      };
-    }),
-  actions: [
-    definePluginAction({
-      tag: "agent.interrupt",
-      payload: AgentInterruptAction,
-      execute: (action) => {
-        const control: NativeControl =
-          action.reason === undefined
-            ? { _tag: "agent.interrupt" }
-            : { _tag: "agent.interrupt", reason: action.reason };
-        return Effect.gen(function* () {
-          const sessions = yield* DaemonSessions;
-          const message = yield* encodeNativeControl(control);
-          yield* sessions.message(action.agent, message);
-        });
-      },
-    }),
-  ],
-} satisfies DaemonCommandRegistration;
+  payload: AgentInterruptAction,
+  execute: (action) => {
+    const control: NativeControl =
+      action.reason === undefined
+        ? { _tag: "agent.interrupt" }
+        : { _tag: "agent.interrupt", reason: action.reason };
+    return deliverNativeControl(action.agent, control);
+  },
+});
 
-const agentCompact = {
+const agentInterrupt = defineDaemonCommand({
+  tag: "agent.interrupt",
+  fields: S.Struct({ ...sessionTarget, reason: S.optionalKey(S.String) }),
+  meta: agentPluginMeta("interrupt an agent turn", "workspace", "human"),
+  resources: (args) => [args.target],
+  actions: [interruptAction],
+  reduce: ({ command, build }) =>
+    Effect.gen(function* () {
+      const action =
+        command.reason === undefined
+          ? { _tag: "agent.interrupt" as const, agent: command.target }
+          : { _tag: "agent.interrupt" as const, agent: command.target, reason: command.reason };
+      return build.answer([yield* interruptAction.push(action)]);
+    }),
+});
+
+const compactAction = definePluginAction({
   tag: "agent.compact",
-  fields: {
+  payload: AgentCompactAction,
+  execute: (action) => {
+    const control: NativeControl =
+      action.instructions === undefined
+        ? { _tag: "agent.compact" }
+        : { _tag: "agent.compact", instructions: action.instructions };
+    return deliverNativeControl(action.agent, control);
+  },
+});
+
+const agentCompact = defineDaemonCommand({
+  tag: "agent.compact",
+  fields: S.Struct({
     ...sessionTarget,
     instructions: S.optionalKey(S.String),
-  },
+  }),
   meta: agentPluginMeta(
     "compact the native agent conversation to free context",
     "workspace",
     "human",
   ),
-  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  reduce: ({ command }) =>
-    Effect.sync(() => {
-      if (typeof command.target !== "string") return { changes: [] };
-      const action: JsonValue =
-        typeof command.instructions === "string"
-          ? {
-              _tag: "agent.compact",
+  resources: (args) => [args.target],
+  actions: [compactAction],
+  reduce: ({ command, build }) =>
+    Effect.gen(function* () {
+      const action =
+        command.instructions === undefined
+          ? { _tag: "agent.compact" as const, agent: command.target }
+          : {
+              _tag: "agent.compact" as const,
               agent: command.target,
               instructions: command.instructions,
-            }
-          : { _tag: "agent.compact", agent: command.target };
-      return {
-        changes: [{ _tag: "action.push" as const, action }],
-      };
+            };
+      return build.answer([yield* compactAction.push(action)]);
     }),
-  actions: [
-    definePluginAction({
-      tag: "agent.compact",
-      payload: AgentCompactAction,
-      execute: (action) => {
-        const control: NativeControl =
-          action.instructions === undefined
-            ? { _tag: "agent.compact" }
-            : { _tag: "agent.compact", instructions: action.instructions };
-        return Effect.gen(function* () {
-          const sessions = yield* DaemonSessions;
-          const message = yield* encodeNativeControl(control);
-          yield* sessions.message(action.agent, message);
-        });
-      },
-    }),
-  ],
-} satisfies DaemonCommandRegistration;
+});
 
-const agentPermission = {
+const permissionAction = definePluginAction({
   tag: "agent.permission",
-  fields: {
+  payload: AgentPermissionAction,
+  execute: (action) => {
+    const control: NativeControl =
+      action.answer.feedback === undefined
+        ? {
+            _tag: "agent.permission",
+            request: action.answer.request,
+            decision: action.answer.decision,
+          }
+        : {
+            _tag: "agent.permission",
+            request: action.answer.request,
+            decision: action.answer.decision,
+            feedback: action.answer.feedback,
+          };
+    return deliverNativeControl(action.agent, control);
+  },
+});
+
+const agentPermission = defineDaemonCommand({
+  tag: "agent.permission",
+  fields: S.Struct({
     ...sessionTarget,
     request: S.String,
     decision: PermissionDecisionSchema,
     feedback: S.optionalKey(S.String),
-  },
+  }),
   meta: agentPluginMeta("answer an agent's permission request", "workspace", "human"),
-  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  reduce: ({ command }) =>
-    Effect.sync(() => {
-      if (
-        typeof command.target !== "string" ||
-        typeof command.request !== "string" ||
-        (command.decision !== "once" &&
-          command.decision !== "always" &&
-          command.decision !== "reject")
-      ) {
-        return { changes: [] };
-      }
-      const answer: JsonValue =
-        typeof command.feedback === "string"
-          ? {
+  resources: (args) => [args.target],
+  actions: [permissionAction],
+  reduce: ({ command, build }) =>
+    Effect.gen(function* () {
+      const answer =
+        command.feedback === undefined
+          ? { request: command.request, decision: command.decision }
+          : {
               request: command.request,
               decision: command.decision,
               feedback: command.feedback,
-            }
-          : { request: command.request, decision: command.decision };
-      return {
-        changes: [
-          {
-            _tag: "action.push" as const,
-            action: {
-              _tag: "agent.permission",
-              agent: command.target,
-              answer,
-            },
-          },
-        ],
-      };
+            };
+      return build.answer([
+        yield* permissionAction.push({
+          _tag: "agent.permission",
+          agent: command.target,
+          answer,
+        }),
+      ]);
     }),
-  actions: [
-    definePluginAction({
-      tag: "agent.permission",
-      payload: AgentPermissionAction,
-      execute: (action) => {
-        const control: NativeControl =
-          action.answer.feedback === undefined
-            ? {
-                _tag: "agent.permission",
-                request: action.answer.request,
-                decision: action.answer.decision,
-              }
-            : {
-                _tag: "agent.permission",
-                request: action.answer.request,
-                decision: action.answer.decision,
-                feedback: action.answer.feedback,
-              };
-        return Effect.gen(function* () {
-          const sessions = yield* DaemonSessions;
-          const message = yield* encodeNativeControl(control);
-          yield* sessions.message(action.agent, message);
-        });
-      },
-    }),
-  ],
-} satisfies DaemonCommandRegistration;
+});
 
-const agentList = {
+const agentList = defineDaemonCommand({
   tag: "agent.list",
-  fields: {},
+  fields: S.Struct({}),
   meta: agentPluginMeta("list agents and where they live", "workspace", "agent"),
   resources: () => [],
-  result: commandResultCodec(AgentListResultSchema),
-  reduce: ({ reads }) =>
-    Effect.succeed({
-      changes: [{ _tag: "result.set" as const, result: reads.agents }],
+  result: AgentListResultSchema,
+  reduce: ({ reads, build }) =>
+    Effect.gen(function* () {
+      return build.answer([yield* build.result(reads.agents)]);
     }),
-} satisfies DaemonCommandRegistration;
+});
 
-const agentGet = {
+const agentGet = defineDaemonCommand({
   tag: "agent.get",
-  fields: { target: S.String },
+  fields: S.Struct({ target: S.String }),
   meta: agentPluginMeta("one agent, by its session id", "workspace", "agent"),
-  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  result: commandResultCodec(AgentGetResultSchema),
-  reduce: ({ command, reads }) =>
-    Effect.sync(() => {
-      const target = typeof command.target === "string" ? command.target : "";
-      const agent = reads.agents.find((entry) => entry.id === target) ?? null;
-      return {
-        changes: [{ _tag: "result.set" as const, result: agent }],
-      };
+  resources: (args) => [args.target],
+  result: AgentGetResultSchema,
+  reduce: ({ command, reads, build }) =>
+    Effect.gen(function* () {
+      const agent = reads.agents.find((entry) => entry.id === command.target) ?? null;
+      return build.answer([yield* build.result(agent)]);
     }),
-} satisfies DaemonCommandRegistration;
+});
 
-const agentLogs = {
+const agentLogs = defineDaemonCommand({
   tag: "agent.logs",
-  fields: { target: S.String, lines: S.optionalKey(S.Int) },
+  fields: S.Struct({ target: S.String, lines: S.optionalKey(S.Int) }),
   meta: agentPluginMeta("read the harness durable log", "session", "agent"),
-  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
+  resources: (args) => [args.target],
   run: (command, context) => {
-    if (typeof command.target !== "string")
-      return Effect.fail(new CommandError({ message: "agent.logs requires target" }));
     const found = context.snapshot.spaces
       .flatMap((space) => space.windows.map((window) => ({ space, window })))
       .flatMap(({ space, window }) =>
@@ -396,8 +365,7 @@ const agentLogs = {
       return Effect.fail(
         new CommandError({ message: `session '${command.target}' does not exist` }),
       );
-    const lines =
-      typeof command.lines === "number" && Number.isSafeInteger(command.lines) ? command.lines : 50;
+    const lines = command.lines !== undefined ? command.lines : 50;
     // A component session's declaredAgent is a spawn-provider id (this
     // plugin's own "native", or another plugin's), not a claim that some
     // real CLI process wrote a log on disk — reading one by that name would
@@ -425,9 +393,9 @@ const agentLogs = {
       ),
     );
   },
-} satisfies DaemonCommandRegistration;
+});
 
-export const agentHarnessDaemonCommands: readonly DaemonCommandRegistration[] = [
+export const agentHarnessDaemonCommands = [
   agentNew,
   agentPrompt,
   agentWatch,
@@ -437,7 +405,7 @@ export const agentHarnessDaemonCommands: readonly DaemonCommandRegistration[] = 
   agentList,
   agentGet,
   agentLogs,
-];
+] as const;
 
 export const agentHarnessDaemonPlugin: PluginDefinition = definePlugin({
   id: "amux.agent-harness.daemon",

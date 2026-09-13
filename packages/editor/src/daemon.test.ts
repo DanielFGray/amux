@@ -12,6 +12,7 @@ const emptyReads = (activeWindow: WorkspaceReadPackage["activeWindow"]): Workspa
   focusedSession: null,
   sessionsById: {},
   agents: [],
+  nextPaneBySpace: activeWindow === null ? {} : { [activeWindow.space]: 1 },
 });
 
 const context = (pane?: string): WorkspaceCommandContext => {
@@ -31,19 +32,17 @@ testEffect("editor.open splits when there is no calling pane", () =>
       context: context(),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp/project" }),
     });
-    expect(answer.changes).toEqual([
-      {
-        _tag: "plugin.place",
-        ref: "pane",
-        type: "amux.editor",
-        descriptor: {},
-        mode: "split",
-      },
-      {
-        _tag: "result.set",
-        result: { pane: { _tag: "WorkspaceRef", ref: "pane" } },
-      },
-    ]);
+    expect(answer.changes[0]).toMatchObject({
+      _tag: "plugin.place",
+      pane: "space-a:p1",
+      type: "amux.editor",
+      descriptor: {},
+      mode: "split",
+    });
+    expect(answer.changes[1]).toMatchObject({
+      _tag: "result.set",
+      result: { pane: "space-a:p1" },
+    });
   }),
 );
 
@@ -55,6 +54,11 @@ testEffect("editor.open replaces when invoked from a pane", () =>
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp/project" }),
     });
     expect(answer.changes[0]).toMatchObject({ _tag: "plugin.place", mode: "replace" });
+    expect(answer.changes[0]).not.toHaveProperty("pane");
+    expect(answer.changes[1]).toMatchObject({
+      _tag: "result.set",
+      result: { pane: "pane-a" },
+    });
   }),
 );
 

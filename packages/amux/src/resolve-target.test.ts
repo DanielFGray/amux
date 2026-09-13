@@ -15,7 +15,7 @@ import {
 } from "./workspace.ts";
 import type { DaemonCommandRegistration } from "./plugin/services.ts";
 import {
-  reducePluginCommand,
+  preparePluginCommandApply,
   workspaceTransactionPluginsFromRegistrations,
 } from "./effect/WorkspaceTransaction.ts";
 
@@ -29,7 +29,7 @@ const pluginApplyFor = (
   context: WorkspaceCommandContext,
 ) =>
   run(
-    reducePluginCommand(
+    preparePluginCommandApply(
       workspaceTransactionPluginsFromRegistrations(regs),
       cmd,
       workspace,
@@ -43,11 +43,19 @@ const applyWorkspaceCommand = (
   context: Parameters<typeof applyWorkspaceCommandWithPath>[2],
   regs?: readonly DaemonCommandRegistration[],
 ): WorkspaceMutation => {
-  const plugins =
+  const prepared =
     regs === undefined
       ? undefined
       : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
-  return run(applyWorkspaceCommandWithPath(workspace, cmd, context, path, plugins));
+  return run(
+    applyWorkspaceCommandWithPath(
+      workspace,
+      prepared?.command ?? cmd,
+      context,
+      path,
+      prepared?.apply,
+    ),
+  );
 };
 
 const editorPlugins = editorDaemonCommands;

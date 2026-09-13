@@ -12,7 +12,6 @@ import {
   Schedule,
   Scope,
   Option,
-  Result,
 } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { DaemonModel } from "./DaemonModel.ts";
@@ -34,15 +33,15 @@ import {
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
 import {
   PLUGIN_REDUCE_TIMEOUT_MS,
-  WorkspaceChangeError,
+  PLUGIN_DESCRIPTOR_CHECK_TIMEOUT_MS,
+  PluginReducerError,
   WorkspaceReducerAnswerSchema,
-  type ActionDecode,
-  type OwnerJsonCodec,
   type PluginCommandApply,
   type QueuedPluginAction,
-  type ResultCodec,
+  type WorkspaceChange,
 } from "../workspace-changes.ts";
-import { JsonValueSchema, type JsonValue } from "./AttachProtocol.ts";
+import { encodeOwner } from "../workspace-change-builders.ts";
+import { type JsonValue } from "./AttachProtocol.ts";
 import { nodePath } from "./node-path.ts";
 import { COMMAND_META, isCoreCommand, type Command, type RuntimeCommand } from "../commands.ts";
 import type { PaneEntry } from "../read-model.ts";
@@ -148,83 +147,68 @@ export const buildWorkspaceTransactionSessions = <HostError, KillError>(
   ),
 });
 
-export interface PluginActionRegistration {
+export type PluginActionHandle<A> = {
   readonly tag: string;
-  /**
-   * Sync decode→encode at apply time. Returns the queued Encoded form so
-   * {@link run} can decode once (Schemas with transforms stay correct).
-   */
-  readonly decode: ActionDecode;
+  readonly push: (value: A) => Effect.Effect<WorkspaceChange, PluginReducerError>;
   /** Run after the transaction: decode the queued payload once, then execute. */
   readonly run: (
     action: QueuedPluginAction,
   ) => Effect.Effect<void, WorkspaceTransactionError, DaemonSessions>;
-}
+};
+
+/** Registration entry — tag + run for the transaction; reducer closes over push. */
+export type PluginActionRegistration = {
+  readonly tag: string;
+  readonly run: PluginActionHandle<unknown>["run"];
+};
 
 /**
- * Pair a payload Schema with its executor. The returned registration stores
- * only closures — no `Schema<unknown>` and no cast.
+ * Pair a payload Schema with its executor. Apply only checks the tag; run
+ * decodes through the Schema. The handle's `push` encodes typed values for reducers.
  */
 export const definePluginAction = <A, E>(reg: {
   readonly tag: string;
   readonly payload: S.Codec<A>;
   readonly execute: (action: A) => Effect.Effect<void, E, DaemonSessions>;
-}): PluginActionRegistration => ({
-  tag: reg.tag,
-  decode: (encoded) => {
-    const decoded = S.decodeUnknownResult(reg.payload)(encoded);
-    if (Result.isFailure(decoded)) {
-      return Result.fail(
-        new WorkspaceChangeError({
-          message: `action.push '${reg.tag}': ${describe(decoded.failure)}`,
-        }),
-      );
-    }
-    const reencoded = S.encodeUnknownResult(reg.payload)(decoded.success);
-    if (Result.isFailure(reencoded)) {
-      return Result.fail(
-        new WorkspaceChangeError({
-          message: `action.push '${reg.tag}': encode failed`,
-        }),
-      );
-    }
-    const wire = S.decodeUnknownResult(JsonValueSchema)(reencoded.success);
-    if (Result.isFailure(wire)) {
-      return Result.fail(
-        new WorkspaceChangeError({
-          message: `action.push '${reg.tag}': ${describe(wire.failure)}`,
-        }),
-      );
-    }
-    return Result.succeed({ _tag: reg.tag, payload: wire.success });
-  },
-  run: (queued) =>
-    Effect.gen(function* () {
-      const decoded = S.decodeUnknownResult(reg.payload)(queued.payload);
-      if (Result.isFailure(decoded)) {
-        return yield* new WorkspaceTransactionError({
-          message: `action '${reg.tag}': ${describe(decoded.failure)}`,
-        });
-      }
-      yield* reg.execute(decoded.success).pipe(Effect.mapError(transactionError));
-    }),
-});
+}): PluginActionHandle<A> => {
+  const encode = encodeOwner(reg.payload, `action.push '${reg.tag}'`);
+  return {
+    tag: reg.tag,
+    push: (value) =>
+      Effect.gen(function* () {
+        const payload = yield* encode(value);
+        return { _tag: "action.push" as const, action: payload };
+      }),
+    run: (queued) =>
+      Effect.gen(function* () {
+        const decoded = yield* S.decodeUnknownEffect(reg.payload)(queued.payload).pipe(
+          Effect.mapError(
+            (error) =>
+              new WorkspaceTransactionError({
+                message: `action '${reg.tag}': ${describe(error)}`,
+              }),
+          ),
+        );
+        yield* reg.execute(decoded).pipe(Effect.mapError(transactionError));
+      }),
+  };
+};
 
 export interface WorkspaceTransactionPluginsService {
   readonly reducers: ReadonlyMap<string, PluginWorkspaceReducer>;
   /** Action tag → run closure (decode then execute). */
   readonly actions: ReadonlyMap<string, PluginActionRegistration["run"]>;
-  /** Per command tag: action tag → sync decode closure. */
-  readonly actionDecodersByCommand: ReadonlyMap<
+  /** Per command tag: declared action tags. */
+  readonly actionTagsByCommand: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Command tags that declared a result Schema. */
+  readonly commandsWithResult: ReadonlySet<string>;
+  /** Pane type → Effect-stage descriptor check. */
+  readonly paneChecks: ReadonlyMap<
     string,
-    ReadonlyMap<string, PluginActionRegistration["decode"]>
+    (descriptor: JsonValue) => Effect.Effect<JsonValue, PluginReducerError>
   >;
-  /** Per command tag: result codec, if the command declared one. */
-  readonly resultCodecs: ReadonlyMap<string, ResultCodec>;
-  /** Pane type → descriptor codec. */
-  readonly paneDescriptors: ReadonlyMap<string, OwnerJsonCodec>;
-  /** Provider id → firstMessage codec. */
-  readonly providerMessages: ReadonlyMap<string, OwnerJsonCodec>;
+  /** Registered session provider ids. */
+  readonly providers: ReadonlySet<string>;
 }
 
 /** Build the transaction plugins service from daemon command registrations. */
@@ -234,45 +218,51 @@ export const workspaceTransactionPluginsFromRegistrations = (
   const list = [...registrations];
   return {
     reducers: new Map(
-      list
-        .filter((registration) => registration.reduce !== undefined)
-        .map((registration) => [registration.tag, registration.reduce!]),
+      list.flatMap((registration) =>
+        registration.reduce === undefined ? [] : [[registration.tag, registration.reduce] as const],
+      ),
     ),
     actions: new Map(
       list
         .flatMap((registration) => registration.actions ?? [])
         .map((registration) => [registration.tag, registration.run]),
     ),
-    actionDecodersByCommand: new Map(
+    actionTagsByCommand: new Map(
       list
         .filter((registration) => (registration.actions?.length ?? 0) > 0)
         .map((registration) => [
           registration.tag,
-          new Map((registration.actions ?? []).map((action) => [action.tag, action.decode])),
+          new Set((registration.actions ?? []).map((action) => action.tag)),
         ]),
     ),
-    resultCodecs: new Map(
-      list
-        .filter((registration) => registration.result !== undefined)
-        .map((registration) => [registration.tag, registration.result!]),
+    commandsWithResult: new Set(
+      list.filter((registration) => registration.result !== undefined).map((r) => r.tag),
     ),
-    paneDescriptors: new Map(
+    paneChecks: new Map(
       list
-        .flatMap((registration) => registration.paneDescriptors ?? [])
-        .map((registration) => [registration.type, registration.codec]),
+        .flatMap((registration) => registration.paneTypes ?? [])
+        .map((registration) => [registration.type, registration.check]),
     ),
-    providerMessages: new Map(
-      list
-        .flatMap((registration) => registration.providerMessages ?? [])
-        .map((registration) => [registration.provider, registration.codec]),
+    providers: new Set(
+      list.flatMap((registration) => registration.providers ?? []).map((entry) => entry.provider),
     ),
   };
 };
 
+const emptyPluginApply = (
+  plugins: WorkspaceTransactionPluginsService,
+  commandTag: string,
+): PluginCommandApply => ({
+  changes: [],
+  declaresResult: plugins.commandsWithResult.has(commandTag),
+  actionTags: plugins.actionTagsByCommand.get(commandTag) ?? new Set(),
+  paneTypes: new Set(plugins.paneChecks.keys()),
+  providers: plugins.providers,
+});
+
 /**
  * Run a plugin reducer (timeout + answer Schema) and assemble the
- * {@link PluginCommandApply} the sync apply path consumes. Core commands with
- * no reducer still receive descriptor/provider maps for pane.open-plugin etc.
+ * {@link PluginCommandApply} the sync apply path consumes.
  */
 export const reducePluginCommand = (
   plugins: WorkspaceTransactionPluginsService,
@@ -281,18 +271,9 @@ export const reducePluginCommand = (
   context: WorkspaceCommandContext,
 ): Effect.Effect<PluginCommandApply, WorkspaceTransactionError> =>
   Effect.gen(function* () {
-    const paneDescriptors = plugins.paneDescriptors;
-    const providerMessages = plugins.providerMessages;
+    const base = emptyPluginApply(plugins, command._tag);
     const reducer = plugins.reducers.get(command._tag);
-    if (reducer === undefined) {
-      return {
-        changes: [],
-        resultCodec: undefined,
-        actionDecoders: new Map(),
-        paneDescriptors,
-        providerMessages,
-      };
-    }
+    if (reducer === undefined) return base;
     const reads = buildWorkspaceReadPackage(workspace, context);
     const answer = yield* reducer({ command, context, reads }).pipe(
       Effect.timeout(Duration.millis(PLUGIN_REDUCE_TIMEOUT_MS)),
@@ -311,13 +292,70 @@ export const reducePluginCommand = (
           }),
       ),
     );
-    return {
-      changes: decoded.changes,
-      resultCodec: plugins.resultCodecs.get(command._tag),
-      actionDecoders: plugins.actionDecodersByCommand.get(command._tag) ?? new Map(),
-      paneDescriptors,
-      providerMessages,
-    };
+    return { ...base, changes: decoded.changes };
+  });
+
+/**
+ * Ask the owning pane type to check a descriptor before sync apply.
+ * Same timeout budget as reducers.
+ */
+export const checkOpenPluginDescriptor = (
+  plugins: WorkspaceTransactionPluginsService,
+  type: string,
+  descriptor: JsonValue,
+): Effect.Effect<JsonValue, WorkspaceTransactionError> =>
+  Effect.gen(function* () {
+    const check = plugins.paneChecks.get(type);
+    if (check === undefined) {
+      return yield* new WorkspaceTransactionError({
+        message: `unknown pane type '${type}'`,
+      });
+    }
+    return yield* check(descriptor).pipe(
+      Effect.timeout(Duration.millis(PLUGIN_DESCRIPTOR_CHECK_TIMEOUT_MS)),
+      Effect.mapError(
+        (error) =>
+          new WorkspaceTransactionError({
+            message: `pane type '${type}' descriptor: ${describe(error)}`,
+          }),
+      ),
+    );
+  });
+
+export type PreparedPluginCommand = {
+  readonly command: RuntimeCommand;
+  readonly apply: PluginCommandApply;
+};
+
+/**
+ * Effect stage for every command: run a plugin reducer, or for core
+ * `pane.open-plugin` ask the owner and substitute the checked descriptor.
+ * Sync apply then reads the command and apply facts with no codec closures.
+ */
+export const preparePluginCommandApply = (
+  plugins: WorkspaceTransactionPluginsService,
+  command: RuntimeCommand,
+  workspace: WorkspaceSnapshot,
+  context: WorkspaceCommandContext,
+): Effect.Effect<PreparedPluginCommand, WorkspaceTransactionError> =>
+  Effect.gen(function* () {
+    if (isCoreCommand(command)) {
+      const apply: PluginCommandApply = {
+        changes: [],
+        declaresResult: false,
+        actionTags: new Set(),
+        paneTypes: new Set(plugins.paneChecks.keys()),
+        providers: plugins.providers,
+      };
+      if (command._tag !== "pane.open-plugin") return { command, apply };
+      const checked = yield* checkOpenPluginDescriptor(plugins, command.type, command.descriptor);
+      return {
+        command: { ...command, descriptor: checked },
+        apply,
+      };
+    }
+    const apply = yield* reducePluginCommand(plugins, command, workspace, context);
+    return { command, apply };
   });
 
 export class WorkspaceTransactionPlugins extends Context.Service<
@@ -526,24 +564,16 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
 
               const path = yield* nodePath;
               const pluginService = Option.getOrUndefined(plugins);
-              const pluginApply =
+              const pluginPrepared =
                 pluginService === undefined
                   ? undefined
-                  : isCoreCommand(value)
-                    ? {
-                        changes: [] as const,
-                        resultCodec: undefined,
-                        actionDecoders: new Map(),
-                        paneDescriptors: pluginService.paneDescriptors,
-                        providerMessages: pluginService.providerMessages,
-                      }
-                    : yield* reducePluginCommand(pluginService, value, cur.workspace, context);
+                  : yield* preparePluginCommandApply(pluginService, value, cur.workspace, context);
               const mutation = yield* applyWorkspaceCommand(
                 cur.workspace,
-                value,
+                pluginPrepared?.command ?? value,
                 context,
                 path,
-                pluginApply,
+                pluginPrepared?.apply,
                 algorithm,
               ).pipe(
                 Effect.mapError(

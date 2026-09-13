@@ -35,10 +35,10 @@ export interface DaemonSessionsHost {
 
 export interface DaemonSessionsService {
   /**
-   * Deliver an opaque payload to a live session's backend. `message` is the
-   * Encoded side of an owner codec (`sessionProviderMessageCodec`): core
-   * assigns no meaning — a turn prompt, an interrupt, a permission answer are
-   * all just this, interpreted by whichever plugin's worker reads it.
+   * Deliver an opaque payload to a live session's backend. Core assigns no
+   * meaning — a turn prompt, an interrupt, a permission answer are all just
+   * this, interpreted by whichever plugin's worker reads it. The worker
+   * decodes through its own Schema (e.g. NativeControl).
    */
   readonly message: (id: string, message: JsonValue) => Effect.Effect<void, DaemonSessionsError>;
   readonly prompt: (

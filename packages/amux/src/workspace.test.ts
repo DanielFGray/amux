@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { command, type RuntimeCommand } from "./commands.ts";
-import { Effect, Cause, Path, Result, Schema as S } from "effect";
+import { Effect, Cause, Path, Schema as S } from "effect";
 import {
   applyWorkspaceCommand as applyWorkspaceCommandWithPath,
   markSessionExited,
@@ -14,7 +14,6 @@ import {
   type WorkspaceSnapshot,
   type WorkspaceMutation,
 } from "./workspace.ts";
-import { resolveRefsInJson } from "./workspace-changes.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { layoutPanes, makeLayout, DescriptorSchema } from "./layout.ts";
 import { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";
@@ -22,13 +21,15 @@ import { tilingAlgorithmFromMethods } from "./tiling-algorithm.ts";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
 import { resolveTilingAlgorithm } from "./layout-rules.ts";
 import type { DaemonCommandRegistration } from "./plugin/services.ts";
+import { defineDaemonCommand } from "./define-daemon-command.ts";
+import { definePaneType } from "./pane-descriptors.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
 import { niriTilingAlgorithm, niriTilingMethods } from "../../plugin-niri/src/niri.ts";
 import {
+  preparePluginCommandApply,
   definePluginAction,
-  reducePluginCommand,
   workspaceTransactionPluginsFromRegistrations,
 } from "./effect/WorkspaceTransaction.ts";
 
@@ -42,7 +43,7 @@ const pluginApplyFor = (
   context: WorkspaceCommandContext,
 ) =>
   run(
-    reducePluginCommand(
+    preparePluginCommandApply(
       workspaceTransactionPluginsFromRegistrations(regs),
       cmd,
       workspace,
@@ -57,11 +58,20 @@ const applyWorkspaceCommand = (
   regs?: readonly DaemonCommandRegistration[],
   algorithm?: Parameters<typeof applyWorkspaceCommandWithPath>[5],
 ): WorkspaceMutation => {
-  const plugins =
+  const prepared =
     regs === undefined
       ? undefined
       : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
-  return run(applyWorkspaceCommandWithPath(workspace, cmd, context, path, plugins, algorithm));
+  return run(
+    applyWorkspaceCommandWithPath(
+      workspace,
+      prepared?.command ?? cmd,
+      context,
+      path,
+      prepared?.apply,
+      algorithm,
+    ),
+  );
 };
 
 const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
@@ -1718,13 +1728,14 @@ test("agent.permission carries the answer to the session that asked", () => {
     },
   ]);
 
-  const unaddressed = applyWorkspaceCommand(
-    current,
-    command("agent.permission", { request: "req-1", decision: "once" }),
-    context,
-    agentPlugins,
-  );
-  expect(unaddressed.actions).toEqual([]);
+  expect(() =>
+    applyWorkspaceCommand(
+      current,
+      command("agent.permission", { request: "req-1", decision: "once" }),
+      context,
+      agentPlugins,
+    ),
+  ).toThrow(/fields do not match|agent\.permission/i);
 });
 
 /* An initial prompt has nowhere live to go yet at reduce time — the
@@ -2190,75 +2201,107 @@ test("unknown pane type is rejected", () => {
   ).toThrow(/unknown pane type/);
 });
 
-test("a plain { ref: main } payload field is not treated as a WorkspaceRef", () => {
-  const resolved = resolveRefsInJson({ ref: "main" }, new Map([["main", "agent-1"]]));
-  expect(Result.isSuccess(resolved)).toBe(true);
-  if (Result.isSuccess(resolved)) expect(resolved.success).toEqual({ ref: "main" });
-});
-
-test("tagged WorkspaceRef resolves in results", () => {
-  const resolved = resolveRefsInJson(
-    { session: { _tag: "WorkspaceRef", ref: "s" } },
-    new Map([["s", "agent-1"]]),
-  );
-  expect(Result.isSuccess(resolved)).toBe(true);
-  if (Result.isSuccess(resolved)) expect(resolved.success).toEqual({ session: "agent-1" });
-});
-
-test("unknown WorkspaceRef is rejected", () => {
-  const resolved = resolveRefsInJson({ _tag: "WorkspaceRef", ref: "missing" }, new Map());
-  expect(Result.isFailure(resolved)).toBe(true);
-});
-
 const probeMeta = {
   desc: "probe",
   group: "probe",
   target: "workspace" as const,
   exposure: "human" as const,
 };
-const probeResources = () => [] as const;
+const probeFields = S.Struct({});
+const probeEditorPane = definePaneType("amux.editor", S.Struct({}));
 
-const duplicateRefProbe: DaemonCommandRegistration = {
-  tag: "probe.duplicate-ref",
-  fields: {},
+const duplicateIdProbe = defineDaemonCommand({
+  tag: "probe.duplicate-id",
+  fields: probeFields,
   meta: probeMeta,
-  resources: probeResources,
-  reduce: () =>
-    Effect.succeed({
-      changes: [
-        {
-          _tag: "session.add" as const,
-          ref: "dup",
+  resources: () => [],
+  reduce: ({ build }) =>
+    Effect.succeed(
+      build.answer([
+        build.sessionAdd({
+          id: "agent-dup",
           target: { space: "space-a", window: 1 },
           dir: "/tmp",
-        },
-        {
-          _tag: "session.add" as const,
-          ref: "dup",
+        }),
+        build.sessionAdd({
+          id: "agent-dup",
           target: { space: "space-a", window: 1 },
           dir: "/other",
-        },
-      ],
-    }),
-};
-
-test("duplicate symbolic ref is rejected", () => {
-  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
-  expect(() =>
-    applyWorkspaceCommand(adopted, command("probe.duplicate-ref"), context, [duplicateRefProbe]),
-  ).toThrow(/duplicate ref 'dup'/);
+        }),
+      ]),
+    ),
 });
 
-const unregisteredActionProbe: DaemonCommandRegistration = {
-  tag: "probe.bad-action",
-  fields: {},
+test("duplicate proposed session id is rejected and leaves the workspace unchanged", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const before = structuredClone(adopted);
+  expect(() =>
+    applyWorkspaceCommand(adopted, command("probe.duplicate-id"), context, [duplicateIdProbe]),
+  ).toThrow(/already exists/);
+  expect(adopted).toEqual(before);
+});
+
+const existingIdProbe = defineDaemonCommand({
+  tag: "probe.existing-id",
+  fields: probeFields,
   meta: probeMeta,
-  resources: probeResources,
-  reduce: () =>
-    Effect.succeed({
-      changes: [{ _tag: "action.push" as const, action: { _tag: "not.registered" } }],
-    }),
-};
+  resources: () => [],
+  reduce: ({ build }) =>
+    Effect.succeed(
+      build.answer([
+        build.sessionAdd({
+          id: "agent-a",
+          target: { space: "space-a", window: 1 },
+          dir: "/tmp",
+        }),
+      ]),
+    ),
+});
+
+test("proposed session id that already exists is rejected", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  expect(() =>
+    applyWorkspaceCommand(adopted, command("probe.existing-id"), context, [existingIdProbe]),
+  ).toThrow(/already exists/);
+});
+
+const malformedPaneProbe = defineDaemonCommand({
+  tag: "probe.malformed-pane",
+  fields: probeFields,
+  meta: probeMeta,
+  resources: () => [],
+  paneTypes: [probeEditorPane],
+  reduce: ({ build }) =>
+    Effect.succeed(
+      build.answer([
+        {
+          _tag: "plugin.place" as const,
+          mode: "split" as const,
+          pane: "not-a-pane",
+          type: "amux.editor",
+          descriptor: {},
+        },
+      ]),
+    ),
+});
+
+test("malformed proposed pane id is rejected", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  expect(() =>
+    applyWorkspaceCommand(adopted, command("probe.malformed-pane"), context, [malformedPaneProbe]),
+  ).toThrow(/pane id/);
+});
+
+const unregisteredActionProbe = defineDaemonCommand({
+  tag: "probe.bad-action",
+  fields: probeFields,
+  meta: probeMeta,
+  resources: () => [],
+  reduce: ({ build }) =>
+    Effect.succeed(
+      build.answer([{ _tag: "action.push" as const, action: { _tag: "not.registered" } }]),
+    ),
+});
 
 test("unregistered action tag is rejected", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
@@ -2267,70 +2310,77 @@ test("unregistered action tag is rejected", () => {
   ).toThrow(/action tag 'not.registered' is not registered/);
 });
 
-const nativeProviderMessages =
-  agentHarnessDaemonCommands.find((entry) => entry.tag === "agent.new")!.providerMessages ?? [];
-
-const badFirstMessageProbe: DaemonCommandRegistration = {
-  tag: "probe.bad-first-message",
-  fields: {},
+const noResultProbe = defineDaemonCommand({
+  tag: "probe.no-result",
+  fields: probeFields,
   meta: probeMeta,
-  resources: probeResources,
-  providerMessages: nativeProviderMessages,
-  reduce: () =>
-    Effect.succeed({
-      changes: [
+  resources: () => [],
+  reduce: ({ build }) =>
+    Effect.succeed(build.answer([{ _tag: "result.set" as const, result: { ok: true } }])),
+});
+
+test("result.set on a command with no declared result is rejected", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  expect(() =>
+    applyWorkspaceCommand(adopted, command("probe.no-result"), context, [noResultProbe]),
+  ).toThrow(/declared result/);
+});
+
+const unknownProviderProbe = defineDaemonCommand({
+  tag: "probe.unknown-provider",
+  fields: probeFields,
+  meta: probeMeta,
+  resources: () => [],
+  reduce: ({ build }) =>
+    Effect.succeed(
+      build.answer([
         {
           _tag: "session.add" as const,
-          ref: "s",
+          id: "agent-new-1",
           target: { space: "space-a", window: 1 },
           dir: "/tmp",
           provider: "native",
-          firstMessage: { notValid: true },
+          firstMessage: { _tag: "agent.prompt", text: "hi" },
         },
-      ],
-    }),
-};
+      ]),
+    ),
+});
 
-test("firstMessage that fails the provider Schema is rejected", () => {
+test("firstMessage for an unregistered provider is rejected at apply", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   expect(() =>
-    applyWorkspaceCommand(adopted, command("probe.bad-first-message"), context, [
-      badFirstMessageProbe,
+    applyWorkspaceCommand(adopted, command("probe.unknown-provider"), context, [
+      unknownProviderProbe,
     ]),
-  ).toThrow(/firstMessage|NativeControl|agent\.prompt/i);
+  ).toThrow(/unknown session provider/);
 });
 
 const GitRefAction = S.TaggedStruct("git.ref", { ref: S.String });
-const gitRefActionProbe: DaemonCommandRegistration = {
+const gitRefAction = definePluginAction({
+  tag: "git.ref",
+  payload: GitRefAction,
+  execute: () => Effect.void,
+});
+const gitRefActionProbe = defineDaemonCommand({
   tag: "probe.git-ref-action",
-  fields: {},
+  fields: probeFields,
   meta: probeMeta,
-  resources: probeResources,
-  actions: [
-    definePluginAction({
-      tag: "git.ref",
-      payload: GitRefAction,
-      execute: () => Effect.void,
-    }),
-  ],
-  reduce: () =>
-    Effect.succeed({
-      changes: [
-        {
-          _tag: "session.add" as const,
-          ref: "main",
+  resources: () => [],
+  actions: [gitRefAction],
+  reduce: ({ build }) =>
+    Effect.gen(function* () {
+      return build.answer([
+        build.sessionAdd({
+          id: "agent-git-1",
           target: { space: "space-a", window: 1 },
           dir: "/tmp",
-        },
-        {
-          _tag: "action.push" as const,
-          action: { _tag: "git.ref", ref: "main" },
-        },
-      ],
+        }),
+        yield* gitRefAction.push({ _tag: "git.ref", ref: "main" }),
+      ]);
     }),
-};
+});
 
-test("a plain { ref: main } action field passes through when a session ref shares the name", () => {
+test("action.push payload field named ref is not treated specially", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   const mutation = applyWorkspaceCommand(adopted, command("probe.git-ref-action"), context, [
     gitRefActionProbe,
@@ -2341,4 +2391,29 @@ test("a plain { ref: main } action field passes through when a session ref share
   }
   const payload = S.decodeUnknownSync(GitRefAction)(queued.payload);
   expect(payload.ref).toBe("main");
+});
+
+test("agent.new result ids match the created session and pane", () => {
+  const current = run(workspaceFromSession(base(twoPaneLayout)));
+  const mutation = applyWorkspaceCommand(
+    current,
+    command("agent.new", { provider: "native" }),
+    context,
+    agentPlugins,
+  );
+  const agent = mutation.snapshot.spaces[0]!.windows[0]!.sessions.at(-1)!;
+  const pane = mutation.snapshot.spaces[0]!.windows[0]!.layout.focus!;
+  expect(mutation.result).toEqual({ session: agent.id, pane });
+});
+
+test("editor.open result pane matches the created pane", () => {
+  const current = run(workspaceFromSession(base(singlePaneLayout)));
+  const mutation = applyWorkspaceCommand(
+    current,
+    command("editor.open", {}),
+    context,
+    editorPlugins,
+  );
+  const pane = mutation.snapshot.spaces[0]!.windows[0]!.layout.focus!;
+  expect(mutation.result).toEqual({ pane });
 });

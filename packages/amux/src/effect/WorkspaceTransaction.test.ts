@@ -445,10 +445,10 @@ testEffect("rejects worktree removal when dirty", () => {
 
 const emptyPluginMaps = (): Omit<WorkspaceTransactionPluginsService, "reducers"> => ({
   actions: new Map(),
-  actionDecodersByCommand: new Map(),
-  resultCodecs: new Map(),
-  paneDescriptors: new Map(),
-  providerMessages: new Map(),
+  actionTagsByCommand: new Map(),
+  commandsWithResult: new Set(),
+  paneChecks: new Map(),
+  providers: new Set(),
 });
 
 const withPlugins = <R, E>(

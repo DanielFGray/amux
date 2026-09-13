@@ -1273,17 +1273,17 @@ export const makeDaemonService = Effect.fnUntraced(
       get actions() {
         return this.current.actions;
       },
-      get actionDecodersByCommand() {
-        return this.current.actionDecodersByCommand;
+      get actionTagsByCommand() {
+        return this.current.actionTagsByCommand;
       },
-      get resultCodecs() {
-        return this.current.resultCodecs;
+      get commandsWithResult() {
+        return this.current.commandsWithResult;
       },
-      get paneDescriptors() {
-        return this.current.paneDescriptors;
+      get paneChecks() {
+        return this.current.paneChecks;
       },
-      get providerMessages() {
-        return this.current.providerMessages;
+      get providers() {
+        return this.current.providers;
       },
     };
     const daemonSessions = buildDaemonSessions(requireHost);

@@ -1,28 +1,37 @@
 /**
- * Session-provider message codecs — validates `session.add` `firstMessage`
- * (and the same shape ResumeAgent delivers via `DaemonSessions.message`).
- *
- * Client {@link SpawnProvidersTag} only supplies argv/env. A provider's
- * message Schema is declared on the daemon plugin registration; the daemon
- * builds codecs into {@link WorkspaceTransactionPlugins}. No module-level map.
+ * Session-provider handle: typed firstMessage builder. Apply only checks that
+ * the provider id is registered.
  */
-import { Schema as S } from "effect";
-import { ownerJsonCodec, type OwnerJsonCodec } from "./workspace-changes.ts";
+import { Effect, Schema as S } from "effect";
+import {
+  encodeOwner,
+  encodedFirstMessage,
+  type EncodedFirstMessage,
+} from "./workspace-change-builders.ts";
+import { PluginReducerError } from "./workspace-changes.ts";
 
-export type ProviderMessageCodec = OwnerJsonCodec;
-
-export type ProviderMessageRegistration = {
+export type SessionProviderHandle<M> = {
   readonly provider: string;
-  readonly codec: ProviderMessageCodec;
+  readonly message: (value: M) => Effect.Effect<EncodedFirstMessage, PluginReducerError>;
 };
 
-/** Close over `provider`'s message Schema for firstMessage storage encoding. */
-export function sessionProviderMessageCodec<A>(
+/** Registration entry — provider id for apply; reducer closes over the typed handle. */
+export type ProviderMessageRegistration = {
+  readonly provider: string;
+};
+
+/** Declare a session provider's firstMessage Schema for plugin builders. */
+export function defineSessionProvider<M>(
   provider: string,
-  schema: S.Codec<A>,
-): ProviderMessageRegistration {
+  schema: S.Codec<M>,
+): SessionProviderHandle<M> {
+  const encode = encodeOwner(schema, `session.add firstMessage for provider '${provider}'`);
   return {
     provider,
-    codec: ownerJsonCodec(schema, `session.add firstMessage for provider '${provider}'`),
+    message: (value) =>
+      Effect.gen(function* () {
+        const wire = yield* encode(value);
+        return encodedFirstMessage(wire);
+      }),
   };
 }
