@@ -82,7 +82,6 @@ const BatchOutputSchema = S.Struct({
 
 const BatchResultSchema = S.Struct({ outputs: S.Array(BatchOutputSchema) });
 
-
 export class ControlRpcs extends RpcGroup.make(
   Rpc.make("Ping", { success: AttachInfoSchema, error: ControlError }),
   Rpc.make("Status", { success: StatusSchema, error: ControlError }),
