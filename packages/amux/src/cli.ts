@@ -218,6 +218,12 @@ function main(): Effect.Effect<number> {
       return 0;
     }
 
+    if (sub === "plugin-host") {
+      const { runPluginHostMain } = yield* Effect.promise(() => import("./plugin-host/main.ts"));
+      runPluginHostMain();
+      return 0;
+    }
+
     if (sub === "status" || sub === "stop" || sub === "list") {
       const { runSessionCli } = yield* Effect.promise(() => import("./session-cli.ts"));
       if (sub === "list") return yield* Effect.promise(() => runSessionCli(["list"]));

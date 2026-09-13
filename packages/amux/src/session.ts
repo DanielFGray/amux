@@ -306,6 +306,12 @@ export interface SessionPaths {
    * third-party code is allowed to send" are different trust boundaries.
    */
   processState: string;
+  /**
+   * Plugin-host Effect RPC socket. Separate from `socket` (control plane) and
+   * `processState` (plain-JSON self-reports): the host is a supervised child
+   * that answers Ping/Stop and, later, plugin calls — never terminal bytes.
+   */
+  pluginHost: string;
 }
 
 export const stateRoot = Effect.fnUntraced(function* () {
@@ -652,6 +658,7 @@ function sessionPathsFromRoot(id: string, root: string): Effect.Effect<SessionPa
       socket: path.join(rootPath, "daemon.sock"),
       attach: path.join(rootPath, "attach.sock"),
       processState: path.join(rootPath, "process-state.sock"),
+      pluginHost: path.join(rootPath, "plugin-host.sock"),
     };
   }).pipe(Effect.provide(Path.layer));
 }

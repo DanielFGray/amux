@@ -3,6 +3,7 @@ import {
   Context,
   Deferred,
   Effect,
+  Fiber,
   FiberMap,
   Layer,
   Match,
@@ -24,6 +25,7 @@ import {
   type PermissionAnswer,
 } from "./AttachProtocol.ts";
 import { captureRootRuntime, type RootRuntimeContext } from "../env.ts";
+import { formatStderrTail, makeStderrTail } from "../stderr-tail.ts";
 
 export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   operation: S.String,
@@ -237,10 +239,6 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
  *  `agent.emit`, because `sequence` is the daemon's to assign. */
 const isAgentDelta = S.is(AgentDelta);
 
-/** How much of a dying worker's stderr is kept to explain its exit. A stack
- *  trace fits; a worker looping on a warning cannot grow the daemon. */
-const STDERR_TAIL_CHARS = 8192;
-
 /** A component's content comes from a worker isolated from the daemon, speaking
  *  semantic frames on stdout instead of terminal bytes. */
 function componentBackend(spec: SessionSpec, runtime: RootRuntimeContext): Backend {
@@ -277,44 +275,13 @@ function componentBackend(spec: SessionSpec, runtime: RootRuntimeContext): Backe
    * stderr and nowhere else. This used to be drained into nothing, which left
    * the exit code as the only evidence a session had died and made every such
    * failure look identical from the daemon, the client and the log.
-   *
-   * Kept bounded, because a worker that loops on a warning must not be able to
-   * grow the daemon's memory with its complaints.
    */
-  let stderrTail = "";
-  let stderrDropped = false;
-  const stderrDrained = Effect.runPromiseWith(runtime)(
-    Effect.callback<void, string>((resume) => {
-      const decoder = new TextDecoder();
-      const iterator = child.stderr[Symbol.asyncIterator]();
-      const read = (): void => {
-        iterator.next().then(
-          (result) => {
-            if (result.done) {
-              resume(Effect.void);
-              return;
-            }
-            const text = decoder.decode(result.value, { stream: true });
-            if (!text) {
-              read();
-              return;
-            }
-            // Logged as it arrives, so a worker that complains and keeps running is
-            // visible too — not only one that dies with something to say.
-            Effect.runForkWith(runtime)(
-              Effect.logWarning(`session '${spec.id}' worker stderr: ${text.trimEnd()}`),
-            );
-            stderrTail += text;
-            if (stderrTail.length > STDERR_TAIL_CHARS) {
-              stderrTail = stderrTail.slice(-STDERR_TAIL_CHARS);
-              stderrDropped = true;
-            }
-            read();
-          },
-          (error) => resume(Effect.fail(String(error))),
-        );
-      };
-      read();
+  const stderrTail = makeStderrTail();
+  const stderrDrain = Effect.runForkWith(runtime)(
+    stderrTail.drain(child.stderr, (text) => {
+      Effect.runForkWith(runtime)(
+        Effect.logWarning(`session '${spec.id}' worker stderr: ${text.trimEnd()}`),
+      );
     }),
   );
 
@@ -325,16 +292,23 @@ function componentBackend(spec: SessionSpec, runtime: RootRuntimeContext): Backe
       iterator.next().then((result) => {
         if (result.done) {
           output.end();
-          return stderrDrained.then(() => {
-            const reason = stderrTail.trim();
-            if (reason)
-              events.offer({
-                _tag: "session.error",
-                session: spec.id,
-                message: `worker stderr: ${stderrDropped ? "…" : ""}${reason}`,
-              });
-            events.end();
-          });
+          Effect.runForkWith(runtime)(
+            Fiber.join(stderrDrain).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  const reason = formatStderrTail(stderrTail);
+                  if (reason)
+                    events.offer({
+                      _tag: "session.error",
+                      session: spec.id,
+                      message: `worker stderr: ${reason}`,
+                    });
+                  events.end();
+                }),
+              ),
+            ),
+          );
+          return;
         }
         try {
           const chunk = result.value;

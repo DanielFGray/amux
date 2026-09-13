@@ -20,6 +20,7 @@ import {
   Scope,
   Semaphore,
   Stream,
+  SubscriptionRef,
 } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem, BunServices } from "@effect/platform-bun";
@@ -31,6 +32,8 @@ import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import { isSameUserPeer, socketFd } from "./peer-credentials.ts";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
+import type { PluginHostStatus } from "./plugin-host/rpc.ts";
+import { supervisePluginHost, type PluginHostClient } from "./plugin-host/supervisor.ts";
 import { type AttachHostService } from "./effect/AttachHost.ts";
 import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
 import { makeAgentLog } from "./effect/AgentLog.ts";
@@ -227,6 +230,14 @@ export interface SessionDaemonOptions {
   readonly spawnSession?: (
     spec: SessionSpec,
   ) => Effect.Effect<ManagedSession, PtyError | DaemonError>;
+  /** Override plugin-host spawn argv / timing (tests: hang entry). */
+  readonly pluginHost?: {
+    readonly argv?: readonly string[];
+    readonly pingIntervalMs?: number;
+    readonly pingTimeoutMs?: number;
+    readonly backoffInitialMs?: number;
+    readonly backoffMaxMs?: number;
+  };
 }
 
 export interface SessionDaemonService {
@@ -438,6 +449,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     Scope.provide(daemonScope),
   );
   const model = Context.get(modelContext, DaemonModel);
+
+  const pluginHostStatus = yield* Ref.make<PluginHostStatus>({
+    state: "starting",
+    restarts: 0,
+  });
+  const pluginHostClient = yield* SubscriptionRef.make(Option.none<PluginHostClient>());
 
   const pluginContributions = createPluginContributions();
   const daemonCommandTable = pluginContributions.table<DaemonCommandRegistration>();
@@ -925,6 +942,23 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           processStateSocket: paths.processState,
           binPath: amuxCli,
         }).pipe(Effect.provide(BunServices.layer), Scope.provide(daemonScope)),
+        daemonScope,
+      );
+
+      // Plugin-host: supervised child answering PluginHostRpcs. Own fiber in
+      // daemonScope so host exit/hang cannot reach sessions or the model, and
+      // scope close stops the child (no orphan).
+      yield* Effect.forkIn(
+        supervisePluginHost({
+          socketPath: paths.pluginHost,
+          status: pluginHostStatus,
+          client: pluginHostClient,
+          argv: options.pluginHost?.argv,
+          pingIntervalMs: options.pluginHost?.pingIntervalMs,
+          pingTimeoutMs: options.pluginHost?.pingTimeoutMs,
+          backoffInitialMs: options.pluginHost?.backoffInitialMs,
+          backoffMaxMs: options.pluginHost?.backoffMaxMs,
+        }).pipe(Scope.provide(daemonScope)),
         daemonScope,
       );
 
@@ -1785,12 +1819,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           const obligation = cur.durableObligations.values().next().value as string | undefined;
           const degraded = obligation ?? cur.heartbeatError ?? undefined;
           const live = yield* liveSessions;
+          const pluginHost = yield* Ref.get(pluginHostStatus);
           const baseStatus = {
             attached: cur.state.attached,
             ...(yield* attachTimes()),
             session: structuredClone(cur.state),
             workspace: encodeJson(cur.workspace),
             agents: [...live],
+            pluginHost,
           };
           return degraded === undefined ? baseStatus : { ...baseStatus, degraded };
         }),

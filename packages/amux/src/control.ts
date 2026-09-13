@@ -20,6 +20,7 @@ import { WireCommand } from "./commands.ts";
 import { DaemonEvent } from "./effect/EventBus.ts";
 import { AgentEvent } from "./effect/AttachProtocol.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
+import { PluginHostStatusSchema } from "./plugin-host/rpc.ts";
 import { SessionStateSchema } from "./session.ts";
 import { WorkspaceCommandContextSchema } from "./workspace.ts";
 
@@ -62,6 +63,8 @@ const StatusSchema = S.Struct({
   session: SessionStateSchema,
   workspace: WorkspaceJson,
   agents: S.Array(S.String),
+  /** Supervised plugin-host child: state, restart count, last error. */
+  pluginHost: PluginHostStatusSchema,
   /** Set when the daemon is degraded but still serving: heartbeat or an
    *  outstanding durable obligation. Not a request failure. */
   degraded: S.optional(S.String),
