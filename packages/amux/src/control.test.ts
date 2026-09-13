@@ -827,367 +827,353 @@ testEffect(
     }),
 );
 
-testEffect(
-  "pane.report_agent_session accepts a trusted ref and refuses an untrusted one",
-  () =>
-    Effect.gen(function* () {
-      const { daemon, env } = yield* Effect.promise(() => started("report-agent-session"));
-      const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+testEffect("pane.report_agent_session accepts a trusted ref and refuses an untrusted one", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("report-agent-session"));
+    const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
 
-      const accepted = yield* Effect.promise(() =>
-        raw(
-          paths.processState,
-          JSON.stringify({
-            id: "ok",
-            method: "pane.report_agent_session",
-            params: {
-              paneId: "pane-1",
-              source: "amux:claude",
-              agent: "claude",
-              seq: 1,
-              agentSessionId: "conv-1",
-            },
-          }) + "\n",
-        ),
-      );
-      expect(accepted.received).toContain('"id":"ok"');
-      expect(accepted.received).toContain('"ok":true');
+    const accepted = yield* Effect.promise(() =>
+      raw(
+        paths.processState,
+        JSON.stringify({
+          id: "ok",
+          method: "pane.report_agent_session",
+          params: {
+            paneId: "pane-1",
+            source: "amux:claude",
+            agent: "claude",
+            seq: 1,
+            agentSessionId: "conv-1",
+          },
+        }) + "\n",
+      ),
+    );
+    expect(accepted.received).toContain('"id":"ok"');
+    expect(accepted.received).toContain('"ok":true');
 
-      const refused = yield* Effect.promise(() =>
-        raw(
-          paths.processState,
-          JSON.stringify({
-            id: "no",
-            method: "pane.report_agent_session",
-            params: {
-              paneId: "pane-1",
-              source: "evil:claude",
-              agent: "claude",
-              seq: 2,
-              agentSessionId: "conv-2",
-            },
-          }) + "\n",
-        ),
-      );
-      expect(refused.received).toContain('"id":"no"');
-      expect(refused.received).toContain('"ok":false');
-      expect(refused.received).toContain("unknown_source");
-    }),
+    const refused = yield* Effect.promise(() =>
+      raw(
+        paths.processState,
+        JSON.stringify({
+          id: "no",
+          method: "pane.report_agent_session",
+          params: {
+            paneId: "pane-1",
+            source: "evil:claude",
+            agent: "claude",
+            seq: 2,
+            agentSessionId: "conv-2",
+          },
+        }) + "\n",
+      ),
+    );
+    expect(refused.received).toContain('"id":"no"');
+    expect(refused.received).toContain('"ok":false');
+    expect(refused.received).toContain("unknown_source");
+  }),
 );
 
-testEffect(
-  "a trusted agent session report persists on the pane and survives daemon reload",
-  () =>
-    Effect.gen(function* () {
-      const { daemon, env } = yield* Effect.promise(() => started("persist-agent-session"));
-      const paneId = workspacePaneId(Effect.runSync(daemon.getWorkspace));
-      const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+testEffect("a trusted agent session report persists on the pane and survives daemon reload", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("persist-agent-session"));
+    const paneId = workspacePaneId(Effect.runSync(daemon.getWorkspace));
+    const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
 
-      const accepted = yield* Effect.promise(() =>
-        raw(
-          paths.processState,
-          JSON.stringify({
-            id: "persist",
-            method: "pane.report_agent_session",
-            params: {
-              paneId,
-              source: "amux:claude",
-              agent: "claude",
-              seq: 1,
-              agentSessionId: "conv-persist",
-            },
-          }) + "\n",
-        ),
-      );
-      expect(accepted.received).toContain('"ok":true');
+    const accepted = yield* Effect.promise(() =>
+      raw(
+        paths.processState,
+        JSON.stringify({
+          id: "persist",
+          method: "pane.report_agent_session",
+          params: {
+            paneId,
+            source: "amux:claude",
+            agent: "claude",
+            seq: 1,
+            agentSessionId: "conv-persist",
+          },
+        }) + "\n",
+      ),
+    );
+    expect(accepted.received).toContain('"ok":true');
 
-      yield* Effect.promise(() =>
-        waitFor(async () => {
-          const workspace = Effect.runSync(daemon.getWorkspace);
-          const pane = workspace.spaces[0]?.windows[0]?.layout.root;
-          return (
-            pane !== null &&
-            typeof pane === "object" &&
-            "agentSession" in pane &&
-            (pane as { agentSession?: { value: string } }).agentSession?.value === "conv-persist"
-          );
-        }, "agent session ref to land on the pane"),
-      );
+    yield* Effect.promise(() =>
+      waitFor(async () => {
+        const workspace = Effect.runSync(daemon.getWorkspace);
+        const pane = workspace.spaces[0]?.windows[0]?.layout.root;
+        return (
+          pane !== null &&
+          typeof pane === "object" &&
+          "agentSession" in pane &&
+          (pane as { agentSession?: { value: string } }).agentSession?.value === "conv-persist"
+        );
+      }, "agent session ref to land on the pane"),
+    );
 
-      // Durable shortly after the report: session.json already carries the ref
-      // while the daemon is still alive (SIGKILL of the reporter cannot undo it).
-      const onDisk = yield* Effect.promise(async () => {
-        const text = await Bun.file(paths.state).text();
-        return JSON.parse(text) as {
-          spaces: Array<{ windows: Array<{ layout: string }> }>;
-        };
-      });
-      const diskLayout = JSON.parse(onDisk.spaces[0]!.windows[0]!.layout) as {
-        root: { agentSession?: { source: string; agent: string; kind: string; value: string } };
+    // Durable shortly after the report: session.json already carries the ref
+    // while the daemon is still alive (SIGKILL of the reporter cannot undo it).
+    const onDisk = yield* Effect.promise(async () => {
+      const text = await Bun.file(paths.state).text();
+      return JSON.parse(text) as {
+        spaces: Array<{ windows: Array<{ layout: string }> }>;
       };
-      expect(diskLayout.root.agentSession).toEqual({
-        source: "amux:claude",
-        agent: "claude",
-        kind: "id",
-        value: "conv-persist",
-      });
+    });
+    const diskLayout = JSON.parse(onDisk.spaces[0]!.windows[0]!.layout) as {
+      root: { agentSession?: { source: string; agent: string; kind: string; value: string } };
+    };
+    expect(diskLayout.root.agentSession).toEqual({
+      source: "amux:claude",
+      agent: "claude",
+      kind: "id",
+      value: "conv-persist",
+    });
 
-      yield* daemon.close;
-      const reloaded = yield* Effect.promise(() =>
-        run(startDaemon(daemon.id), env),
-      );
-      daemons.push(reloaded);
-      const restored = workspacePaneId(Effect.runSync(reloaded.getWorkspace));
-      expect(restored).toBe(paneId);
-      const root = Effect.runSync(reloaded.getWorkspace).spaces[0]!.windows[0]!.layout.root as {
-        agentSession?: { value: string };
-      };
-      expect(root.agentSession?.value).toBe("conv-persist");
-    }),
+    yield* daemon.close;
+    const reloaded = yield* Effect.promise(() => run(startDaemon(daemon.id), env));
+    daemons.push(reloaded);
+    const restored = workspacePaneId(Effect.runSync(reloaded.getWorkspace));
+    expect(restored).toBe(paneId);
+    const root = Effect.runSync(reloaded.getWorkspace).spaces[0]!.windows[0]!.layout.root as {
+      agentSession?: { value: string };
+    };
+    expect(root.agentSession?.value).toBe("conv-persist");
+  }),
 );
 
-testEffect(
-  "native agent resume defers spawn until geometry settles at the client size",
-  () =>
-    Effect.gen(function* () {
-      const { daemon, env, pluginConfig } = yield* Effect.promise(() =>
-        started("defer-agent-resume"),
-      );
-      const paneId = workspacePaneId(Effect.runSync(daemon.getWorkspace));
-      const sessionId = Effect.runSync(daemon.getWorkspace).spaces[0]!.windows[0]!.sessions[0]!.id;
-      const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+testEffect("native agent resume defers spawn until geometry settles at the client size", () =>
+  Effect.gen(function* () {
+    const { daemon, env, pluginConfig } = yield* Effect.promise(() =>
+      started("defer-agent-resume"),
+    );
+    const paneId = workspacePaneId(Effect.runSync(daemon.getWorkspace));
+    const sessionId = Effect.runSync(daemon.getWorkspace).spaces[0]!.windows[0]!.sessions[0]!.id;
+    const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
 
-      yield* Effect.promise(() =>
-        raw(
-          paths.processState,
-          JSON.stringify({
-            id: "defer",
-            method: "pane.report_agent_session",
-            params: {
-              paneId,
-              source: "amux:claude",
-              agent: "claude",
-              seq: 1,
-              agentSessionId: "conv-defer",
-            },
-          }) + "\n",
-        ),
-      );
-      yield* Effect.promise(() =>
-        waitFor(async () => {
-          const pane = Effect.runSync(daemon.getWorkspace).spaces[0]?.windows[0]?.layout.root;
-          return (
-            pane !== null &&
-            typeof pane === "object" &&
-            "agentSession" in pane &&
-            (pane as { agentSession?: { value: string } }).agentSession?.value === "conv-defer"
-          );
-        }, "agent session ref to land"),
-      );
+    yield* Effect.promise(() =>
+      raw(
+        paths.processState,
+        JSON.stringify({
+          id: "defer",
+          method: "pane.report_agent_session",
+          params: {
+            paneId,
+            source: "amux:claude",
+            agent: "claude",
+            seq: 1,
+            agentSessionId: "conv-defer",
+          },
+        }) + "\n",
+      ),
+    );
+    yield* Effect.promise(() =>
+      waitFor(async () => {
+        const pane = Effect.runSync(daemon.getWorkspace).spaces[0]?.windows[0]?.layout.root;
+        return (
+          pane !== null &&
+          typeof pane === "object" &&
+          "agentSession" in pane &&
+          (pane as { agentSession?: { value: string } }).agentSession?.value === "conv-defer"
+        );
+      }, "agent session ref to land"),
+    );
 
-      yield* daemon.close;
-      daemons.splice(daemons.indexOf(daemon), 1);
+    yield* daemon.close;
+    daemons.splice(daemons.indexOf(daemon), 1);
 
-      const captured: Array<{ cmd: readonly string[]; cols: number; rows: number; id: string }> =
-        [];
-      const reloaded = yield* Effect.promise(() =>
-        run(
-          startDaemon(daemon.id, {
-            pluginConfig,
-            spawnSession: (spec) => {
-              captured.push({
-                id: spec.id,
-                cmd: spec.cmd,
-                cols: spec.cols,
-                rows: spec.rows,
-              });
-              return Effect.fail(new DaemonError({ message: "capture-only spawn" }));
-            },
-          }),
-          env,
-        ),
-      );
-      daemons.push(reloaded);
+    const captured: Array<{ cmd: readonly string[]; cols: number; rows: number; id: string }> = [];
+    const reloaded = yield* Effect.promise(() =>
+      run(
+        startDaemon(daemon.id, {
+          pluginConfig,
+          spawnSession: (spec) => {
+            captured.push({
+              id: spec.id,
+              cmd: spec.cmd,
+              cols: spec.cols,
+              rows: spec.rows,
+            });
+            return Effect.fail(new DaemonError({ message: "capture-only spawn" }));
+          },
+        }),
+        env,
+      ),
+    );
+    daemons.push(reloaded);
 
-      expect(reloaded.pendingAgentResumeSessions()).toContain(sessionId);
-      expect(Effect.runSync(reloaded.liveSessions)).not.toContain(sessionId);
-      expect(captured).toEqual([]);
+    expect(reloaded.pendingAgentResumeSessions()).toContain(sessionId);
+    expect(Effect.runSync(reloaded.liveSessions)).not.toContain(sessionId);
+    expect(captured).toEqual([]);
 
-      // Dirty / zero-size passes must not start the agent.
-      expect(yield* reloaded.flushPendingAgentResume(sessionId, 120, 40, true)).toBe(false);
-      expect(captured).toEqual([]);
-      expect(reloaded.pendingAgentResumeSessions()).toContain(sessionId);
+    // Dirty / zero-size passes must not start the agent.
+    expect(yield* reloaded.flushPendingAgentResume(sessionId, 120, 40, true)).toBe(false);
+    expect(captured).toEqual([]);
+    expect(reloaded.pendingAgentResumeSessions()).toContain(sessionId);
 
-      // Settled geometry: the spawn attempt carries resume argv and the
-      // settled size (spawn itself fails on purpose so we can inspect the spec).
-      yield* reloaded.flushPendingAgentResume(sessionId, 120, 40).pipe(
-        Effect.catch(() => Effect.void),
-      );
-      expect(captured).toEqual([
-        {
-          id: sessionId,
-          cmd: ["claude", "--resume", "conv-defer"],
-          cols: 120,
-          rows: 40,
-        },
-      ]);
-    }),
-);
-
-testEffect(
-  "client projection of a deferred resume sends resize and flushes the pending plan",
-  () =>
-    Effect.gen(function* () {
-      const { daemon, env, pluginConfig } = yield* Effect.promise(() =>
-        started("defer-agent-resume-client"),
-      );
-      const paneId = workspacePaneId(Effect.runSync(daemon.getWorkspace));
-      const sessionId = Effect.runSync(daemon.getWorkspace).spaces[0]!.windows[0]!.sessions[0]!.id;
-      const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
-
-      yield* Effect.promise(() =>
-        raw(
-          paths.processState,
-          JSON.stringify({
-            id: "defer-client",
-            method: "pane.report_agent_session",
-            params: {
-              paneId,
-              source: "amux:claude",
-              agent: "claude",
-              seq: 1,
-              agentSessionId: "conv-client-resize",
-            },
-          }) + "\n",
-        ),
-      );
-      yield* Effect.promise(() =>
-        waitFor(async () => {
-          const pane = Effect.runSync(daemon.getWorkspace).spaces[0]?.windows[0]?.layout.root;
-          return (
-            pane !== null &&
-            typeof pane === "object" &&
-            "agentSession" in pane &&
-            (pane as { agentSession?: { value: string } }).agentSession?.value ===
-              "conv-client-resize"
-          );
-        }, "agent session ref to land"),
-      );
-
-      yield* daemon.close;
-      daemons.splice(daemons.indexOf(daemon), 1);
-
-      const captured: Array<{ cmd: readonly string[]; cols: number; rows: number; id: string }> =
-        [];
-      const reloaded = yield* Effect.promise(() =>
-        run(
-          startDaemon(daemon.id, {
-            pluginConfig,
-            spawnSession: (spec) => {
-              captured.push({
-                id: spec.id,
-                cmd: spec.cmd,
-                cols: spec.cols,
-                rows: spec.rows,
-              });
-              return Effect.fail(new DaemonError({ message: "capture-only spawn" }));
-            },
-          }),
-          env,
-        ),
-      );
-      daemons.push(reloaded);
-      expect(reloaded.pendingAgentResumeSessions()).toContain(sessionId);
-
-      const scope = yield* Scope.make();
-      const client = yield* Effect.promise(() =>
-        run(
-          Scope.provide(
-            SessionClient.connect(daemon.id, { client: "defer-ui", autostart: false }),
-            scope,
-          ),
-          env,
-        ),
-      );
-      // Projection of the modeled-but-not-live session: backend must resize
-      // (not "is not live") so AttachHost flushes the pending resume.
-      const projected = yield* SessionHandle.make({
+    // Settled geometry: the spawn attempt carries resume argv and the
+    // settled size (spawn itself fails on purpose so we can inspect the spec).
+    yield* reloaded
+      .flushPendingAgentResume(sessionId, 120, 40)
+      .pipe(Effect.catch(() => Effect.void));
+    expect(captured).toEqual([
+      {
         id: sessionId,
-        cmd: ["/usr/bin/zsh"],
+        cmd: ["claude", "--resume", "conv-defer"],
+        cols: 120,
+        rows: 40,
+      },
+    ]);
+  }),
+);
+
+testEffect("client projection of a deferred resume sends resize and flushes the pending plan", () =>
+  Effect.gen(function* () {
+    const { daemon, env, pluginConfig } = yield* Effect.promise(() =>
+      started("defer-agent-resume-client"),
+    );
+    const paneId = workspacePaneId(Effect.runSync(daemon.getWorkspace));
+    const sessionId = Effect.runSync(daemon.getWorkspace).spaces[0]!.windows[0]!.sessions[0]!.id;
+    const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+
+    yield* Effect.promise(() =>
+      raw(
+        paths.processState,
+        JSON.stringify({
+          id: "defer-client",
+          method: "pane.report_agent_session",
+          params: {
+            paneId,
+            source: "amux:claude",
+            agent: "claude",
+            seq: 1,
+            agentSessionId: "conv-client-resize",
+          },
+        }) + "\n",
+      ),
+    );
+    yield* Effect.promise(() =>
+      waitFor(async () => {
+        const pane = Effect.runSync(daemon.getWorkspace).spaces[0]?.windows[0]?.layout.root;
+        return (
+          pane !== null &&
+          typeof pane === "object" &&
+          "agentSession" in pane &&
+          (pane as { agentSession?: { value: string } }).agentSession?.value ===
+            "conv-client-resize"
+        );
+      }, "agent session ref to land"),
+    );
+
+    yield* daemon.close;
+    daemons.splice(daemons.indexOf(daemon), 1);
+
+    const captured: Array<{ cmd: readonly string[]; cols: number; rows: number; id: string }> = [];
+    const reloaded = yield* Effect.promise(() =>
+      run(
+        startDaemon(daemon.id, {
+          pluginConfig,
+          spawnSession: (spec) => {
+            captured.push({
+              id: spec.id,
+              cmd: spec.cmd,
+              cols: spec.cols,
+              rows: spec.rows,
+            });
+            return Effect.fail(new DaemonError({ message: "capture-only spawn" }));
+          },
+        }),
+        env,
+      ),
+    );
+    daemons.push(reloaded);
+    expect(reloaded.pendingAgentResumeSessions()).toContain(sessionId);
+
+    const scope = yield* Scope.make();
+    const client = yield* Effect.promise(() =>
+      run(
+        Scope.provide(
+          SessionClient.connect(daemon.id, { client: "defer-ui", autostart: false }),
+          scope,
+        ),
+        env,
+      ),
+    );
+    // Projection of the modeled-but-not-live session: backend must resize
+    // (not "is not live") so AttachHost flushes the pending resume.
+    const projected = yield* SessionHandle.make({
+      id: sessionId,
+      cmd: ["/usr/bin/zsh"],
+      cols: 100,
+      rows: 30,
+      backend: client.backend(),
+    });
+    yield* Effect.promise(() =>
+      waitFor(() => captured.length > 0, "client resize to flush deferred resume"),
+    );
+    expect(captured).toEqual([
+      {
+        id: sessionId,
+        cmd: ["claude", "--resume", "conv-client-resize"],
         cols: 100,
         rows: 30,
-        backend: client.backend(),
-      });
-      yield* Effect.promise(() =>
-        waitFor(() => captured.length > 0, "client resize to flush deferred resume"),
-      );
-      expect(captured).toEqual([
-        {
-          id: sessionId,
-          cmd: ["claude", "--resume", "conv-client-resize"],
-          cols: 100,
-          rows: 30,
-        },
-      ]);
-      projected.dispose();
-      client.close();
-      yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
-    }),
+      },
+    ]);
+    projected.dispose();
+    client.close();
+    yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
+  }),
 );
 
-testEffect(
-  "a hand-edited snapshot with a bogus agent session is rejected on reload",
-  () =>
-    Effect.gen(function* () {
-      const { daemon, env } = yield* Effect.promise(() => started("bogus-agent-session"));
-      const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
-      // Close first so the hand-edit is not overwritten by shutdown persist.
-      yield* daemon.close;
+testEffect("a hand-edited snapshot with a bogus agent session is rejected on reload", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("bogus-agent-session"));
+    const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+    // Close first so the hand-edit is not overwritten by shutdown persist.
+    yield* daemon.close;
 
-      const onDisk = yield* Effect.promise(async () => {
-        const text = await Bun.file(paths.state).text();
-        return S.decodeSync(S.fromJsonString(DiskStateProbe))(text);
-      });
-      const layoutDecoded = S.decodeSync(S.fromJsonString(DiskLayoutProbe))(
-        onDisk.spaces[0]!.windows[0]!.layout,
-      );
-      const root = { ...layoutDecoded.root } satisfies JsonObject;
-      root.agentSession = {
-        source: "evil:claude",
-        agent: "claude",
-        kind: "id",
-        value: "attacker",
-      };
-      const layout = { ...layoutDecoded, root };
-      const nextState = {
-        ...onDisk,
-        spaces: onDisk.spaces.map((space, si) =>
-          si !== 0
-            ? space
-            : {
-                ...space,
-                windows: space.windows.map((window, wi) =>
-                  wi !== 0
-                    ? window
-                    : {
-                        ...window,
-                        layout: S.encodeSync(S.fromJsonString(DiskLayoutProbe))(layout),
-                      },
-                ),
-              },
-        ),
-      };
-      yield* Effect.promise(() => Bun.write(paths.state, `${encodeJson(nextState)}\n`));
+    const onDisk = yield* Effect.promise(async () => {
+      const text = await Bun.file(paths.state).text();
+      return S.decodeSync(S.fromJsonString(DiskStateProbe))(text);
+    });
+    const layoutDecoded = S.decodeSync(S.fromJsonString(DiskLayoutProbe))(
+      onDisk.spaces[0]!.windows[0]!.layout,
+    );
+    const root = { ...layoutDecoded.root } satisfies JsonObject;
+    root.agentSession = {
+      source: "evil:claude",
+      agent: "claude",
+      kind: "id",
+      value: "attacker",
+    };
+    const layout = { ...layoutDecoded, root };
+    const nextState = {
+      ...onDisk,
+      spaces: onDisk.spaces.map((space, si) =>
+        si !== 0
+          ? space
+          : {
+              ...space,
+              windows: space.windows.map((window, wi) =>
+                wi !== 0
+                  ? window
+                  : {
+                      ...window,
+                      layout: S.encodeSync(S.fromJsonString(DiskLayoutProbe))(layout),
+                    },
+              ),
+            },
+      ),
+    };
+    yield* Effect.promise(() => Bun.write(paths.state, `${encodeJson(nextState)}\n`));
 
-      const reloaded = yield* Effect.promise(() => run(startDaemon(daemon.id), env));
-      daemons.push(reloaded);
-      const reloadedRoot = Effect.runSync(reloaded.getWorkspace).spaces[0]!.windows[0]!.layout.root;
-      expect(
-        reloadedRoot !== null && "agentSession" in reloadedRoot
-          ? reloadedRoot.agentSession
-          : undefined,
-      ).toBeUndefined();
-    }),
+    const reloaded = yield* Effect.promise(() => run(startDaemon(daemon.id), env));
+    daemons.push(reloaded);
+    const reloadedRoot = Effect.runSync(reloaded.getWorkspace).spaces[0]!.windows[0]!.layout.root;
+    expect(
+      reloadedRoot !== null && "agentSession" in reloadedRoot
+        ? reloadedRoot.agentSession
+        : undefined,
+    ).toBeUndefined();
+  }),
 );
 
 testEffect(

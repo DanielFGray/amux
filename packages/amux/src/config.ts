@@ -215,9 +215,7 @@ const decodePluginEntry = (entry: JsonValue): Option.Option<PluginSpec> => {
   );
 };
 
-export const loadConfig = (
-  path?: string,
-): Effect.Effect<Config, never, FileSystem.FileSystem> =>
+export const loadConfig = (path?: string): Effect.Effect<Config, never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const resolved = path ?? (yield* configPath);
     return yield* Effect.gen(function* () {

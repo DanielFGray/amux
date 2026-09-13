@@ -135,10 +135,7 @@ afterEach(() =>
     }),
   ),
 );
-const startSession = Effect.fnUntraced(function* (
-  id: string,
-  options: SessionDaemonOptions = {},
-) {
+const startSession = Effect.fnUntraced(function* (id: string, options: SessionDaemonOptions = {}) {
   const home = tempDir("client");
   const env = {
     HOME: home,
@@ -1915,7 +1912,11 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
             });
             return;
           }
-          client.respondCommand(id, undefined, "plugin.inspect needs one of: command, binding, key, pane, plugin");
+          client.respondCommand(
+            id,
+            undefined,
+            "plugin.inspect needs one of: command, binding, key, pane, plugin",
+          );
         }),
       ),
     );
@@ -1956,7 +1957,11 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
       ),
       env,
     );
-    expect(byPlugin.outputs[0]!.result).toMatchObject({ kind: "plugin", name: "amux", found: true });
+    expect(byPlugin.outputs[0]!.result).toMatchObject({
+      kind: "plugin",
+      name: "amux",
+      found: true,
+    });
 
     const byCommand = yield* run(
       controlCall(daemon.id, (c) =>
