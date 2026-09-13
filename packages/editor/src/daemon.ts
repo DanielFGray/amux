@@ -40,9 +40,7 @@ const editorOpen = {
         command.split === true ? "split" : context.pane !== undefined ? "replace" : "split";
       const raw = typeof command.file === "string" ? command.file.trim() : "";
       const descriptor: JsonValue =
-        raw.length === 0
-          ? {}
-          : { file: raw.startsWith("/") ? raw : resolve(context.cwd, raw) };
+        raw.length === 0 ? {} : { file: raw.startsWith("/") ? raw : resolve(context.cwd, raw) };
       return {
         changes: [
           {

@@ -8,11 +8,7 @@
 import { Result, Schema as S } from "effect";
 import { DescriptorSchema } from "./layout.ts";
 import { errorMessage } from "./error-message.ts";
-import {
-  ownerJsonCodec,
-  WorkspaceChangeError,
-  type OwnerJsonCodec,
-} from "./workspace-changes.ts";
+import { ownerJsonCodec, WorkspaceChangeError, type OwnerJsonCodec } from "./workspace-changes.ts";
 
 export type PaneDescriptorCodec = OwnerJsonCodec;
 
