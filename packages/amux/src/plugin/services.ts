@@ -22,8 +22,10 @@ import type { PromptOptions } from "../effect/SessionRegistry.ts";
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "../tiling-algorithm-default.ts";
 import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
-import type { PersistedSession } from "../session.ts";
-import type { PluginActionRegistration, SessionOps } from "../effect/WorkspaceTransaction.ts";
+import type { PluginActionRegistration } from "../effect/WorkspaceTransaction.ts";
+import type { ResultCodec } from "../workspace-changes.ts";
+import type { PaneDescriptorRegistration } from "../pane-descriptors.ts";
+import type { ProviderMessageRegistration } from "../session-provider-messages.ts";
 import type { DaemonEventPayload } from "../effect/EventBus.ts";
 import type { ControlError } from "../control.ts";
 
@@ -109,17 +111,18 @@ export type CommandsService = Omit<Commands, "registerCommand" | "registerFullCo
  * CLI argument shape, the target classification, and how it executes.
  *
  * Workspace-target commands reduce through the daemon's model queue: `reduce`
- * runs inside the transaction against a Draft, alongside core's own reducer,
- * and may push actions — core variants or new ones from `actions` below.
- * Session-target commands never touch the model queue: `run` executes
- * directly with a per-call context (a fresh snapshot read plus the live
- * session capabilities).
+ * returns an Effect of workspace changes as data; core applies them
+ * synchronously inside the transaction. Session-target commands never touch
+ * the model queue: `run` executes directly with a per-call context (a fresh
+ * snapshot read plus the live session capabilities).
  */
 export interface DaemonCommandSpec {
   readonly tag: string;
   readonly fields: S.Struct.Fields;
   readonly meta: Meta;
   readonly resources: (args: any) => readonly string[];
+  /** Result Schema closed over as a codec via {@link commandResultCodec}. */
+  readonly result?: ResultCodec;
 }
 
 export interface DaemonCommandRegistration extends DaemonCommandSpec {
@@ -131,14 +134,10 @@ export interface DaemonCommandRegistration extends DaemonCommandSpec {
   /** New WorkspaceAction variants this command's reducer may push, with the
    *  executors the transaction routes them to. */
   readonly actions?: readonly PluginActionRegistration[];
-  /** Fires once after a session's backend process has been spawned and is
-   *  live — the ResumeAgent handler runs every registered hook so a plugin
-   *  can act on session-scoped state (a queued initial prompt, say) that
-   *  had nowhere to go while the session was still declared but unspawned. */
-  readonly onSessionLive?: (
-    session: PersistedSession,
-    sessionOps: SessionOps,
-  ) => Effect.Effect<void>;
+  /** Pane-type descriptor codecs this command's plugin owns. */
+  readonly paneDescriptors?: readonly PaneDescriptorRegistration[];
+  /** Session-provider message codecs this command's plugin owns. */
+  readonly providerMessages?: readonly ProviderMessageRegistration[];
 }
 
 /** Per-call capabilities for a session-target daemon command. Read-only plus

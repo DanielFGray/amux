@@ -30,7 +30,7 @@ type SessionOptions = SessionHandleOptions;
 import type { PersistedSession } from "./session.ts";
 import { AttachClient, type AttachClientContract } from "./attach.ts";
 import { SessionClient, type SessionClientContract } from "./client.ts";
-import { startDaemon, type SessionDaemonService } from "./daemon.ts";
+import { startDaemon, type SessionDaemonOptions, type SessionDaemonService } from "./daemon.ts";
 import { captureScrollback, captureVisible } from "./capture.ts";
 import { MODE_ALT_SCREEN } from "./ghostty.ts";
 import { processAlive, sessionPaths, SessionStore } from "./session.ts";
@@ -47,8 +47,17 @@ import { layoutRefs } from "./layout.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { testEffect } from "./test-effect.ts";
 import { until } from "./test-wait.ts";
+import type { Config as AmuxConfig } from "./config.ts";
 
 registerCleanup();
+
+const editorPlugin = new URL("../../editor", import.meta.url).pathname;
+const editorPluginConfig: AmuxConfig = {
+  options: {},
+  keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
+  plugins: [{ path: editorPlugin, enabled: true }],
+  permissions: [],
+};
 
 /** A live `SessionHandle` as the persisted entry an attach frame carries. The
  *  client no longer serializes workspaces itself — the daemon owns that — but
@@ -126,13 +135,16 @@ afterEach(() =>
     }),
   ),
 );
-const startSession = Effect.fnUntraced(function* (id: string) {
+const startSession = Effect.fnUntraced(function* (
+  id: string,
+  options: SessionDaemonOptions = {},
+) {
   const home = tempDir("client");
   const env = {
     HOME: home,
     XDG_STATE_HOME: join(home, "state"),
   } as NodeJS.ProcessEnv;
-  const daemon = yield* run(Effect.scoped(startDaemon(id)), env);
+  const daemon = yield* run(Effect.scoped(startDaemon(id, options)), env);
   daemons.push(daemon);
   return { daemon, env };
 });
@@ -1738,7 +1750,9 @@ testEffect("every subscriber to a session receives every frame", () =>
  */
 testEffect("pane.capture of a plugin pane returns what the attached client answers", () =>
   Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("plugin-capture-client");
+    const { daemon, env } = yield* startSession("plugin-capture-client", {
+      pluginConfig: editorPluginConfig,
+    });
     const client = yield* attach("plugin-capture-client", env);
     yield* Effect.forkScoped(
       Stream.runForEach(client.commandRequests, ({ id, command: raw }) =>
@@ -2027,7 +2041,9 @@ testEffect("attached client workspace commands travel on attach with revision ch
  */
 testEffect("key-sourced client command runs on the pressing client, not the first attached", () =>
   Effect.gen(function* () {
-    const { env } = yield* startSession("attach-key-client-target");
+    const { env } = yield* startSession("attach-key-client-target", {
+      pluginConfig: editorPluginConfig,
+    });
     const first = yield* attach("attach-key-client-target", env, "first");
     const second = yield* attach("attach-key-client-target", env, "second");
     let firstHits = 0;
@@ -2125,7 +2141,9 @@ testEffect("a view command on the attach run path is refused", () =>
  */
 testEffect("key client command whose handler runs a nested session command completes", () =>
   Effect.gen(function* () {
-    const { env } = yield* startSession("attach-nested-run");
+    const { env } = yield* startSession("attach-nested-run", {
+      pluginConfig: editorPluginConfig,
+    });
     const client = yield* attach("attach-nested-run", env);
     let outerHits = 0;
     let nestedHits = 0;

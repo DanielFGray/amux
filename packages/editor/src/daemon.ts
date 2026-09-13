@@ -3,12 +3,20 @@ import { resolve } from "node:path";
 import { Effect, Schema as S } from "effect";
 import {
   DaemonCommandsTag,
+  commandResultCodec,
+  creationResultSchema,
   definePlugin,
+  paneDescriptorCodec,
   registerDaemonCommand,
   type DaemonCommandRegistration,
   type JsonValue,
   type PluginDefinition,
 } from "@danielfgray/amux";
+
+/** Descriptor for panes of type `amux.editor`. */
+export const EditorDescriptorSchema = S.Struct({
+  file: S.optionalKey(S.String),
+});
 
 const editorOpen = {
   tag: "editor.open",
@@ -21,18 +29,36 @@ const editorOpen = {
   },
   meta: { desc: "open an editor pane", group: "editor", target: "workspace", exposure: "human" },
   resources: (args) => (typeof args.file === "string" ? [args.file] : []),
-  reduce: (draft, command, context) => {
-    // From inside a pane (CLI / shell with AMUX_PANE_ID, or the focused leaf
-    // from the client): replace that leaf and keep the displaced PTY alive.
-    // Remote call without a caller: split. `split: true` always splits.
-    const mode =
-      command.split === true ? "split" : context.pane !== undefined ? "replace" : "split";
-    const raw = typeof command.file === "string" ? command.file.trim() : "";
-    const descriptor: JsonValue =
-      raw.length === 0 ? {} : { file: raw.startsWith("/") ? raw : resolve(context.cwd, raw) };
-    const pane = draft.placePluginPane("amux.editor", descriptor, { mode });
-    if (pane !== null) draft.setResult({ pane });
-  },
+  result: commandResultCodec(creationResultSchema("pane.open-plugin")),
+  paneDescriptors: [paneDescriptorCodec("amux.editor", EditorDescriptorSchema)],
+  reduce: ({ command, context }) =>
+    Effect.sync(() => {
+      // From inside a pane (CLI / shell with AMUX_PANE_ID, or the focused leaf
+      // from the client): replace that leaf and keep the displaced PTY alive.
+      // Remote call without a caller: split. `split: true` always splits.
+      const mode =
+        command.split === true ? "split" : context.pane !== undefined ? "replace" : "split";
+      const raw = typeof command.file === "string" ? command.file.trim() : "";
+      const descriptor: JsonValue =
+        raw.length === 0
+          ? {}
+          : { file: raw.startsWith("/") ? raw : resolve(context.cwd, raw) };
+      return {
+        changes: [
+          {
+            _tag: "plugin.place" as const,
+            ref: "pane",
+            type: "amux.editor",
+            descriptor,
+            mode,
+          },
+          {
+            _tag: "result.set" as const,
+            result: { pane: { _tag: "WorkspaceRef", ref: "pane" } },
+          },
+        ],
+      };
+    }),
 } satisfies DaemonCommandRegistration;
 
 export const editorDaemonCommands: readonly DaemonCommandRegistration[] = [editorOpen];

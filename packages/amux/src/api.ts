@@ -90,9 +90,52 @@ export {
 export type { AgentSessionRef, AgentSessionRefKind, OfficialAgentSource } from "./agent-session.ts";
 export type { TilingAlgorithm } from "./tiling-algorithm.ts";
 export type { Meta } from "./commands.ts";
-export type { CoreWorkspaceAction, WorkspaceDraft, WorkspaceSnapshot } from "./workspace.ts";
-export type { PermissionAnswer } from "./effect/AttachProtocol.ts";
+export type {
+  CoreWorkspaceAction,
+  WorkspaceSnapshot,
+  PluginWorkspaceReducer,
+  WorkspaceCommandContext,
+} from "./workspace.ts";
+export type { PermissionAnswer, JsonValue } from "./effect/AttachProtocol.ts";
+export { JsonValueSchema } from "./effect/AttachProtocol.ts";
 export type { PromptOptions } from "./effect/SessionRegistry.ts";
+
+export {
+  PLUGIN_REDUCE_TIMEOUT_MS,
+  PluginReducerError,
+  WorkspaceChangeError,
+  WorkspaceChangeSchema,
+  WorkspaceReducerAnswerSchema,
+  RefSchema,
+  IdOrRefSchema,
+  commandResultCodec,
+  ownerJsonCodec,
+  type WorkspaceChange,
+  type WorkspaceReducerAnswer,
+  type WorkspaceReadPackage,
+  type ResultCodec,
+  type OwnerJsonCodec,
+  type QueuedPluginAction,
+} from "./workspace-changes.ts";
+export { paneDescriptorCodec, type PaneDescriptorRegistration } from "./pane-descriptors.ts";
+export {
+  sessionProviderMessageCodec,
+  type ProviderMessageRegistration,
+} from "./session-provider-messages.ts";
+export {
+  definePluginAction,
+  reducePluginCommand,
+  workspaceTransactionPluginsFromRegistrations,
+  type PluginActionRegistration,
+  type SessionOps,
+  WorkspaceTransactionError,
+} from "./effect/WorkspaceTransaction.ts";
+export { creationResultSchema } from "./creation-result.ts";
+export {
+  AgentEntrySchema,
+  AgentListResultSchema,
+  AgentGetResultSchema,
+} from "./read-model.ts";
 
 export {
   type ForegroundProcessFact,
@@ -246,7 +289,6 @@ export { ProcessStateAuthority, type ProcessStateSource } from "./process-state-
 // the handover fallback `closeLayout`, plus the tree/container node shapes
 // themselves.
 export {
-  type JsonValue,
   type PaneContent,
   type PaneRef,
   type LayoutPane,

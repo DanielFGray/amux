@@ -115,6 +115,12 @@ export interface PersistedSession {
    * instead of prune's index heuristic (herdr overlay teardown).
    */
   transient?: boolean;
+  /**
+   * The session provider's message in its Encoded form. Validated against the
+   * provider's message Schema when session.add applies; ResumeAgent delivers
+   * it via `SessionOps.message` after spawn, then clears the field.
+   */
+  firstMessage?: JsonValue;
 }
 
 export interface PersistedWindow {
@@ -215,6 +221,7 @@ export const PersistedSessionSchema = S.Struct({
   exited: S.Boolean,
   exitCode: S.NullOr(S.Int),
   transient: S.optional(S.Boolean),
+  firstMessage: S.optional(JsonValueSchema),
 }).pipe(
   S.check(
     S.makeFilter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {

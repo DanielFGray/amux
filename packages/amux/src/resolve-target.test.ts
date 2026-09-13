@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
-import { command } from "./commands.ts";
+import { Effect, Result } from "effect";
+import { command, type RuntimeCommand } from "./commands.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { layoutPanes } from "./layout.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
@@ -9,26 +9,48 @@ import {
   applyWorkspaceCommand as applyWorkspaceCommandWithPath,
   resolveTarget,
   workspaceFromSession,
+  type WorkspaceCommandContext,
+  type WorkspaceMutation,
+  type WorkspaceSnapshot,
 } from "./workspace.ts";
+import type { DaemonCommandRegistration } from "./plugin/services.ts";
+import {
+  reducePluginCommand,
+  workspaceTransactionPluginsFromRegistrations,
+} from "./effect/WorkspaceTransaction.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const path = run(nodePath);
-const applyWorkspaceCommand = (
-  ...args: [
-    Parameters<typeof applyWorkspaceCommandWithPath>[0],
-    Parameters<typeof applyWorkspaceCommandWithPath>[1],
-    Parameters<typeof applyWorkspaceCommandWithPath>[2],
-    Parameters<typeof applyWorkspaceCommandWithPath>[4]?,
-  ]
-) => applyWorkspaceCommandWithPath(args[0], args[1], args[2], path, args[3]);
 
-const editorPlugins = {
-  reducers: new Map(
-    editorDaemonCommands.flatMap((registration) =>
-      registration.reduce ? [[registration.tag, registration.reduce] as const] : [],
+const pluginApplyFor = (
+  regs: readonly DaemonCommandRegistration[],
+  workspace: WorkspaceSnapshot,
+  cmd: RuntimeCommand,
+  context: WorkspaceCommandContext,
+) =>
+  run(
+    reducePluginCommand(
+      workspaceTransactionPluginsFromRegistrations(regs),
+      cmd,
+      workspace,
+      context,
     ),
-  ),
+  );
+
+const applyWorkspaceCommand = (
+  workspace: Parameters<typeof applyWorkspaceCommandWithPath>[0],
+  cmd: Parameters<typeof applyWorkspaceCommandWithPath>[1],
+  context: Parameters<typeof applyWorkspaceCommandWithPath>[2],
+  regs?: readonly DaemonCommandRegistration[],
+): WorkspaceMutation => {
+  const plugins =
+    regs === undefined ? undefined : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
+  const result = applyWorkspaceCommandWithPath(workspace, cmd, context, path, plugins);
+  if (Result.isFailure(result)) throw new Error(result.failure.message);
+  return result.success;
 };
+
+const editorPlugins = editorDaemonCommands;
 
 /** space-a focus pane-a; space-b has pane-b1 (agent-b1) and focused pane-b2. */
 const fixture = (): SessionState => ({

@@ -1,150 +1,125 @@
 import { expect } from "bun:test";
 import { Effect } from "effect";
-import { testEffect } from "@danielfgray/amux/testing";
-import type { WorkspaceDraft } from "@danielfgray/amux";
 import { agentHarnessDaemonCommands } from "./daemon.ts";
+import type { WorkspaceCommandContext, WorkspaceReadPackage } from "@danielfgray/amux";
+import { runtimeCommand } from "@danielfgray/amux";
+import { testEffect } from "@danielfgray/amux/testing";
 
-const agentNew = agentHarnessDaemonCommands.find((c) => c.tag === "agent.new")!;
+const agentNew = agentHarnessDaemonCommands.find((entry) => entry.tag === "agent.new")!;
+const agentInterrupt = agentHarnessDaemonCommands.find((entry) => entry.tag === "agent.interrupt")!;
+const agentList = agentHarnessDaemonCommands.find((entry) => entry.tag === "agent.list")!;
 
-// `session` and `sessionOps` are typed off `onSessionLive` itself rather than
-// imported by name: their real types (PersistedSession, SessionOps) are
-// internal to core and not part of the plugin package's public export surface.
-type OnSessionLive = NonNullable<typeof agentNew.onSessionLive>;
-type LiveSession = Parameters<OnSessionLive>[0];
-type LiveSessionOps = Parameters<OnSessionLive>[1];
-type LiveSessionCalls = Array<{ id: string; message: Parameters<LiveSessionOps["message"]>[1] }>;
+const emptyReads = (activeWindow: WorkspaceReadPackage["activeWindow"]): WorkspaceReadPackage => ({
+  activeWindow,
+  focusedSession: null,
+  sessionsById: {},
+  agents: [],
+});
 
-const context = { cwd: "/tmp", shell: ["sh"], size: { cols: 80, rows: 24 } };
+const context = (pane?: string): WorkspaceCommandContext => {
+  const base: WorkspaceCommandContext = {
+    cwd: "/tmp",
+    shell: ["sh"],
+    size: { cols: 80, rows: 24 },
+  };
+  if (pane !== undefined) Object.assign(base, { pane });
+  return base;
+};
 
-/** A stand-in for core's real reducer draft, implementing only what
- *  agentNew.reduce actually calls. */
-function fakeDraft() {
-  let added: LiveSession | undefined;
-  let placedMode: "split" | "replace" | undefined;
-  const draft: WorkspaceDraft = {
-    activeWindow: () => ({ window: {} as never, space: { dir: "/tmp" } as never }),
-    findSession: () => null,
-    addSession: (_target, dir, opts) => {
-      added = {
-        id: opts?.id ?? "component-session",
-        provider: opts?.provider,
-        name: "test-agent",
-        cwd: dir,
+testEffect("agent.new emits session.add with firstMessage when a prompt is given", () =>
+  Effect.gen(function* () {
+    const answer = yield* agentNew.reduce!({
+      command: runtimeCommand("agent.new", { prompt: "hello" }),
+      context: context(),
+      reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
+    });
+    expect(answer.changes[0]).toMatchObject({
+      _tag: "session.add",
+      provider: "native",
+      firstMessage: { _tag: "agent.prompt", text: "hello" },
+    });
+    expect(answer.changes.some((change) => change._tag === "result.set")).toBe(true);
+  }),
+);
+
+testEffect("agent.new emits no firstMessage when no prompt is given", () =>
+  Effect.gen(function* () {
+    const answer = yield* agentNew.reduce!({
+      command: runtimeCommand("agent.new", {}),
+      context: context(),
+      reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
+    });
+    const add = answer.changes.find((change) => change._tag === "session.add");
+    expect(add).toBeDefined();
+    expect(add).not.toHaveProperty("firstMessage");
+  }),
+);
+
+testEffect("agent.new from a calling pane replaces; --split forces a sibling", () =>
+  Effect.gen(function* () {
+    const replace = yield* agentNew.reduce!({
+      command: runtimeCommand("agent.new", {}),
+      context: context("pane-a"),
+      reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
+    });
+    expect(replace.changes.find((c) => c._tag === "session.place")).toMatchObject({
+      mode: "replace",
+    });
+    const split = yield* agentNew.reduce!({
+      command: runtimeCommand("agent.new", { split: true }),
+      context: context("pane-a"),
+      reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
+    });
+    expect(split.changes.find((c) => c._tag === "session.place")).toMatchObject({ mode: "split" });
+  }),
+);
+
+testEffect("agent.interrupt pushes a typed action", () =>
+  Effect.gen(function* () {
+    const answer = yield* agentInterrupt.reduce!({
+      command: runtimeCommand("agent.interrupt", { target: "agent-a", reason: "stop" }),
+      context: context(),
+      reads: emptyReads(null),
+    });
+    expect(answer.changes).toEqual([
+      {
+        _tag: "action.push",
+        action: { _tag: "agent.interrupt", agent: "agent-a", reason: "stop" },
+      },
+    ]);
+  }),
+);
+
+testEffect("agent.list sets the agents read package as the result", () =>
+  Effect.gen(function* () {
+    const agents = [
+      {
+        id: "a1",
+        name: "a",
         cols: 80,
         rows: 24,
         exited: false,
         exitCode: null,
-      } as never;
-      return added as never;
-    },
-    placeSessionPane: (_entry, _agent, opts) => {
-      placedMode = opts?.mode;
-      return "pane-1";
-    },
-    placePluginPane: () => null,
-    pushAction: () => {},
-    setResult: () => {},
-    listAgents: () => [],
-    getAgent: () => null,
-  };
-  return { draft, added: () => added, placedMode: () => placedMode };
-}
-
-const fakeSessionOps = (calls: LiveSessionCalls): LiveSessionOps => ({
-  prepare: () => Effect.die("not used"),
-  kill: () => Effect.die("not used"),
-  write: () => Effect.die("not used"),
-  message: (id, message) =>
-    Effect.sync(() => {
-      calls.push({ id, message });
-    }),
-  pids: Effect.die("not used"),
-});
-
-/* A component session's spawn is deferred (a client calls resumeAgent later,
- * long after reduce runs), so a prompt handed to agent.new has to survive
- * until then somewhere other than core's action list — core has no "prompt"
- * action at all (see workspace.test.ts's sibling assertion). This is the
- * seam that used to silently drop `--prompt`. */
-testEffect("agent.new's onSessionLive delivers the prompt queued at reduce time, once", () =>
-  Effect.gen(function* () {
-    const { draft, added } = fakeDraft();
-    agentNew.reduce!(
-      draft,
-      { _tag: "agent.new", provider: "test", prompt: "Inspect this" },
-      context,
-    );
-    const session = added()!;
-
-    const calls: LiveSessionCalls = [];
-    const sessionOps = fakeSessionOps(calls);
-
-    yield* agentNew.onSessionLive!(session, sessionOps);
-    expect(calls).toEqual([
-      { id: session.id, message: { _tag: "agent.prompt", text: "Inspect this" } },
-    ]);
-
-    // A second resumeAgent (or a plugin restart's re-registration) must not
-    // replay the same prompt — it was drained, not merely read.
-    yield* agentNew.onSessionLive!(session, sessionOps);
-    expect(calls).toHaveLength(1);
+        space: "space-a",
+        window: 1,
+      },
+    ];
+    const answer = yield* agentList.reduce!({
+      command: runtimeCommand("agent.list", {}),
+      context: context(),
+      reads: { ...emptyReads(null), agents },
+    });
+    expect(answer.changes).toEqual([{ _tag: "result.set", result: agents }]);
   }),
 );
 
-testEffect("agent.new's onSessionLive is a no-op for a session with no queued prompt", () =>
+testEffect("agent.new reduce is an Effect (contract smoke)", () =>
   Effect.gen(function* () {
-    const { draft, added } = fakeDraft();
-    agentNew.reduce!(draft, { _tag: "agent.new", provider: "test" }, context);
-    const session = added()!;
-
-    const calls: LiveSessionCalls = [];
-    const sessionOps = fakeSessionOps(calls);
-
-    yield* agentNew.onSessionLive!(session, sessionOps);
-    expect(calls).toEqual([]);
-  }),
-);
-
-testEffect("agent.new resumeFrom recreates the prior session id (keeps AgentLog)", () =>
-  Effect.gen(function* () {
-    const { draft, added } = fakeDraft();
-    agentNew.reduce!(
-      draft,
-      { _tag: "agent.new", provider: "native", resumeFrom: "agent-prior" },
-      { ...context, pane: "pane-shell" },
-    );
-    expect(added()?.id).toBe("agent-prior");
-  }),
-);
-
-testEffect("agent.new splits when there is no calling pane", () =>
-  Effect.gen(function* () {
-    const { draft, placedMode } = fakeDraft();
-    agentNew.reduce!(draft, { _tag: "agent.new", provider: "native" }, context);
-    expect(placedMode()).toBe("split");
-  }),
-);
-
-testEffect("agent.new replaces the calling pane when context.pane is set", () =>
-  Effect.gen(function* () {
-    const { draft, placedMode } = fakeDraft();
-    agentNew.reduce!(
-      draft,
-      { _tag: "agent.new", provider: "native" },
-      { ...context, pane: "pane-shell" },
-    );
-    expect(placedMode()).toBe("replace");
-  }),
-);
-
-testEffect("agent.new --split forces a sibling even from a calling pane", () =>
-  Effect.gen(function* () {
-    const { draft, placedMode } = fakeDraft();
-    agentNew.reduce!(
-      draft,
-      { _tag: "agent.new", provider: "native", split: true },
-      { ...context, pane: "pane-shell" },
-    );
-    expect(placedMode()).toBe("split");
+    const answer = yield* agentNew.reduce!({
+      command: runtimeCommand("agent.new", {}),
+      context: context(),
+      reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
+    });
+    expect(answer.changes.length).toBeGreaterThan(0);
   }),
 );

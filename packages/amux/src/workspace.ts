@@ -10,6 +10,17 @@ import {
   type SpaceEntry as ReadSpaceEntry,
   type WindowEntry as ReadWindowEntry,
 } from "./read-model.ts";
+import {
+  ActionTagSchema,
+  PluginReducerError,
+  resolveIdOrRef,
+  resolveRefsInJson,
+  WorkspaceChangeError,
+  type PluginCommandApply,
+  type QueuedPluginAction,
+  type WorkspaceReadPackage,
+  type WorkspaceReducerAnswer,
+} from "./workspace-changes.ts";
 import { randomUUID } from "node:crypto";
 import { nodePath } from "./effect/node-path.ts";
 import { worktreeDirname } from "./git.ts";
@@ -65,7 +76,7 @@ import {
 import { MAX_SPACES, MAX_TERMINAL_CELLS, MAX_TERMINAL_DIMENSION } from "./limits.ts";
 import { NonEmptyString, PositiveInt } from "./schema-primitives.ts";
 import type { PaneAgentSessionSnapshot } from "./agent-session.ts";
-import { Clock, Effect, Option, Result, Schema as S } from "effect";
+import { Clock, Effect, Match, Option, Result, Schema as S } from "effect";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import { commandName } from "@danielfgray/amux-agent-facts/command-name.ts";
@@ -251,12 +262,9 @@ const CORE_ACTION_TAGS: ReadonlySet<string> = new Set(["spawn", "kill", "restart
 export const isCoreWorkspaceAction = (action: WorkspaceAction): action is CoreWorkspaceAction =>
   CORE_ACTION_TAGS.has(action._tag);
 
-/** A plugin-contributed action variant. Core never produces these; the
- *  transaction routes them to the executor the contributing plugin registered. */
-export interface PluginWorkspaceAction {
-  readonly _tag: string;
-  readonly [key: string]: JsonValue;
-}
+/** A plugin-contributed action queued between apply and run. `_tag` routes to
+ *  the registration; `payload` is that Schema's Encoded form (JsonValue). */
+export type PluginWorkspaceAction = QueuedPluginAction;
 
 export type WorkspaceAction = CoreWorkspaceAction | PluginWorkspaceAction;
 
@@ -268,63 +276,14 @@ export interface WorkspaceMutation {
 }
 
 /**
- * What a daemon-resident plugin may do to the workspace draft for a command
- * core does not own.
- *
- * The layout algebra stays behind this interface: a reducer names sessions
- * and panes through opaque entries, never touching tree structure or id
- * counters itself. Methods mutate the same draft core's own reducer writes,
- * so the post-reduce fixups (spawn pane resolution, no-focus restore,
- * normalization, change detection) apply to plugin commands unchanged.
+ * Plugin workspace reducer: plain data in, Effect of changes out. Core applies
+ * the decoded answer synchronously; the reducer never holds a draft.
  */
-export interface WorkspaceDraft {
-  /** The window a command without an explicit target acts in. */
-  readonly activeWindow: () => WindowEntry | null;
-  /** A session by id, or the focused pane's session when no id is given. */
-  readonly findSession: (id?: string) => SessionEntry | null;
-  /**
-   * Add a backend to a window's roster and queue its spawn. A `provider`
-   * makes it a component session (a harness worker the client respawns);
-   * without one it is a plain shell session.
-   */
-  readonly addSession: (
-    target: WorkspaceWindow,
-    dir: string,
-    opts?: {
-      readonly provider?: string;
-      /** Reuse a prior session id (resume a stored conversation + AgentLog). */
-      readonly id?: string;
-    },
-  ) => PersistedSession;
-  /** Show a session in its window. Default splits/appends; `mode: "replace"`
-   *  rewrites the calling (or focused) leaf in place and keeps any displaced
-   *  session alive via `PaneContent.displaced`. Returns the pane id. */
-  readonly placeSessionPane: (
-    target: WindowEntry,
-    agent: PersistedSession,
-    opts?: { readonly mode?: "split" | "replace" },
-  ) => string;
-  /** Place a sessionless plugin pane. Default splits the focused pane in a
-   *  row; `mode: "replace"` rewrites the calling (or focused) leaf and keeps
-   *  the previous session alive off-layout. Returns its id, or null when
-   *  there is no target. */
-  readonly placePluginPane: (
-    type: string,
-    descriptor: JsonValue,
-    opts?: { readonly mode?: "split" | "replace" },
-  ) => string | null;
-  readonly pushAction: (action: WorkspaceAction) => void;
-  readonly setResult: (result: JsonValue) => void;
-  /** Every agent in the draft, as the machine-facing read surface shapes them. */
-  readonly listAgents: () => readonly ReadAgentEntry[];
-  readonly getAgent: (id: string) => ReadAgentEntry | null;
-}
-
-export type PluginWorkspaceReducer = (
-  draft: WorkspaceDraft,
-  command: RuntimeCommand,
-  context: WorkspaceCommandContext,
-) => void;
+export type PluginWorkspaceReducer = (input: {
+  readonly command: RuntimeCommand;
+  readonly context: WorkspaceCommandContext;
+  readonly reads: WorkspaceReadPackage;
+}) => Effect.Effect<WorkspaceReducerAnswer, PluginReducerError>;
 
 /**
  * Adopt persisted state at the daemon boundary.
@@ -751,6 +710,29 @@ const activeWindowForCaller = (
   return findWindow(workspace, {});
 };
 
+/** Plain-data reads a plugin reducer may use for one command. No layout tree. */
+export function buildWorkspaceReadPackage(
+  workspace: WorkspaceSnapshot,
+  context: WorkspaceCommandContext,
+): WorkspaceReadPackage {
+  const caller: ResolveTargetCaller = { agent: context.agent, pane: context.pane };
+  const active = activeWindowForCaller(workspace, caller);
+  const focused = findSession(workspace);
+  const sessionsById: { [id: string]: PersistedSession } = {};
+  for (const { session } of workspaceSessions(workspace)) {
+    sessionsById[session.id] = session;
+  }
+  return {
+    activeWindow:
+      active === null
+        ? null
+        : { space: active.space.id, window: active.window.number, dir: active.space.dir },
+    focusedSession: focused?.session ?? null,
+    sessionsById,
+    agents: agentEntries(workspace),
+  };
+}
+
 const focusedPaneOf = (entry: WindowEntry): ResolvedPaneTarget | null => {
   const pane = layoutRefs(entry.window.layout).find(
     (item) => item.id === entry.window.state.focus,
@@ -781,19 +763,19 @@ export function resolveTarget(
 /**
  * Apply one existing command value to a private candidate generation.
  *
- * Core tags run the switch below; anything else is a daemon-plugin command
- * and runs the reducer the plugin registered for its tag, against the same
- * draft and the same post-reduce fixups. An unregistered tag reduces to a
- * no-op mutation (the daemon refuses it before it ever gets here).
+ * Core tags run the switch below. Plugin commands never run plugin code here:
+ * the transaction supplies a decoded {@link PluginCommandApply}, and this
+ * function applies those changes synchronously (or fails with
+ * {@link WorkspaceChangeError}). An absent apply on a plugin tag is a no-op.
  */
 export function applyWorkspaceCommand(
   current: WorkspaceSnapshot,
   command: Command | RuntimeCommand,
   request: WorkspaceCommandContext,
   path: Effect.Success<typeof nodePath>,
-  plugins?: { readonly reducers: ReadonlyMap<string, PluginWorkspaceReducer> },
+  plugins?: PluginCommandApply,
   algorithm: TilingAlgorithm = defaultTilingAlgorithm,
-): WorkspaceMutation {
+): Result.Result<WorkspaceMutation, WorkspaceChangeError> {
   const { basename, join, resolve } = path;
   const next = structuredClone(current);
   const context: WorkspaceCommandContext = {
@@ -888,6 +870,7 @@ export function applyWorkspaceCommand(
       readonly name?: string;
       readonly transient?: boolean;
       readonly id?: string;
+      readonly firstMessage?: JsonValue;
     },
   ): PersistedSession => {
     const component = opts?.provider !== undefined;
@@ -914,6 +897,7 @@ export function applyWorkspaceCommand(
       Object.assign(agent, { env: { ...opts.env } });
     }
     if (opts?.transient === true) Object.assign(agent, { transient: true });
+    if (opts?.firstMessage !== undefined) Object.assign(agent, { firstMessage: opts.firstMessage });
     if (component) {
       Object.assign(agent, {
         kind: "component" as const,
@@ -1010,21 +994,175 @@ export function applyWorkspaceCommand(
     window.state.preset = null;
     return ref.id;
   };
-  const draft: WorkspaceDraft = {
-    activeWindow: () => activeWindow(),
-    findSession: (id) => findSession(next, id),
-    addSession,
-    placeSessionPane,
-    placePluginPane,
-    pushAction: (action) => void actions.push(action),
-    setResult: (value) => {
-      result = value;
-    },
-    listAgents: () => agentEntries(next),
-    getAgent: (id) => {
-      const found = findSession(next, id);
-      return found ? agentEntry(found.space, found.window, found.session) : null;
-    },
+  const windowEntryFor = (target: {
+    space: string;
+    window: number;
+  }): Result.Result<WindowEntry, WorkspaceChangeError> => {
+    const foundSpace = next.spaces.find((item) => item.id === target.space);
+    if (!foundSpace) {
+      return Result.fail(
+        new WorkspaceChangeError({ message: `unknown space '${target.space}'` }),
+      );
+    }
+    const foundWindow = foundSpace.windows.find((item) => item.number === target.window);
+    if (!foundWindow) {
+      return Result.fail(
+        new WorkspaceChangeError({
+          message: `unknown window ${target.window} in space '${target.space}'`,
+        }),
+      );
+    }
+    return Result.succeed({ space: foundSpace, window: foundWindow });
+  };
+  const bindRef = (
+    refs: Map<string, string>,
+    ref: string | undefined,
+    id: string,
+  ): Result.Result<void, WorkspaceChangeError> => {
+    if (ref === undefined) return Result.void;
+    if (refs.has(ref)) {
+      return Result.fail(new WorkspaceChangeError({ message: `duplicate ref '${ref}'` }));
+    }
+    refs.set(ref, id);
+    return Result.void;
+  };
+  const applyPluginChanges = (
+    apply: PluginCommandApply,
+  ): Result.Result<void, WorkspaceChangeError> => {
+    const refs = new Map<string, string>();
+    for (const change of apply.changes) {
+      const step = Match.valueTags(change, {
+        "session.add": (c): Result.Result<void, WorkspaceChangeError> => {
+          if (refs.has(c.ref)) {
+            return Result.fail(new WorkspaceChangeError({ message: `duplicate ref '${c.ref}'` }));
+          }
+          const entry = windowEntryFor(c.target);
+          if (Result.isFailure(entry)) return Result.fail(entry.failure);
+          if (c.id !== undefined && agentIds.has(c.id)) {
+            return Result.fail(
+              new WorkspaceChangeError({ message: `session id '${c.id}' already exists` }),
+            );
+          }
+          let firstMessage: JsonValue | undefined;
+          if (c.firstMessage !== undefined) {
+            if (c.provider === undefined) {
+              return Result.fail(
+                new WorkspaceChangeError({
+                  message: "session.add firstMessage requires a provider",
+                }),
+              );
+            }
+            const codec = apply.providerMessages.get(c.provider);
+            if (codec === undefined) {
+              return Result.fail(
+                new WorkspaceChangeError({
+                  message: `unknown session provider '${c.provider}' for firstMessage`,
+                }),
+              );
+            }
+            const stored = codec(c.firstMessage);
+            if (Result.isFailure(stored)) return Result.fail(stored.failure);
+            firstMessage = stored.success;
+          }
+          const agent = addSession(entry.success.window, c.dir, {
+            provider: c.provider,
+            id: c.id,
+            firstMessage,
+          });
+          refs.set(c.ref, agent.id);
+          return Result.void;
+        },
+        "session.place": (c) => {
+          const entry = windowEntryFor(c.target);
+          if (Result.isFailure(entry)) return Result.fail(entry.failure);
+          const sessionId = resolveIdOrRef(c.session, refs);
+          if (Result.isFailure(sessionId)) return Result.fail(sessionId.failure);
+          const agent = entry.success.window.sessions.find((item) => item.id === sessionId.success);
+          if (!agent) {
+            return Result.fail(
+              new WorkspaceChangeError({
+                message: `session '${sessionId.success}' is not in the target window`,
+              }),
+            );
+          }
+          if (c.mode === "replace") {
+            const target = targetPane();
+            if (!target || target.window.window !== entry.success.window) {
+              return Result.fail(
+                new WorkspaceChangeError({
+                  message: "session.place replace requires a target pane in the named window",
+                }),
+              );
+            }
+            return bindRef(refs, c.ref, replacePaneContent(target, paneContentFor(agent)));
+          }
+          return bindRef(refs, c.ref, placeSessionPane(entry.success, agent, { mode: "split" }));
+        },
+        "plugin.place": (c) => {
+          const codec = apply.paneDescriptors.get(c.type);
+          if (codec === undefined) {
+            return Result.fail(
+              new WorkspaceChangeError({ message: `unknown pane type '${c.type}'` }),
+            );
+          }
+          const sized = codec(c.descriptor);
+          if (Result.isFailure(sized)) return Result.fail(sized.failure);
+          const paneId = placePluginPane(c.type, sized.success, {
+            mode: c.mode === "replace" ? "replace" : "split",
+          });
+          if (paneId === null) {
+            return Result.fail(
+              new WorkspaceChangeError({
+                message: "plugin.place requires a target pane or window",
+              }),
+            );
+          }
+          return bindRef(refs, c.ref, paneId);
+        },
+        "action.push": (c) => {
+          const resolved = resolveRefsInJson(c.action, refs);
+          if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
+          const tagged = S.decodeUnknownResult(ActionTagSchema)(resolved.success);
+          if (Result.isFailure(tagged)) {
+            return Result.fail(
+              new WorkspaceChangeError({
+                message: "action.push payload must be an object with _tag",
+              }),
+            );
+          }
+          const tag = tagged.success._tag;
+          const decode = apply.actionDecoders.get(tag);
+          if (decode === undefined) {
+            return Result.fail(
+              new WorkspaceChangeError({
+                message: `action tag '${tag}' is not registered for this command`,
+              }),
+            );
+          }
+          const queued = decode(resolved.success);
+          if (Result.isFailure(queued)) return Result.fail(queued.failure);
+          actions.push(queued.success);
+          return Result.void;
+        },
+        "result.set": (c) => {
+          if (apply.resultCodec === undefined) {
+            return Result.fail(
+              new WorkspaceChangeError({
+                message: "result.set requires a declared result Schema on the command",
+              }),
+            );
+          }
+          const resolved = resolveRefsInJson(c.result, refs);
+          if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
+          const stored = apply.resultCodec(resolved.success);
+          if (Result.isFailure(stored)) return Result.fail(stored.failure);
+          result = stored.success;
+          return Result.void;
+        },
+      });
+      if (Result.isFailure(step)) return step;
+    }
+    return Result.void;
   };
   const addWindow = (target: WorkspaceSpace): WorkspaceWindow => {
     let number: number;
@@ -1072,8 +1210,11 @@ export function applyWorkspaceCommand(
     return ref.id;
   };
   if (!isCoreCommand(command)) {
-    plugins?.reducers.get(command._tag)?.(draft, command, context);
-    return finish();
+    if (plugins !== undefined) {
+      const applied = applyPluginChanges(plugins);
+      if (Result.isFailure(applied)) return Result.fail(applied.failure);
+    }
+    return Result.succeed(finish());
   }
   switch (command._tag) {
     case "pane.split": {
@@ -1093,8 +1234,23 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.open-plugin": {
-      const pane = draft.placePluginPane(command.type, command.descriptor);
-      if (pane !== null) result = { pane } satisfies CreationResult<"pane.open-plugin">;
+      const codec = plugins?.paneDescriptors.get(command.type);
+      if (codec === undefined) {
+        return Result.fail(
+          new WorkspaceChangeError({ message: `unknown pane type '${command.type}'` }),
+        );
+      }
+      const sized = codec(command.descriptor);
+      if (Result.isFailure(sized)) return Result.fail(sized.failure);
+      const pane = placePluginPane(command.type, sized.success);
+      if (pane === null) {
+        return Result.fail(
+          new WorkspaceChangeError({
+            message: "pane.open-plugin requires a target pane or window",
+          }),
+        );
+      }
+      result = { pane } satisfies CreationResult<"pane.open-plugin">;
       break;
     }
     case "process-plugin.pane.open": {
@@ -1696,7 +1852,7 @@ export function applyWorkspaceCommand(
     }
   }
 
-  return finish();
+  return Result.succeed(finish());
 
   // The post-reduce fixups both core and plugin commands share: spawn pane
   // resolution, the no-focus restore, normalization, and change detection.
@@ -1812,8 +1968,7 @@ function findSpace(workspace: WorkspaceSnapshot, id?: string): WorkspaceSpace | 
 /** The window a bare `{space?, window?}` target names: the given space and
  *  window number, or the active ones when either is omitted. Shared with
  *  callers outside the reducer — the daemon's send-keys resolver, notably —
- *  that need "the active window" read-only, off a snapshot rather than the
- *  reducer's mutable draft. */
+ *  that need "the active window" read-only from a snapshot. */
 export function findWindow(
   workspace: WorkspaceSnapshot,
   target: { space?: string; window?: number },

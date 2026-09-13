@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 import { command, commandInvocation, CurrentInvocation } from "../commands.ts";
 import {
   applyWorkspaceCommand as applyWorkspaceCommandWithPath,
   markSessionExited,
   workspaceFromSession,
+  type WorkspaceMutation,
 } from "../workspace.ts";
 import { nodePath } from "../effect/node-path.ts";
 import type { SessionState } from "../session.ts";
@@ -28,7 +29,18 @@ const applyWorkspaceCommand = (
     Parameters<typeof applyWorkspaceCommandWithPath>[4]?,
     Parameters<typeof applyWorkspaceCommandWithPath>[5]?,
   ]
-) => applyWorkspaceCommandWithPath(args[0], args[1], args[2], path, args[3], args[4]);
+): WorkspaceMutation => {
+  const result = applyWorkspaceCommandWithPath(
+    args[0],
+    args[1],
+    args[2],
+    path,
+    args[3],
+    args[4],
+  );
+  if (Result.isFailure(result)) throw new Error(result.failure.message);
+  return result.success;
+};
 
 const base = (): SessionState => ({
   version: 1,

@@ -1,4 +1,4 @@
-import { Effect, Layer, Option, Schema as S } from "effect";
+import { Effect, Layer, Option, Result, Schema as S } from "effect";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import {
   configHome,
@@ -7,16 +7,40 @@ import {
   readHarnessLog,
 } from "@danielfgray/amux-agent-awareness";
 import {
-  DaemonCommandsTag,
+  AgentGetResultSchema,
+  AgentListResultSchema,
   CommandError,
+  DaemonCommandsTag,
+  JsonValueSchema,
   ProcessStateSchema,
+  WorkspaceTransactionError,
+  commandResultCodec,
+  creationResultSchema,
   definePlugin,
+  definePluginAction,
   registerDaemonCommand,
-  type PluginDefinition,
+  sessionProviderMessageCodec,
   type DaemonCommandRegistration,
+  type PluginDefinition,
   type JsonValue,
 } from "@danielfgray/amux";
 import { PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
+import { NativeControl } from "./native-control.ts";
+
+const encodeNativeControl = (
+  message: NativeControl,
+): Effect.Effect<JsonValue, WorkspaceTransactionError> =>
+  Effect.suspend(() => {
+    const encoded = S.encodeResult(NativeControl)(message);
+    if (Result.isFailure(encoded)) {
+      return Effect.fail(new WorkspaceTransactionError({ message: "NativeControl encode failed" }));
+    }
+    const wire = S.decodeUnknownResult(JsonValueSchema)(encoded.success);
+    if (Result.isFailure(wire)) {
+      return Effect.fail(new WorkspaceTransactionError({ message: "NativeControl encode failed" }));
+    }
+    return Effect.succeed(wire.success);
+  });
 
 const sessionTarget = { target: S.String };
 const agentPluginMeta = (
@@ -36,12 +60,22 @@ interface PromptOptionsDraft {
   replace?: string;
 }
 
-// A session named here has an initial prompt to deliver once its backend
-// actually spawns. Spawning a component session is deferred to whichever
-// client later calls resumeAgent (daemon.ts:1266), which can be long after
-// this reduce runs — core has nothing live to hand the prompt to yet, so it
-// waits here instead, and onSessionLive below drains it once the session is.
-const pendingPrompts = new Map<string, string>();
+const AgentInterruptAction = S.TaggedStruct("agent.interrupt", {
+  agent: S.String,
+  reason: S.optionalKey(S.String),
+});
+const AgentCompactAction = S.TaggedStruct("agent.compact", {
+  agent: S.String,
+  instructions: S.optionalKey(S.String),
+});
+const AgentPermissionAction = S.TaggedStruct("agent.permission", {
+  agent: S.String,
+  answer: S.Struct({
+    request: S.String,
+    decision: PermissionDecisionSchema,
+    feedback: S.optionalKey(S.String),
+  }),
+});
 
 const agentNew = {
   tag: "agent.new",
@@ -60,45 +94,67 @@ const agentNew = {
     [args.provider, args.resumeFrom].flatMap((value) =>
       typeof value === "string" ? [value] : [],
     ),
-  reduce: (draft, command, context) => {
-    const target = draft.activeWindow();
-    if (!target) return;
-    // This plugin registers the tag and is the only spawn provider it ever
-    // names, so an omitted provider always means its own worker — not a
-    // choice callers outside the palette (the CLI, an agent script) have any
-    // way to make correctly, since providers are a client-local registry.
-    const provider = typeof command.provider === "string" ? command.provider : "native";
-    const resumeFrom =
-      typeof command.resumeFrom === "string" && command.resumeFrom.length > 0
-        ? command.resumeFrom
-        : undefined;
-    // Same id → same AgentLog + project-store conversation. Copying onto a
-    // fresh id left the chat pane blank (transcript is the durable log).
-    if (resumeFrom !== undefined && draft.findSession(resumeFrom)) {
-      return;
-    }
-    const agent = draft.addSession(target.window, target.space.dir, {
-      provider,
-      ...(resumeFrom !== undefined ? { id: resumeFrom } : {}),
-    });
-    if (typeof command.prompt === "string") pendingPrompts.set(agent.id, command.prompt);
-    // From inside a pane (CLI / shell with AMUX_PANE_ID, or the focused leaf
-    // from the client): replace that leaf and keep the displaced PTY alive.
-    // Palette / remote call without a caller: split. `split: true` always splits.
-    // Cite: packages/editor/src/daemon.ts editorOpen.
-    const mode =
-      command.split === true ? "split" : context.pane !== undefined ? "replace" : "split";
-    const pane = draft.placeSessionPane(target, agent, { mode });
-    draft.setResult({ session: agent.id, pane });
-  },
-  onSessionLive: (session, sessionOps) => {
-    const prompt = pendingPrompts.get(session.id);
-    if (prompt === undefined) return Effect.void;
-    pendingPrompts.delete(session.id);
-    return sessionOps
-      .message(session.id, { _tag: "agent.prompt", text: prompt })
-      .pipe(Effect.ignore);
-  },
+  result: commandResultCodec(creationResultSchema("agent.new")),
+  providerMessages: [sessionProviderMessageCodec("native", NativeControl)],
+  reduce: ({ command, context, reads }) =>
+    Effect.sync(() => {
+      const target = reads.activeWindow;
+      if (!target) return { changes: [] };
+      // This plugin registers the tag and is the only spawn provider it ever
+      // names, so an omitted provider always means its own worker — not a
+      // choice callers outside the palette (the CLI, an agent script) have any
+      // way to make correctly, since providers are a client-local registry.
+      const provider = typeof command.provider === "string" ? command.provider : "native";
+      const resumeFrom =
+        typeof command.resumeFrom === "string" && command.resumeFrom.length > 0
+          ? command.resumeFrom
+          : undefined;
+      // Same id → same AgentLog + project-store conversation. Copying onto a
+      // fresh id left the chat pane blank (transcript is the durable log).
+      if (resumeFrom !== undefined && reads.sessionsById[resumeFrom] !== undefined) {
+        return { changes: [] };
+      }
+      // session.add stores firstMessage; ResumeAgent delivers it once after
+      // spawn and clears the field (daemon.ts ResumeAgent).
+      const firstMessage: JsonValue | undefined =
+        typeof command.prompt === "string"
+          ? { _tag: "agent.prompt", text: command.prompt }
+          : undefined;
+      // From inside a pane (CLI / shell with AMUX_PANE_ID, or the focused leaf
+      // from the client): replace that leaf and keep the displaced PTY alive.
+      // Palette / remote call without a caller: split. `split: true` always splits.
+      // Cite: packages/editor/src/daemon.ts editorOpen.
+      const mode =
+        command.split === true ? "split" : context.pane !== undefined ? "replace" : "split";
+      const add = {
+        _tag: "session.add" as const,
+        ref: "session",
+        target: { space: target.space, window: target.window },
+        dir: target.dir,
+        provider,
+      };
+      if (resumeFrom !== undefined) Object.assign(add, { id: resumeFrom });
+      if (firstMessage !== undefined) Object.assign(add, { firstMessage });
+      return {
+        changes: [
+          add,
+          {
+            _tag: "session.place" as const,
+            ref: "pane",
+            target: { space: target.space, window: target.window },
+            session: { _tag: "WorkspaceRef" as const, ref: "session" },
+            mode,
+          },
+          {
+            _tag: "result.set" as const,
+            result: {
+              session: { _tag: "WorkspaceRef", ref: "session" },
+              pane: { _tag: "WorkspaceRef", ref: "pane" },
+            } satisfies JsonValue,
+          },
+        ],
+      };
+    }),
 } satisfies DaemonCommandRegistration;
 
 const agentPrompt = {
@@ -147,28 +203,31 @@ const agentInterrupt = {
   fields: { ...sessionTarget, reason: S.optionalKey(S.String) },
   meta: agentPluginMeta("interrupt an agent turn", "workspace", "human"),
   resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  reduce: (draft, command) => {
-    if (typeof command.target !== "string") return;
-    if (typeof command.reason === "string") {
-      draft.pushAction({ _tag: "agent.interrupt", agent: command.target, reason: command.reason });
-    } else {
-      draft.pushAction({ _tag: "agent.interrupt", agent: command.target });
-    }
-  },
-  // Core knows only "deliver this opaque payload to a live session" —
-  // `agent.interrupt` is a plugin-owned action tag whose meaning (and wire
-  // shape) belongs entirely here, not in core's action vocabulary.
+  reduce: ({ command }) =>
+    Effect.sync(() => {
+      if (typeof command.target !== "string") return { changes: [] };
+      const action: JsonValue =
+        typeof command.reason === "string"
+          ? { _tag: "agent.interrupt", agent: command.target, reason: command.reason }
+          : { _tag: "agent.interrupt", agent: command.target };
+      return {
+        changes: [{ _tag: "action.push" as const, action }],
+      };
+    }),
   actions: [
-    {
+    definePluginAction({
       tag: "agent.interrupt",
-      execute: (action, sessionOps) =>
-        sessionOps.message(
-          action.agent as string,
+      payload: AgentInterruptAction,
+      execute: (action, sessionOps) => {
+        const control: NativeControl =
           action.reason === undefined
             ? { _tag: "agent.interrupt" }
-            : { _tag: "agent.interrupt", reason: action.reason },
-        ),
-    },
+            : { _tag: "agent.interrupt", reason: action.reason };
+        return encodeNativeControl(control).pipe(
+          Effect.flatMap((message) => sessionOps.message(action.agent, message)),
+        );
+      },
+    }),
   ],
 } satisfies DaemonCommandRegistration;
 
@@ -184,29 +243,35 @@ const agentCompact = {
     "human",
   ),
   resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  reduce: (draft, command) => {
-    if (typeof command.target !== "string") return;
-    if (typeof command.instructions === "string") {
-      draft.pushAction({
-        _tag: "agent.compact",
-        agent: command.target,
-        instructions: command.instructions,
-      });
-    } else {
-      draft.pushAction({ _tag: "agent.compact", agent: command.target });
-    }
-  },
+  reduce: ({ command }) =>
+    Effect.sync(() => {
+      if (typeof command.target !== "string") return { changes: [] };
+      const action: JsonValue =
+        typeof command.instructions === "string"
+          ? {
+              _tag: "agent.compact",
+              agent: command.target,
+              instructions: command.instructions,
+            }
+          : { _tag: "agent.compact", agent: command.target };
+      return {
+        changes: [{ _tag: "action.push" as const, action }],
+      };
+    }),
   actions: [
-    {
+    definePluginAction({
       tag: "agent.compact",
-      execute: (action, sessionOps) =>
-        sessionOps.message(
-          action.agent as string,
+      payload: AgentCompactAction,
+      execute: (action, sessionOps) => {
+        const control: NativeControl =
           action.instructions === undefined
             ? { _tag: "agent.compact" }
-            : { _tag: "agent.compact", instructions: action.instructions as string },
-        ),
-    },
+            : { _tag: "agent.compact", instructions: action.instructions };
+        return encodeNativeControl(control).pipe(
+          Effect.flatMap((message) => sessionOps.message(action.agent, message)),
+        );
+      },
+    }),
   ],
 } satisfies DaemonCommandRegistration;
 
@@ -220,42 +285,61 @@ const agentPermission = {
   },
   meta: agentPluginMeta("answer an agent's permission request", "workspace", "human"),
   resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  reduce: (draft, command) => {
-    if (
-      typeof command.target === "string" &&
-      typeof command.request === "string" &&
-      (command.decision === "once" ||
-        command.decision === "always" ||
-        command.decision === "reject")
-    ) {
-      if (typeof command.feedback === "string") {
-        draft.pushAction({
-          _tag: "agent.permission",
-          agent: command.target,
-          answer: {
-            request: command.request,
-            decision: command.decision,
-            feedback: command.feedback,
-          },
-        });
-      } else {
-        draft.pushAction({
-          _tag: "agent.permission",
-          agent: command.target,
-          answer: { request: command.request, decision: command.decision },
-        });
+  reduce: ({ command }) =>
+    Effect.sync(() => {
+      if (
+        typeof command.target !== "string" ||
+        typeof command.request !== "string" ||
+        (command.decision !== "once" &&
+          command.decision !== "always" &&
+          command.decision !== "reject")
+      ) {
+        return { changes: [] };
       }
-    }
-  },
+      const answer: JsonValue =
+        typeof command.feedback === "string"
+          ? {
+              request: command.request,
+              decision: command.decision,
+              feedback: command.feedback,
+            }
+          : { request: command.request, decision: command.decision };
+      return {
+        changes: [
+          {
+            _tag: "action.push" as const,
+            action: {
+              _tag: "agent.permission",
+              agent: command.target,
+              answer,
+            },
+          },
+        ],
+      };
+    }),
   actions: [
-    {
+    definePluginAction({
       tag: "agent.permission",
-      execute: (action, sessionOps) =>
-        sessionOps.message(action.agent as string, {
-          _tag: "agent.permission",
-          ...(action.answer as Record<string, JsonValue>),
-        }),
-    },
+      payload: AgentPermissionAction,
+      execute: (action, sessionOps) => {
+        const control: NativeControl =
+          action.answer.feedback === undefined
+            ? {
+                _tag: "agent.permission",
+                request: action.answer.request,
+                decision: action.answer.decision,
+              }
+            : {
+                _tag: "agent.permission",
+                request: action.answer.request,
+                decision: action.answer.decision,
+                feedback: action.answer.feedback,
+              };
+        return encodeNativeControl(control).pipe(
+          Effect.flatMap((message) => sessionOps.message(action.agent, message)),
+        );
+      },
+    }),
   ],
 } satisfies DaemonCommandRegistration;
 
@@ -264,7 +348,11 @@ const agentList = {
   fields: {},
   meta: agentPluginMeta("list agents and where they live", "workspace", "agent"),
   resources: () => [],
-  reduce: (draft) => draft.setResult(draft.listAgents()),
+  result: commandResultCodec(AgentListResultSchema),
+  reduce: ({ reads }) =>
+    Effect.succeed({
+      changes: [{ _tag: "result.set" as const, result: reads.agents }],
+    }),
 } satisfies DaemonCommandRegistration;
 
 const agentGet = {
@@ -272,8 +360,15 @@ const agentGet = {
   fields: { target: S.String },
   meta: agentPluginMeta("one agent, by its session id", "workspace", "agent"),
   resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  reduce: (draft, command) =>
-    draft.setResult(draft.getAgent(typeof command.target === "string" ? command.target : "")),
+  result: commandResultCodec(AgentGetResultSchema),
+  reduce: ({ command, reads }) =>
+    Effect.sync(() => {
+      const target = typeof command.target === "string" ? command.target : "";
+      const agent = reads.agents.find((entry) => entry.id === target) ?? null;
+      return {
+        changes: [{ _tag: "result.set" as const, result: agent }],
+      };
+    }),
 } satisfies DaemonCommandRegistration;
 
 const agentLogs = {

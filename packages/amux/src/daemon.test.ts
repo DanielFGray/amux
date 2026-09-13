@@ -3,7 +3,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Path, Scope, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -57,56 +56,62 @@ const open = (id: string, e: NodeJS.ProcessEnv, options?: SessionDaemonOptions) 
 const paths = (id: string, e: NodeJS.ProcessEnv) => run(sessionPaths(id), e);
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
-const componentState = (id: string, provider: string) => ({
-  version: 1 as const,
-  id,
-  createdAt: 1,
-  updatedAt: 1,
-  attached: false,
-  activeSpace: "space-component",
-  spaces: [
-    {
-      id: "space-component",
-      name: "component",
-      dir: "/tmp",
-      activeWindow: 1,
-      windows: [
-        {
-          number: 1,
-          name: null,
-          layout: JSON.stringify({
-            version: 1,
-            root: {
-              type: "pane",
-              id: "pane-component",
-              content: {
-                kind: "plugin",
-                type: provider,
-                descriptor: {},
-                session: "component-session",
+const componentState = (
+  id: string,
+  provider: string,
+  opts?: { readonly firstMessage?: { readonly _tag: string; readonly text: string } },
+) => {
+  const session = {
+    id: "component-session",
+    name: "component",
+    declaredAgent: provider,
+    provider,
+    kind: "component" as const,
+    cols: 80,
+    rows: 24,
+    exited: false,
+    exitCode: null as null,
+  };
+  if (opts?.firstMessage !== undefined) Object.assign(session, { firstMessage: opts.firstMessage });
+  return {
+    version: 1 as const,
+    id,
+    createdAt: 1,
+    updatedAt: 1,
+    attached: false,
+    activeSpace: "space-component",
+    spaces: [
+      {
+        id: "space-component",
+        name: "component",
+        dir: "/tmp",
+        activeWindow: 1,
+        windows: [
+          {
+            number: 1,
+            name: null,
+            layout: JSON.stringify({
+              version: 1,
+              root: {
+                type: "pane",
+                id: "pane-component",
+                content: {
+                  kind: "plugin",
+                  type: provider,
+                  descriptor: {},
+                  session: "component-session",
+                },
+                weight: 1,
               },
-              weight: 1,
-            },
-            focus: "pane-component",
-          }),
-          sessions: [
-            {
-              id: "component-session",
-              name: "component",
-              declaredAgent: provider,
-              provider,
-              kind: "component" as const,
-              cols: 80,
-              rows: 24,
-              exited: false,
-              exitCode: null,
-            },
-          ],
-        },
-      ],
-    },
-  ],
-});
+              focus: "pane-component",
+            }),
+            sessions: [session],
+          },
+        ],
+      },
+    ],
+  };
+};
 
 const st = (d: SessionDaemonService) => Effect.runSync(d.getState);
 const ws = (d: SessionDaemonService) => Effect.runSync(d.getWorkspace);
@@ -1395,59 +1400,22 @@ testEffect("component restore is attach-gated and ResumeAgent does not create a 
   }),
 );
 
-testEffect("a plugin's onSessionLive hook fires once ResumeAgent spawns the session", () =>
+testEffect("ResumeAgent delivers session.firstMessage once then clears and persists it", () =>
   Effect.gen(function* () {
     const e = yield* Effect.promise(() => env());
-    const marker = join(e.HOME!, "session-live-marker");
-    // Placed alongside this test file, not under the OS tmpdir: a plugin
-    // fixture that imports "effect" needs Bun's node_modules resolution to
-    // walk up from a path inside this package.
-    const pluginDir = fileURLToPath(new URL("./.test-on-session-live", import.meta.url));
-    repoDirs.push(pluginDir);
-    yield* Effect.promise(() => mkdir(pluginDir, { recursive: true }));
-    const apiPath = fileURLToPath(new URL("./api.ts", import.meta.url));
-    yield* Effect.promise(() =>
-      writeFile(
-        join(pluginDir, "daemon.ts"),
-        `import { Effect } from "effect";
-import { definePlugin, DaemonCommandsTag, registerDaemonCommand } from ${JSON.stringify(apiPath)};
-export default definePlugin({
-  id: "test.on-session-live",
-  inject: [DaemonCommandsTag],
-  effect: () =>
-    Effect.gen(function* () {
-      yield* registerDaemonCommand({
-        tag: "test.on-session-live-probe",
-        fields: {},
-        meta: { desc: "probe", group: "test", target: "session", exposure: "human" },
-        resources: () => [],
-        onSessionLive: (session) =>
-          Effect.sync(() => {
-            require("node:fs").appendFileSync(${JSON.stringify(marker)}, session.id + "\\n");
-          }),
-      });
-    }),
-});
-`,
-      ),
-    );
-
+    const firstMessage = { _tag: "agent.prompt" as const, text: "deliver me" };
     yield* Effect.promise(() =>
       run(
-        Effect.flatMap(SessionStore, (store) => store.save(componentState("live-hook", "test"))),
+        Effect.flatMap(SessionStore, (store) =>
+          store.save(componentState("first-message", "test", { firstMessage })),
+        ),
         e,
       ),
     );
-    const pluginConfig = {
-      options: {},
-      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
-      plugins: [{ path: join(pluginDir, "daemon.ts"), enabled: true }],
-      permissions: [],
-    };
-    const daemon = yield* Effect.promise(() => open("live-hook", e, { pluginConfig }));
+    const daemon = yield* Effect.promise(() => open("first-message", e));
 
     yield* Effect.promise(() =>
-      ctl("live-hook", e, (control) =>
+      ctl("first-message", e, (control) =>
         control.ResumeAgent({
           session: "component-session",
           provider: "test",
@@ -1456,12 +1424,40 @@ export default definePlugin({
       ),
     );
 
+    const after = yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.load("first-message")),
+        e,
+      ),
+    );
+    expect(after).not.toBeNull();
+    const session = after!.spaces[0]!.windows[0]!.sessions.find(
+      (entry) => entry.id === "component-session",
+    );
+    expect(session?.firstMessage).toBeUndefined();
+
+    // Already live: a second ResumeAgent must not revive a cleared firstMessage.
     yield* Effect.promise(() =>
-      waitFor(() => Bun.file(marker).exists(), "the onSessionLive hook to fire", 2_000),
+      ctl("first-message", e, (control) =>
+        control.ResumeAgent({
+          session: "component-session",
+          provider: "test",
+          argv: ["sh", "-c", "sleep 30"],
+        }),
+      ),
     );
-    expect((yield* Effect.promise(() => readFile(marker, "utf8"))).trim()).toBe(
-      "component-session",
+    const again = yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.load("first-message")),
+        e,
+      ),
     );
+    expect(again).not.toBeNull();
+    expect(
+      again!.spaces[0]!.windows[0]!.sessions.find((entry) => entry.id === "component-session")
+        ?.firstMessage,
+    ).toBeUndefined();
+
     yield* Effect.promise(() => S(daemon));
   }),
 );

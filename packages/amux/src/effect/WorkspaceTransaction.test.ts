@@ -1,6 +1,7 @@
 import { testEffect } from "../test-effect.ts";
-import { Effect, Layer, Ref } from "effect";
+import { Duration, Effect, Exit, Fiber, Layer, Ref, Scope } from "effect";
 import { expect } from "bun:test";
+import * as TestClock from "effect/testing/TestClock";
 import { layerDaemonModel } from "./DaemonModel.ts";
 import {
   WorkspaceTransaction,
@@ -9,15 +10,22 @@ import {
   WorkspaceTransactionPersistence,
   WorkspaceTransactionEvents,
   WorkspaceTransactionError,
+  WorkspaceTransactionPlugins,
+  reducePluginCommand,
+  type WorkspaceTransactionPluginsService,
 } from "./WorkspaceTransaction.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import { workspaceFromSession } from "../workspace.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
-import { command } from "../commands.ts";
+import { command, runtimeCommand } from "../commands.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
 import type { JsonValue } from "./AttachProtocol.ts";
+import {
+  PLUGIN_REDUCE_TIMEOUT_MS,
+  PluginReducerError,
+} from "../workspace-changes.ts";
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
@@ -392,4 +400,64 @@ testEffect("rejects worktree removal when dirty", () => {
     );
     expect(result._tag).toBe("Failure");
   }).pipe(Effect.provide(layer));
+});
+
+const emptyPluginMaps = (): Omit<WorkspaceTransactionPluginsService, "reducers"> => ({
+  actions: new Map(),
+  actionDecodersByCommand: new Map(),
+  resultCodecs: new Map(),
+  paneDescriptors: new Map(),
+  providerMessages: new Map(),
+});
+
+const withPlugins = <R, E>(
+  base: Layer.Layer<R, E, Scope.Scope>,
+  plugins: WorkspaceTransactionPluginsService,
+) => base.pipe(Layer.provideMerge(Layer.succeed(WorkspaceTransactionPlugins, plugins)));
+
+testEffect("a failing plugin reducer leaves the revision unchanged", () => {
+  const initial = singlePaneState();
+  const { layer, persistRef } = testLayer(initial);
+  const plugins: WorkspaceTransactionPluginsService = {
+    ...emptyPluginMaps(),
+    reducers: new Map([
+      ["probe.fail", () => Effect.fail(new PluginReducerError({ message: "reducer blew up" }))],
+    ]),
+  };
+  return Effect.gen(function* () {
+    const tx = yield* WorkspaceTransaction;
+    const before = initial.workspace.revision;
+    const result = yield* Effect.exit(
+      tx.run(runtimeCommand("probe.fail", {}), before, context),
+    );
+    expect(result._tag).toBe("Failure");
+    const persisted = yield* Ref.get(persistRef);
+    expect(persisted.persisted).toHaveLength(0);
+    expect(before).toBe(initial.workspace.revision);
+  }).pipe(Effect.provide(withPlugins(layer, plugins)));
+});
+
+testEffect("a timed-out plugin reducer fails under TestClock", () => {
+  const initial = singlePaneState();
+  const plugins: WorkspaceTransactionPluginsService = {
+    ...emptyPluginMaps(),
+    reducers: new Map([
+      ["probe.hang", () => Effect.sleep(Duration.minutes(1)).pipe(Effect.as({ changes: [] }))],
+    ]),
+  };
+  // Timeout is asserted on reducePluginCommand — the production helper the
+  // transaction calls. Forking tx.run under TestClock does not complete: the
+  // DaemonModel mutation-queue worker does not observe TestClock.adjust from
+  // the test fiber once the full WorkspaceTransaction layer is in place.
+  return Effect.gen(function* () {
+    const fiber = yield* reducePluginCommand(
+      plugins,
+      runtimeCommand("probe.hang", {}),
+      initial.workspace,
+      context,
+    ).pipe(Effect.exit, Effect.forkChild);
+    yield* TestClock.adjust(Duration.millis(PLUGIN_REDUCE_TIMEOUT_MS));
+    const result = yield* Fiber.join(fiber);
+    expect(Exit.isFailure(result)).toBe(true);
+  }).pipe(Effect.provide(TestClock.layer()));
 });

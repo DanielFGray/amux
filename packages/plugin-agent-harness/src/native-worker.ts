@@ -19,7 +19,7 @@ import {
 import { emit as toAgentMessage, type HarnessEvent } from "./protocol.ts";
 import { agentToolkit } from "./tools.ts";
 import { makePermissionGate, PermissionGateTag } from "./permission.ts";
-import { DEFAULT_RULES, PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
+import { DEFAULT_RULES } from "@danielfgray/amux/permission.ts";
 import { projectRoot } from "@danielfgray/amux/git.ts";
 import {
   layer as projectStoreLayer,
@@ -47,28 +47,7 @@ import { makeHarnessHooks } from "./hooks.ts";
 // @effect-diagnostics-next-line processEnv:off -- bootstrap read before any Effect runs.
 const session = process.env.AMUX_SESSION ?? process.env.AMUX_AGENT_ID;
 
-/** The native harness's private component-control protocol. Core transports
- * this as `session.message`; it never needs to understand these verbs. */
-const NativeControl = S.Union([
-  S.TaggedStruct("agent.prompt", {
-    text: S.String,
-    id: S.optional(S.String),
-    delivery: S.optional(S.Literals(["steer", "queue"])),
-    resume: S.optional(S.Boolean),
-    replace: S.optional(S.String),
-  }),
-  S.TaggedStruct("agent.interrupt", { reason: S.optional(S.String) }),
-  S.TaggedStruct("agent.permission", {
-    request: S.String,
-    decision: PermissionDecisionSchema,
-    feedback: S.optional(S.String),
-  }),
-  S.TaggedStruct("agent.compact", {
-    instructions: S.optional(S.String),
-  }),
-]);
-type NativeControl = typeof NativeControl.Type;
-const decodeNativeControl = S.decodeUnknownOption(NativeControl);
+import { decodeNativeControl, type NativeControl as NativeControlMsg } from "./native-control.ts";
 
 if (!import.meta.main) {
   // Imported as a module — exports only, don't validate env or start the daemon.
@@ -351,7 +330,7 @@ else {
             return Option.match(decodeNativeControl(frame.message), {
               onNone: () =>
                 new AgentWorkerError({ message: "invalid native harness control message" }),
-              onSome: (control: NativeControl) =>
+              onSome: (control: NativeControlMsg) =>
                 Match.value(control).pipe(
                   Match.tag("agent.prompt", (prompt) => {
                     const options = {

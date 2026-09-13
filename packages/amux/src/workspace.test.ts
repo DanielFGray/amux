@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { command } from "./commands.ts";
-import { Effect, Cause, Path, Schema as S } from "effect";
+import { command, type RuntimeCommand } from "./commands.ts";
+import { Effect, Cause, Path, Result, Schema as S } from "effect";
 import {
   applyWorkspaceCommand as applyWorkspaceCommandWithPath,
   markSessionExited,
@@ -10,28 +10,68 @@ import {
   viewportSizeForCommand,
   workspaceFromSession,
   workspaceSession,
+  type WorkspaceCommandContext,
+  type WorkspaceSnapshot,
+  type WorkspaceMutation,
 } from "./workspace.ts";
+import { resolveRefsInJson } from "./workspace-changes.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { layoutPanes, makeLayout, DescriptorSchema } from "./layout.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
-import { resolveTilingAlgorithm } from "./plugin/services.ts";
+import {
+  resolveTilingAlgorithm,
+  type DaemonCommandRegistration,
+} from "./plugin/services.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
 import { niriTilingAlgorithm } from "../../plugin-niri/src/niri.ts";
+import {
+  definePluginAction,
+  reducePluginCommand,
+  workspaceTransactionPluginsFromRegistrations,
+} from "./effect/WorkspaceTransaction.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const path = run(nodePath);
+
+const pluginApplyFor = (
+  regs: readonly DaemonCommandRegistration[],
+  workspace: WorkspaceSnapshot,
+  cmd: RuntimeCommand,
+  context: WorkspaceCommandContext,
+) =>
+  run(
+    reducePluginCommand(
+      workspaceTransactionPluginsFromRegistrations(regs),
+      cmd,
+      workspace,
+      context,
+    ),
+  );
+
+const unwrapMutation = (
+  result: Result.Result<WorkspaceMutation, { message: string }>,
+): WorkspaceMutation => {
+  if (Result.isFailure(result)) throw new Error(result.failure.message);
+  return result.success;
+};
+
 const applyWorkspaceCommand = (
-  ...args: [
-    Parameters<typeof applyWorkspaceCommandWithPath>[0],
-    Parameters<typeof applyWorkspaceCommandWithPath>[1],
-    Parameters<typeof applyWorkspaceCommandWithPath>[2],
-    Parameters<typeof applyWorkspaceCommandWithPath>[4]?,
-    Parameters<typeof applyWorkspaceCommandWithPath>[5]?,
-  ]
-) => applyWorkspaceCommandWithPath(args[0], args[1], args[2], path, args[3], args[4]);
+  workspace: Parameters<typeof applyWorkspaceCommandWithPath>[0],
+  cmd: Parameters<typeof applyWorkspaceCommandWithPath>[1],
+  context: Parameters<typeof applyWorkspaceCommandWithPath>[2],
+  regs?: readonly DaemonCommandRegistration[],
+  algorithm?: Parameters<typeof applyWorkspaceCommandWithPath>[5],
+): WorkspaceMutation => {
+  const plugins =
+    regs === undefined ? undefined : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
+  return unwrapMutation(
+    applyWorkspaceCommandWithPath(workspace, cmd, context, path, plugins, algorithm),
+  );
+};
+
 const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
   const exit = Effect.runSyncExit(effect);
   if (exit._tag === "Success") throw new Error("expected effect to fail");
@@ -39,20 +79,8 @@ const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
   return error instanceof Error ? error.message : String(error);
 };
 
-const agentPlugins = {
-  reducers: new Map(
-    agentHarnessDaemonCommands.flatMap((registration) =>
-      registration.reduce ? [[registration.tag, registration.reduce] as const] : [],
-    ),
-  ),
-};
-const editorPlugins = {
-  reducers: new Map(
-    editorDaemonCommands.flatMap((registration) =>
-      registration.reduce ? [[registration.tag, registration.reduce] as const] : [],
-    ),
-  ),
-};
+const agentPlugins = agentHarnessDaemonCommands;
+const editorPlugins = editorDaemonCommands;
 
 const base = (layout: string): SessionState => ({
   version: 1,
@@ -961,6 +989,7 @@ test("pane.open-plugin creates a sessionless plugin pane and reports its pane id
     adopted,
     command("pane.open-plugin", { type: "amux.editor", descriptor: { file: "/work/note.txt" } }),
     context,
+    editorPlugins,
   );
   const window = opened.snapshot.spaces[0]!.windows[0]!;
   const panes = layoutPanes(window.layout.root);
@@ -983,6 +1012,7 @@ test("pane.open-plugin creates no spawn action", () => {
     adopted,
     command("pane.open-plugin", { type: "amux.editor", descriptor: {} }),
     context,
+    editorPlugins,
   );
   // A sessionless pane has nothing to spawn; any action would be a backend.
   expect(opened.actions).toEqual([]);
@@ -1696,11 +1726,14 @@ test("agent.permission carries the answer to the session that asked", () => {
   expect(answered.actions).toEqual([
     {
       _tag: "agent.permission",
-      agent: "agent-7",
-      answer: {
-        request: "req-1",
-        decision: "reject",
-        feedback: "not that file",
+      payload: {
+        _tag: "agent.permission",
+        agent: "agent-7",
+        answer: {
+          request: "req-1",
+          decision: "reject",
+          feedback: "not that file",
+        },
       },
     },
   ]);
@@ -1716,15 +1749,14 @@ test("agent.permission carries the answer to the session that asked", () => {
 
 /* An initial prompt has nowhere live to go yet at reduce time — the
  * component's backend spawns later, when a client calls resumeAgent — so
- * core sees no "prompt" action at all; plugin-agent-harness queues it
- * internally and delivers it through its own onSessionLive hook once the
- * session is actually live (see plugin-agent-harness/src/daemon.test.ts). */
+ * core stores it on the session as firstMessage. ResumeAgent delivers it
+ * via SessionOps.message after spawn and clears the field. */
 test("agent.new creates an agent session without pushing a prompt through core", () => {
   const current = run(workspaceFromSession(base(twoPaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
     command("agent.new", {
-      provider: "test",
+      provider: "native",
       prompt: "Inspect this",
     }),
     {
@@ -1739,8 +1771,9 @@ test("agent.new creates an agent session without pushing a prompt through core",
   expect(mutation.result).toEqual({ session: agent.id, pane });
   expect(agent.kind).toBe("component");
   expect(agent.cmd).toBeUndefined();
-  expect(agent.provider).toBe("test");
-  expect(agent.declaredAgent).toBe("test");
+  expect(agent.provider).toBe("native");
+  expect(agent.declaredAgent).toBe("native");
+  expect(agent.firstMessage).toEqual({ _tag: "agent.prompt", text: "Inspect this" });
   expect(mutation.actions).toEqual([{ _tag: "spawn", agent, pane }]);
 });
 
@@ -1764,10 +1797,10 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
 
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.sessions.at(-1)!;
   expect(agent.kind).toBe("component");
+  expect(agent.firstMessage).toBeUndefined();
   expect(mutation.actions).toContainEqual(
     expect.objectContaining({ _tag: "spawn", agent, pane: expect.any(String) }),
   );
-  expect(mutation.actions.some((action) => action._tag === "prompt")).toBe(false);
 });
 
 test("agent.new from a calling pane replaces it and keeps the displaced PTY", () => {
@@ -2146,4 +2179,192 @@ test("a closed pane id is never reissued to the next pane", () => {
   // The counter only advances: the fresh id is strictly newer.
   const counterOf = (id: string) => Number(id.match(/:p(\d+)$/)![1]);
   expect(counterOf(again.pane)).toBeGreaterThan(counterOf(created.pane));
+});
+
+test("plugin.place with no target pane or window fails", () => {
+  const empty = run(
+    workspaceFromSession({
+      version: 1,
+      id: "empty",
+      createdAt: 1,
+      updatedAt: 1,
+      attached: false,
+      activeSpace: null,
+      spaces: [],
+    }),
+  );
+  expect(() =>
+    applyWorkspaceCommand(empty, command("editor.open"), context, editorPlugins),
+  ).toThrow(/plugin\.place requires a target/);
+});
+
+test("unknown pane type is rejected", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  expect(() =>
+    applyWorkspaceCommand(
+      adopted,
+      command("pane.open-plugin", { type: "missing.pane", descriptor: {} }),
+      context,
+      editorPlugins,
+    ),
+  ).toThrow(/unknown pane type/);
+});
+
+test("a plain { ref: main } payload field is not treated as a WorkspaceRef", () => {
+  const resolved = resolveRefsInJson({ ref: "main" }, new Map([["main", "agent-1"]]));
+  expect(Result.isSuccess(resolved)).toBe(true);
+  if (Result.isSuccess(resolved)) expect(resolved.success).toEqual({ ref: "main" });
+});
+
+test("tagged WorkspaceRef resolves in results", () => {
+  const resolved = resolveRefsInJson(
+    { session: { _tag: "WorkspaceRef", ref: "s" } },
+    new Map([["s", "agent-1"]]),
+  );
+  expect(Result.isSuccess(resolved)).toBe(true);
+  if (Result.isSuccess(resolved)) expect(resolved.success).toEqual({ session: "agent-1" });
+});
+
+test("unknown WorkspaceRef is rejected", () => {
+  const resolved = resolveRefsInJson({ _tag: "WorkspaceRef", ref: "missing" }, new Map());
+  expect(Result.isFailure(resolved)).toBe(true);
+});
+
+const probeMeta = {
+  desc: "probe",
+  group: "probe",
+  target: "workspace" as const,
+  exposure: "human" as const,
+};
+const probeResources = () => [] as const;
+
+const duplicateRefProbe: DaemonCommandRegistration = {
+  tag: "probe.duplicate-ref",
+  fields: {},
+  meta: probeMeta,
+  resources: probeResources,
+  reduce: () =>
+    Effect.succeed({
+      changes: [
+        {
+          _tag: "session.add" as const,
+          ref: "dup",
+          target: { space: "space-a", window: 1 },
+          dir: "/tmp",
+        },
+        {
+          _tag: "session.add" as const,
+          ref: "dup",
+          target: { space: "space-a", window: 1 },
+          dir: "/other",
+        },
+      ],
+    }),
+};
+
+test("duplicate symbolic ref is rejected", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  expect(() =>
+    applyWorkspaceCommand(adopted, command("probe.duplicate-ref"), context, [duplicateRefProbe]),
+  ).toThrow(/duplicate ref 'dup'/);
+});
+
+const unregisteredActionProbe: DaemonCommandRegistration = {
+  tag: "probe.bad-action",
+  fields: {},
+  meta: probeMeta,
+  resources: probeResources,
+  reduce: () =>
+    Effect.succeed({
+      changes: [{ _tag: "action.push" as const, action: { _tag: "not.registered" } }],
+    }),
+};
+
+test("unregistered action tag is rejected", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  expect(() =>
+    applyWorkspaceCommand(adopted, command("probe.bad-action"), context, [unregisteredActionProbe]),
+  ).toThrow(/action tag 'not.registered' is not registered/);
+});
+
+const nativeProviderMessages =
+  agentHarnessDaemonCommands.find((entry) => entry.tag === "agent.new")!.providerMessages ?? [];
+
+const badFirstMessageProbe: DaemonCommandRegistration = {
+  tag: "probe.bad-first-message",
+  fields: {},
+  meta: probeMeta,
+  resources: probeResources,
+  providerMessages: nativeProviderMessages,
+  reduce: () =>
+    Effect.succeed({
+      changes: [
+        {
+          _tag: "session.add" as const,
+          ref: "s",
+          target: { space: "space-a", window: 1 },
+          dir: "/tmp",
+          provider: "native",
+          firstMessage: { notValid: true },
+        },
+      ],
+    }),
+};
+
+test("firstMessage that fails the provider Schema is rejected", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  expect(() =>
+    applyWorkspaceCommand(
+      adopted,
+      command("probe.bad-first-message"),
+      context,
+      [badFirstMessageProbe],
+    ),
+  ).toThrow(/firstMessage|NativeControl|agent\.prompt/i);
+});
+
+const GitRefAction = S.TaggedStruct("git.ref", { ref: S.String });
+const gitRefActionProbe: DaemonCommandRegistration = {
+  tag: "probe.git-ref-action",
+  fields: {},
+  meta: probeMeta,
+  resources: probeResources,
+  actions: [
+    definePluginAction({
+      tag: "git.ref",
+      payload: GitRefAction,
+      execute: () => Effect.void,
+    }),
+  ],
+  reduce: () =>
+    Effect.succeed({
+      changes: [
+        {
+          _tag: "session.add" as const,
+          ref: "main",
+          target: { space: "space-a", window: 1 },
+          dir: "/tmp",
+        },
+        {
+          _tag: "action.push" as const,
+          action: { _tag: "git.ref", ref: "main" },
+        },
+      ],
+    }),
+};
+
+test("a plain { ref: main } action field passes through when a session ref shares the name", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("probe.git-ref-action"),
+    context,
+    [gitRefActionProbe],
+  );
+  const queued = mutation.actions.find((action) => "payload" in action);
+  if (queued === undefined || !("payload" in queued)) {
+    throw new Error("expected queued plugin action");
+  }
+  const payload = S.decodeUnknownSync(GitRefAction)(queued.payload);
+  expect(payload.ref).toBe("main");
 });

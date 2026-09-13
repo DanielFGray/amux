@@ -79,12 +79,14 @@ async function started(id: string) {
   const configHome = join(home, "config");
   const harness = new URL("../../plugin-agent-harness/src/index.tsx", import.meta.url).pathname;
   const continuity = new URL("../../plugin-agent-continuity", import.meta.url).pathname;
+  const editor = new URL("../../editor", import.meta.url).pathname;
   const pluginConfig = {
     options: {},
     keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
     plugins: [
       { path: harness, enabled: true },
       { path: continuity, enabled: true },
+      { path: editor, enabled: true },
     ],
     permissions: [],
   };
@@ -95,6 +97,7 @@ async function started(id: string) {
       plugins: [
         { path: harness, enabled: true },
         { path: continuity, enabled: true },
+        { path: editor, enabled: true },
       ],
     }),
   );

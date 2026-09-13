@@ -50,6 +50,7 @@ import {
   makePersistence,
   makeEvents,
   WorkspaceTransactionPlugins,
+  workspaceTransactionPluginsFromRegistrations,
   type WorkspaceTransactionResult,
 } from "./effect/WorkspaceTransaction.ts";
 import { configPath, loadConfig, type Config } from "./config.ts";
@@ -1241,27 +1242,30 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   );
 
   const transactionPlugins = {
-    get reducers() {
-      return new Map(
-        daemonCommandTable
-          .all()
-          .filter(({ value }) => value.reduce)
-          .map(({ name, value }) => [name, value.reduce!]),
+    get current() {
+      return workspaceTransactionPluginsFromRegistrations(
+        daemonCommandTable.all().map(({ value }) => value),
       );
+    },
+    get reducers() {
+      return this.current.reducers;
     },
     get actions() {
-      return new Map(
-        daemonCommandTable
-          .all()
-          .flatMap(({ value }) => value.actions ?? [])
-          .map((registration) => [registration.tag, registration.execute]),
-      );
+      return this.current.actions;
+    },
+    get actionDecodersByCommand() {
+      return this.current.actionDecodersByCommand;
+    },
+    get resultCodecs() {
+      return this.current.resultCodecs;
+    },
+    get paneDescriptors() {
+      return this.current.paneDescriptors;
+    },
+    get providerMessages() {
+      return this.current.providerMessages;
     },
   };
-  const onSessionLiveHooks = () =>
-    daemonCommandTable
-      .all()
-      .flatMap(({ value }) => (value.onSessionLive ? [value.onSessionLive] : []));
   const sessionOps = buildSessionOps(requireHost, (id) => killSession(id));
   const persistenceContext = yield* Layer.build(
     makePersistence(persist, activeSaveRef, daemonScope).pipe(
@@ -1927,9 +1931,40 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 }),
               ),
             );
-            yield* Effect.forEach(onSessionLiveHooks(), (hook) => hook(found.session, sessionOps), {
-              discard: true,
-            });
+            const firstMessage = found.session.firstMessage;
+            if (firstMessage !== undefined) {
+              yield* sessionOps.message(sessionId, firstMessage).pipe(
+                Effect.matchEffect({
+                  onFailure: (error) =>
+                    Effect.logWarning(
+                      `ResumeAgent: firstMessage delivery for '${sessionId}' failed: ${describe(error)}`,
+                    ),
+                  onSuccess: () =>
+                    Effect.gen(function* () {
+                      const after = yield* model.get;
+                      const cleared = structuredClone(after.workspace);
+                      const live = [...workspaceSessions(cleared)].find(
+                        ({ session }) => session.id === sessionId,
+                      );
+                      if (live === undefined || live.session.firstMessage === undefined) return;
+                      delete live.session.firstMessage;
+                      cleared.revision = after.workspace.revision + 1;
+                      const state = yield* workspaceSession(cleared, after.state);
+                      yield* persist(state);
+                      yield* model.commitWorkspace(cleared, state);
+                      yield* requireHost.pipe(
+                        Effect.flatMap((h) =>
+                          h.publish({
+                            _tag: "workspace",
+                            revision: cleared.revision,
+                            state: encodeJson(cleared),
+                          } satisfies AttachFrame),
+                        ),
+                      );
+                    }),
+                }),
+              );
+            }
           }),
         ),
       ),
