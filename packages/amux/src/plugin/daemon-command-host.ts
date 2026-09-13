@@ -7,23 +7,21 @@ import { createPluginContributions } from "./contributions.ts";
 import { createPluginHost } from "./host.ts";
 import { loadDaemonPluginsFromConfig } from "./loader.ts";
 import { definePlugin } from "./types.ts";
-import { DaemonCommandsTag, scopedRegistry, type DaemonCommandRegistration } from "./services.ts";
+import { DaemonCommandsTag, scopedRegistry, type DaemonCommandRecord } from "./services.ts";
 
 /**
  * Read daemon-command declarations before a daemon starts. The CLI needs the
  * same field and target metadata to parse a plugin-owned command locally; it
  * does not execute the plugin's handlers here.
  */
-export const daemonCommandRegistrations = (): Promise<readonly DaemonCommandRegistration[]> =>
+export const daemonCommandRecords = (): Promise<readonly DaemonCommandRecord[]> =>
   Effect.runPromise(
     Effect.gen(function* () {
       const config = yield* loadConfig();
       const contributions = createPluginContributions();
-      const table = contributions.table<DaemonCommandRegistration>();
-      const commands = scopedRegistry(
-        { all: table.all },
-        (owner, registration: DaemonCommandRegistration) =>
-          table.add(owner, registration.tag, registration),
+      const table = contributions.table<DaemonCommandRecord>();
+      const commands = scopedRegistry({ all: table.all }, (owner, record: DaemonCommandRecord) =>
+        table.add(owner, record.command.tag, record),
       );
       const host = yield* createPluginHost({ contributions });
       yield* loadDaemonPluginsFromConfig(config, host, dirname(yield* configPath), [

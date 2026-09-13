@@ -213,7 +213,7 @@ const TerminalSize = S.Struct({
     }),
   ),
 );
-const WorkspaceSnapshotSchema = S.Struct({
+export const WorkspaceSnapshotSchema = S.Struct({
   revision: S.Int.pipe(S.check(S.isGreaterThanOrEqualTo(0))),
   spaces: S.mutable(S.Array(WorkspaceSpaceSchema)).pipe(S.check(S.isMaxLength(MAX_SPACES))),
   state: S.Struct({

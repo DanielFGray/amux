@@ -5,6 +5,7 @@ import {
   Exit,
   Fiber,
   Layer,
+  Option,
   Path,
   Ref,
   Scope,
@@ -23,11 +24,9 @@ import {
   WorkspaceTransactionPersistence,
   WorkspaceTransactionEvents,
   WorkspaceTransactionError,
-  WorkspaceTransactionPlugins,
   WorkspaceTransactionSessions,
   buildWorkspaceTransactionSessions,
   reducePluginCommand,
-  type WorkspaceTransactionPluginsService,
   type WorkspaceTransactionSessionsService,
 } from "./WorkspaceTransaction.ts";
 import { DaemonSessions, type DaemonSessionsService } from "../daemon-sessions.ts";
@@ -39,11 +38,18 @@ import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
 import { PLUGIN_REDUCE_TIMEOUT_MS, PluginReducerError } from "../workspace-changes.ts";
+import type { QueuedPluginAction } from "../workspace-changes.ts";
 import type { ManagedSession, SessionSpec } from "./SessionRegistry.ts";
-import { TilingAlgorithmsTag } from "../plugin/services.ts";
 import { defaultTilingAlgorithm, defaultTilingMethods } from "../tiling-algorithm-default.ts";
-import { tilingAlgorithmFromMethods } from "../tiling-algorithm.ts";
+import { tilingAlgorithmFromMethods, TilingAlgorithmError } from "../tiling-algorithm.ts";
 import { JsonValueSchema } from "./AttachProtocol.ts";
+import { PluginBehaviour, type PluginBehaviourService } from "../plugin-behaviour.ts";
+import {
+  emptyPluginBehaviour,
+  pluginBehaviourFromRegistrations,
+} from "../test-plugin-behaviour.ts";
+import type { TilingAlgorithmsService } from "../plugin/services.ts";
+import { defineDaemonCommand } from "../define-daemon-command.ts";
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
@@ -360,7 +366,7 @@ testEffect("rejects stale revision", () => {
       tx.run(command("space.rename", { name: "foo" }), 999, context),
     );
     expect(result._tag).toBe("Failure");
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(withPluginBehaviour(layer)));
 });
 
 testEffect("rejects non-workspace commands", () => {
@@ -372,7 +378,7 @@ testEffect("rejects non-workspace commands", () => {
       tx.run(command("app.quit"), initial.workspace.revision, context),
     );
     expect(result._tag).toBe("Failure");
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(withPluginBehaviour(layer)));
 });
 
 testEffect("executes a non-destructive command and publishes events", () => {
@@ -387,7 +393,7 @@ testEffect("executes a non-destructive command and publishes events", () => {
     );
     expect(result.snapshot.revision).toBe(1);
     expect(result.snapshot.spaces[0]!.name).toBe("renamed");
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(withPluginBehaviour(layer)));
 });
 
 testEffect("rolls back prepared sessions and does not persist on session failure", () => {
@@ -407,7 +413,7 @@ testEffect("rolls back prepared sessions and does not persist on session failure
 
     const sessions = yield* Ref.get(sessionRef);
     expect(sessions.activated).toHaveLength(0);
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(withPluginBehaviour(layer)));
 });
 
 testEffect("activates prepared sessions after successful commit", () => {
@@ -428,7 +434,7 @@ testEffect("activates prepared sessions after successful commit", () => {
     const sessions = yield* Ref.get(sessionRef);
     expect(sessions.prepared.length).toBe(1);
     expect(sessions.activated.length).toBe(1);
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(withPluginBehaviour(layer)));
 });
 
 testEffect("rejects worktree removal when dirty", () => {
@@ -440,61 +446,60 @@ testEffect("rejects worktree removal when dirty", () => {
       tx.run(command("space.close", { space: "wt-space" }), initial.workspace.revision, context),
     );
     expect(result._tag).toBe("Failure");
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(withPluginBehaviour(layer)));
 });
 
-const emptyPluginMaps = (): Omit<WorkspaceTransactionPluginsService, "reducers"> => ({
-  actions: new Map(),
-  actionTagsByCommand: new Map(),
-  commandsWithResult: new Set(),
-  paneChecks: new Map(),
-  providers: new Set(),
-});
-
-const withPlugins = <R, E>(
-  base: Layer.Layer<R, E, Scope.Scope>,
-  plugins: WorkspaceTransactionPluginsService,
-) => base.pipe(Layer.provideMerge(Layer.succeed(WorkspaceTransactionPlugins, plugins)));
+const withPluginBehaviour = <R, E>(
+  base: Layer.Layer<R, E, Scope.Scope | PluginBehaviour>,
+  behaviour: PluginBehaviourService = emptyPluginBehaviour,
+) => base.pipe(Layer.provide(Layer.succeed(PluginBehaviour, behaviour)));
 
 testEffect("a failing plugin reducer leaves the revision unchanged", () => {
   const initial = singlePaneState();
   const { layer, persistRef } = testLayer(initial);
-  const plugins: WorkspaceTransactionPluginsService = {
-    ...emptyPluginMaps(),
-    reducers: new Map([
-      ["probe.fail", () => Effect.fail(new PluginReducerError({ message: "reducer blew up" }))],
-    ]),
-  };
+  const probeFail = defineDaemonCommand({
+    tag: "probe.fail",
+    fields: S.Struct({}),
+    meta: { desc: "fail", group: "probe", target: "workspace", exposure: "human" },
+    resources: () => [],
+    reduce: () => Effect.fail(new PluginReducerError({ message: "reducer blew up" })),
+  });
   return Effect.gen(function* () {
-    const tx = yield* WorkspaceTransaction;
-    const before = initial.workspace.revision;
-    const result = yield* Effect.exit(tx.run(runtimeCommand("probe.fail", {}), before, context));
-    expect(result._tag).toBe("Failure");
-    const persisted = yield* Ref.get(persistRef);
-    expect(persisted.persisted).toHaveLength(0);
-    expect(before).toBe(initial.workspace.revision);
-  }).pipe(Effect.provide(withPlugins(layer, plugins)));
+    const behaviour = yield* pluginBehaviourFromRegistrations([probeFail]);
+    yield* Effect.gen(function* () {
+      const tx = yield* WorkspaceTransaction;
+      const before = initial.workspace.revision;
+      const result = yield* Effect.exit(tx.run(runtimeCommand("probe.fail", {}), before, context));
+      expect(result._tag).toBe("Failure");
+      const persisted = yield* Ref.get(persistRef);
+      expect(persisted.persisted).toHaveLength(0);
+      expect(before).toBe(initial.workspace.revision);
+    }).pipe(Effect.provide(withPluginBehaviour(layer, behaviour)));
+  });
 });
 
 testEffect("a timed-out plugin reducer fails under TestClock", () => {
   const initial = singlePaneState();
-  const plugins: WorkspaceTransactionPluginsService = {
-    ...emptyPluginMaps(),
-    reducers: new Map([
-      ["probe.hang", () => Effect.sleep(Duration.minutes(1)).pipe(Effect.as({ changes: [] }))],
-    ]),
-  };
+  const probeHang = defineDaemonCommand({
+    tag: "probe.hang",
+    fields: S.Struct({}),
+    meta: { desc: "hang", group: "probe", target: "workspace", exposure: "human" },
+    resources: () => [],
+    reduce: () => Effect.sleep(Duration.minutes(1)).pipe(Effect.as({ changes: [] })),
+  });
   // Timeout is asserted on reducePluginCommand — the production helper the
   // transaction calls. Forking tx.run under TestClock does not complete: the
   // DaemonModel mutation-queue worker does not observe TestClock.adjust from
   // the test fiber once the full WorkspaceTransaction layer is in place.
   return Effect.gen(function* () {
+    const behaviour = yield* pluginBehaviourFromRegistrations([probeHang]);
+    const declarations = yield* behaviour.declarations;
     const fiber = yield* reducePluginCommand(
-      plugins,
       runtimeCommand("probe.hang", {}),
       initial.workspace,
       context,
-    ).pipe(Effect.exit, Effect.forkChild);
+      declarations,
+    ).pipe(Effect.provideService(PluginBehaviour, behaviour), Effect.exit, Effect.forkChild);
     yield* TestClock.adjust(Duration.millis(PLUGIN_REDUCE_TIMEOUT_MS));
     const result = yield* Fiber.join(fiber);
     expect(Exit.isFailure(result)).toBe(true);
@@ -558,34 +563,30 @@ testEffect("a maxCols layout rule elects different algorithms for narrow and wid
       });
     const narrow = makeAlgo("narrow");
     const wide = makeAlgo("wide");
-    const tilingAlgorithms = {
-      all: () =>
-        [
-          {
-            owner: { id: "test", generation: 0 },
-            name: "narrow",
-            value: { algorithm: narrow },
-          },
-          {
-            owner: { id: "test", generation: 0 },
-            name: "wide",
-            value: { algorithm: wide },
-          },
-          {
-            owner: { id: "amux.core", generation: 0 },
-            name: defaultTilingAlgorithm.id,
-            value: { algorithm: defaultTilingAlgorithm },
-          },
-        ] as const,
+    const tilingAlgorithms: TilingAlgorithmsService = {
+      all: () => [
+        {
+          owner: { id: "test", generation: 0 },
+          name: "narrow",
+          value: { algorithm: narrow },
+        },
+        {
+          owner: { id: "test", generation: 0 },
+          name: "wide",
+          value: { algorithm: wide },
+        },
+        {
+          owner: { id: "amux.core", generation: 0 },
+          name: defaultTilingAlgorithm.id,
+          value: { algorithm: defaultTilingAlgorithm },
+        },
+      ],
       register: () => Effect.void,
     };
-
     const initial = singlePaneState();
     const { layer } = testLayer(initial);
-    const withAlgos = layer.pipe(
-      Layer.provideMerge(Layer.succeed(TilingAlgorithmsTag, tilingAlgorithms)),
-    );
 
+    const behaviour = yield* pluginBehaviourFromRegistrations([], tilingAlgorithms);
     yield* Effect.gen(function* () {
       const tx = yield* WorkspaceTransaction;
       const narrowResult = yield* tx.run(
@@ -602,11 +603,130 @@ testEffect("a maxCols layout rule elects different algorithms for narrow and wid
       });
       expect(elected).toEqual(["narrow", "wide"]);
     }).pipe(
-      Effect.provide(withAlgos),
+      Effect.provide(withPluginBehaviour(layer, behaviour)),
       Effect.provideService(
         ConfigProvider.ConfigProvider,
         ConfigProvider.fromUnknown({ XDG_CONFIG_HOME: configHome }),
       ),
     );
   }).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, Path.layer))),
+);
+
+testEffect(
+  "a hand-built PluginBehaviour reduce is applied and its action reaches runAction",
+  () => {
+    const initial = singlePaneState();
+    const { layer } = testLayer(initial);
+    const ran: QueuedPluginAction[] = [];
+    const fake: PluginBehaviourService = {
+      declarations: Effect.succeed({
+        commands: [
+          {
+            tag: "fake.cmd",
+            meta: {
+              desc: "fake",
+              group: "fake",
+              target: "workspace",
+              exposure: "human",
+            },
+            fields: { type: "object", properties: {} },
+            declaresResult: true,
+            actionTags: ["fake.act"],
+            paneTypes: [],
+            providers: [],
+          },
+        ],
+        algorithms: [],
+        adapters: [],
+      }),
+      reduce: () =>
+        Effect.succeed({
+          changes: [
+            { _tag: "result.set" as const, result: { ok: true } },
+            { _tag: "action.push" as const, action: { _tag: "fake.act", n: 1 } },
+          ],
+        }),
+      checkDescriptor: (_type, descriptor) => Effect.succeed(descriptor),
+      runAction: (action) =>
+        Effect.sync(() => {
+          ran.push(action);
+        }),
+      runSession: () => Effect.succeed(null),
+      runTiling: () =>
+        Effect.fail(new TilingAlgorithmError({ algorithm: "unused", message: "unused" })),
+      planResume: () => Effect.succeed(Option.none()),
+    };
+    return Effect.gen(function* () {
+      const tx = yield* WorkspaceTransaction;
+      const result = yield* tx.run(
+        runtimeCommand("fake.cmd", {}),
+        initial.workspace.revision,
+        context,
+      );
+      expect(result.result).toEqual({ ok: true });
+      expect(ran).toEqual([{ _tag: "fake.act", payload: { _tag: "fake.act", n: 1 } }]);
+    }).pipe(Effect.provide(withPluginBehaviour(layer, fake)));
+  },
+);
+
+testEffect(
+  "a failing plugin tiling algorithm through WorkspaceTransaction falls back to default",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const pathSvc = yield* Path.Path;
+      const configHome = yield* fs.makeTempDirectory({ prefix: "amux-tiling-fallback-" });
+      const amuxDir = pathSvc.join(configHome, "amux");
+      yield* fs.makeDirectory(amuxDir, { recursive: true });
+      const configText = yield* S.encodeEffect(S.fromJsonString(JsonValueSchema))({
+        options: { "behaviour.tilingAlgorithm": "boom" },
+      });
+      yield* fs.writeFileString(pathSvc.join(amuxDir, "config.json"), configText);
+
+      let tilingCalls = 0;
+      const fake: PluginBehaviourService = {
+        declarations: Effect.succeed({
+          commands: [],
+          algorithms: [{ id: "boom", version: 1 }],
+          adapters: [],
+        }),
+        reduce: () => Effect.succeed({ changes: [] }),
+        checkDescriptor: (_type, descriptor) => Effect.succeed(descriptor),
+        runAction: () => Effect.void,
+        runSession: () => Effect.succeed(null),
+        runTiling: (algorithmId) => {
+          tilingCalls += 1;
+          return Effect.fail(
+            new TilingAlgorithmError({
+              algorithm: algorithmId,
+              message: "plugin tiling blew up",
+            }),
+          );
+        },
+        planResume: () => Effect.succeed(Option.none()),
+      };
+
+      const initial = singlePaneState();
+      const { layer } = testLayer(initial);
+      yield* Effect.gen(function* () {
+        const tx = yield* WorkspaceTransaction;
+        const result = yield* tx.run(
+          command("pane.split", { axis: "row" }),
+          initial.workspace.revision,
+          context,
+        );
+        expect(tilingCalls).toBe(1);
+        expect(result.snapshot.revision).toBeGreaterThan(initial.workspace.revision);
+        const layout = result.snapshot.spaces[0]?.windows[0]?.layout;
+        expect(layout).toBeDefined();
+        if (layout === undefined) return;
+        expect(layoutPanes(layout.root).length).toBe(2);
+      }).pipe(
+        Effect.provide(withPluginBehaviour(layer, fake)),
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({ XDG_CONFIG_HOME: configHome }),
+        ),
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, Path.layer))),
 );

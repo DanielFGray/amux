@@ -24,12 +24,22 @@ import {
 } from "../../plugin-agent-continuity/src/adapters/index.ts";
 import { testEffect } from "./test-effect.ts";
 import { withCollectingLogger } from "./test-logger.ts";
+import { PluginBehaviour, buildPluginBehaviour } from "./plugin-behaviour.ts";
+import { emptyAlgorithms, emptyCommands } from "./test-plugin-behaviour.ts";
 
 const { effect: testClockEffect } = testEffect(Layer.empty);
 
 const adapters = new ForeignHarnessAdapterTable();
 for (const adapter of [claudeAdapter, codexAdapter, cursorAdapter, opencodeAdapter])
   adapters.register(adapter);
+
+const withResume = <A, E>(effect: Effect.Effect<A, E, PluginBehaviour>) =>
+  effect.pipe(
+    Effect.provideService(
+      PluginBehaviour,
+      buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), adapters),
+    ),
+  );
 
 const id = (value: string): AgentSessionRef => ({ kind: "id", value });
 const path = (value: string): AgentSessionRef => ({ kind: "path", value });
@@ -41,11 +51,11 @@ const expectArgv = (
   argv: readonly string[],
 ) =>
   Effect.gen(function* () {
-    const plan = Option.getOrThrow(yield* planAgentResume(source, agent, sessionRef, adapters));
+    const plan = Option.getOrThrow(yield* planAgentResume(source, agent, sessionRef));
     expect(plan.agent).toBe(agent);
     expect(plan.argv).toEqual([...argv]);
     expect(plan.dedupeKey).toBe(agentResumeDedupeKey(source, agent, sessionRef));
-  });
+  }).pipe(withResume);
 
 testEffect("plan: claude --resume <id>", () =>
   expectArgv("amux:claude", "claude", id("claude-session"), [
@@ -76,84 +86,64 @@ testEffect("plan: cursor-agent --resume <id>", () =>
 );
 
 testEffect("unsupported source/agent pairs and mismatched kinds yield no plan", () =>
-  Effect.gen(function* () {
-    expect(Option.isNone(yield* planAgentResume("evil:claude", "claude", id("s"), adapters))).toBe(
-      true,
-    );
-    expect(Option.isNone(yield* planAgentResume("amux:claude", "codex", id("s"), adapters))).toBe(
-      true,
-    );
-    // Official allowlist accepts reports, but no adapter registered → omit.
-    expect(Option.isNone(yield* planAgentResume("amux:droid", "droid", id("s"), adapters))).toBe(
-      true,
-    );
-    expect(
-      Option.isNone(yield* planAgentResume("amux:copilot", "copilot", id("s"), adapters)),
-    ).toBe(true);
-    expect(
-      Option.isNone(
-        yield* planAgentResume("amux:claude", "claude", path("/tmp/claude-session"), adapters),
-      ),
-    ).toBe(true);
-    expect(
-      Option.isNone(
-        yield* planAgentResume(
-          "amux:opencode",
-          "opencode",
-          path("/tmp/opencode-session"),
-          adapters,
+  withResume(
+    Effect.gen(function* () {
+      expect(Option.isNone(yield* planAgentResume("evil:claude", "claude", id("s")))).toBe(true);
+      expect(Option.isNone(yield* planAgentResume("amux:claude", "codex", id("s")))).toBe(true);
+      expect(Option.isNone(yield* planAgentResume("amux:droid", "droid", id("s")))).toBe(true);
+      expect(Option.isNone(yield* planAgentResume("amux:copilot", "copilot", id("s")))).toBe(true);
+      expect(
+        Option.isNone(yield* planAgentResume("amux:claude", "claude", path("/tmp/claude-session"))),
+      ).toBe(true);
+      expect(
+        Option.isNone(
+          yield* planAgentResume("amux:opencode", "opencode", path("/tmp/opencode-session")),
         ),
-      ),
-    ).toBe(true);
-  }),
+      ).toBe(true);
+    }),
+  ),
 );
 
 testEffect("planAgentResumeFromSnapshot re-validates then plans", () =>
-  Effect.gen(function* () {
-    expect(
-      Option.getOrThrow(
-        yield* planAgentResumeFromSnapshot(
-          {
+  withResume(
+    Effect.gen(function* () {
+      expect(
+        Option.getOrThrow(
+          yield* planAgentResumeFromSnapshot({
             source: "amux:claude",
             agent: "claude",
             kind: "id",
             value: "from-snap",
-          },
-          adapters,
-        ),
-      ).argv,
-    ).toEqual(["claude", "--resume", "from-snap"]);
-    expect(
-      Option.isNone(
-        yield* planAgentResumeFromSnapshot(
-          {
+          }),
+        ).argv,
+      ).toEqual(["claude", "--resume", "from-snap"]);
+      expect(
+        Option.isNone(
+          yield* planAgentResumeFromSnapshot({
             source: "evil:claude",
             agent: "claude",
             kind: "id",
             value: "x",
-          },
-          adapters,
+          }),
         ),
-      ),
-    ).toBe(true);
-  }),
+      ).toBe(true);
+    }),
+  ),
 );
 
 testEffect("AgentResumeClaimSet claims once per dedupe key", () =>
-  Effect.gen(function* () {
-    const claims = new AgentResumeClaimSet();
-    const sessionRef = id("same");
-    const first = Option.getOrThrow(
-      yield* planAgentResume("amux:codex", "codex", sessionRef, adapters),
-    );
-    const second = Option.getOrThrow(
-      yield* planAgentResume("amux:codex", "codex", sessionRef, adapters),
-    );
-    expect(Option.isSome(claims.take(first))).toBe(true);
-    expect(Option.isNone(claims.take(second))).toBe(true);
-    claims.release(first.dedupeKey);
-    expect(Option.isSome(claims.take(second))).toBe(true);
-  }),
+  withResume(
+    Effect.gen(function* () {
+      const claims = new AgentResumeClaimSet();
+      const sessionRef = id("same");
+      const first = Option.getOrThrow(yield* planAgentResume("amux:codex", "codex", sessionRef));
+      const second = Option.getOrThrow(yield* planAgentResume("amux:codex", "codex", sessionRef));
+      expect(Option.isSome(claims.take(first))).toBe(true);
+      expect(Option.isNone(claims.take(second))).toBe(true);
+      claims.release(first.dedupeKey);
+      expect(Option.isSome(claims.take(second))).toBe(true);
+    }),
+  ),
 );
 
 test("dedupeKey differs by kind or value", () => {
@@ -179,8 +169,9 @@ testEffect("AgentSessionRefSchema and AgentResumePlanSchema round-trip", () =>
 
 testEffect("askPlanResume treats adapter failure as no plan and warns", () =>
   Effect.gen(function* () {
-    const failing: Pick<ForeignHarnessAdapter, "id" | "planResume"> = {
-      id: "claude",
+    const table = new ForeignHarnessAdapterTable();
+    const failing: ForeignHarnessAdapter = {
+      ...claudeAdapter,
       planResume: () =>
         Effect.fail(
           new ForeignHarnessPlanResumeError({
@@ -189,8 +180,15 @@ testEffect("askPlanResume treats adapter failure as no plan and warns", () =>
           }),
         ),
     };
+    table.register(failing);
+    const failingBehaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table);
     const logs: string[] = [];
-    const plan = yield* withCollectingLogger(askPlanResume(failing, id("sess")), logs);
+    const plan = yield* withCollectingLogger(
+      askPlanResume("claude", id("sess")).pipe(
+        Effect.provideService(PluginBehaviour, failingBehaviour),
+      ),
+      logs,
+    );
     expect(Option.isNone(plan)).toBe(true);
     expect(logs.some((line) => line.includes("claude") && line.includes("sess"))).toBe(true);
   }),
@@ -198,8 +196,9 @@ testEffect("askPlanResume treats adapter failure as no plan and warns", () =>
 
 testClockEffect("askPlanResume times out under TestClock and yields no plan", () =>
   Effect.gen(function* () {
-    const hanging: Pick<ForeignHarnessAdapter, "id" | "planResume"> = {
-      id: "codex",
+    const table = new ForeignHarnessAdapterTable();
+    const hanging: ForeignHarnessAdapter = {
+      ...codexAdapter,
       planResume: () =>
         Effect.sleep(Duration.minutes(1)).pipe(
           Effect.as(
@@ -211,11 +210,15 @@ testClockEffect("askPlanResume times out under TestClock and yields no plan", ()
           ),
         ),
     };
+    table.register(hanging);
+    const hangingBehaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table);
     const logs: string[] = [];
-    const fiber = yield* withCollectingLogger(askPlanResume(hanging, id("late")), logs).pipe(
-      Effect.exit,
-      Effect.forkChild,
-    );
+    const fiber = yield* withCollectingLogger(
+      askPlanResume("codex", id("late")).pipe(
+        Effect.provideService(PluginBehaviour, hangingBehaviour),
+      ),
+      logs,
+    ).pipe(Effect.exit, Effect.forkChild);
     yield* TestClock.adjust(Duration.millis(PLAN_RESUME_TIMEOUT_MS));
     const result = yield* Fiber.join(fiber);
     expect(Exit.isSuccess(result)).toBe(true);

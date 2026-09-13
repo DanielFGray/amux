@@ -26,6 +26,7 @@ export {
   type PluginErrorPhase,
   type SpawnProvider,
 } from "./plugin/types.ts";
+export { PluginActivateError } from "./plugin/activate-error.ts";
 
 // The registries a plugin contributes to. Each is acquired through
 // `CurrentPlugin` and a `Scope`, so disabling a plugin is releasing its scope.
@@ -56,6 +57,7 @@ export {
   type CliCommandRegistration,
   type CliCommandsService,
   type DaemonCommandRegistration,
+  type DaemonCommandRecord,
   type DaemonCommandsService,
   type EnumValueRegistration,
   type TilingAlgorithmRegistration,
@@ -126,7 +128,6 @@ export {
   definePluginAction,
   preparePluginCommandApply,
   reducePluginCommand,
-  workspaceTransactionPluginsFromRegistrations,
   WorkspaceTransactionError,
 } from "./effect/WorkspaceTransaction.ts";
 export type {
@@ -134,6 +135,26 @@ export type {
   PluginActionRegistration,
   PreparedPluginCommand,
 } from "./effect/WorkspaceTransaction.ts";
+export {
+  PluginBehaviour,
+  PluginBehaviourError,
+  PluginDeclarationsSchema,
+  PluginCommandDeclarationSchema,
+  buildPluginBehaviour,
+  makePluginBehaviour,
+  runPluginSessionCommand,
+  PLUGIN_SESSION_RUN_TIMEOUT_MS,
+  QueuedPluginActionSchema,
+  type PluginBehaviourService,
+  type PluginDeclarations,
+  type PluginCommandDeclaration,
+} from "./plugin-behaviour.ts";
+export {
+  toJsonSchemaDocument,
+  JsonSchemaObjectSchema,
+  JsonSchemaDocumentError,
+  type JsonSchemaObject,
+} from "./command-cli.ts";
 export {
   DaemonSessions,
   DaemonSessionsError,

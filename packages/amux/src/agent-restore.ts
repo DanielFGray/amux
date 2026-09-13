@@ -17,8 +17,8 @@ import {
   type AgentResumePlan,
 } from "./agent-resume.ts";
 import type { PaneAgentSessionSnapshot } from "./agent-session.ts";
-import type { ForeignHarnessAdapterLookup } from "./foreign-harness.ts";
 import { isTerminalSize } from "./limits.ts";
+import type { PluginBehaviour } from "./plugin-behaviour.ts";
 
 export type PaneRestoreStartup = {
   readonly restorePlan: Option.Option<AgentResumePlan>;
@@ -75,14 +75,11 @@ export type ResumePlanCandidate = {
  */
 export const collectSessionResumePlans = (
   candidates: readonly ResumePlanCandidate[],
-  adapters: ForeignHarnessAdapterLookup,
-): Effect.Effect<ReadonlyMap<string, Option.Option<AgentResumePlan>>> =>
+): Effect.Effect<ReadonlyMap<string, Option.Option<AgentResumePlan>>, never, PluginBehaviour> =>
   Effect.forEach(
     candidates,
     ({ sessionId, snapshot }) =>
-      planAgentResumeFromSnapshot(snapshot, adapters).pipe(
-        Effect.map((plan) => [sessionId, plan] as const),
-      ),
+      planAgentResumeFromSnapshot(snapshot).pipe(Effect.map((plan) => [sessionId, plan] as const)),
     { concurrency: "unbounded" },
   ).pipe(Effect.map((entries) => new Map(entries)));
 

@@ -27,11 +27,9 @@ import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
 import { niriTilingAlgorithm, niriTilingMethods } from "../../plugin-niri/src/niri.ts";
-import {
-  preparePluginCommandApply,
-  definePluginAction,
-  workspaceTransactionPluginsFromRegistrations,
-} from "./effect/WorkspaceTransaction.ts";
+import { preparePluginCommandApply, definePluginAction } from "./effect/WorkspaceTransaction.ts";
+import { PluginBehaviour } from "./plugin-behaviour.ts";
+import { pluginBehaviourFromRegistrations } from "./test-plugin-behaviour.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const path = run(nodePath);
@@ -43,12 +41,13 @@ const pluginApplyFor = (
   context: WorkspaceCommandContext,
 ) =>
   run(
-    preparePluginCommandApply(
-      workspaceTransactionPluginsFromRegistrations(regs),
-      cmd,
-      workspace,
-      context,
-    ),
+    Effect.gen(function* () {
+      const behaviour = yield* pluginBehaviourFromRegistrations(regs);
+      const declarations = yield* behaviour.declarations;
+      return yield* preparePluginCommandApply(cmd, workspace, context, declarations).pipe(
+        Effect.provideService(PluginBehaviour, behaviour),
+      );
+    }),
   );
 
 const applyWorkspaceCommand = (
@@ -143,14 +142,23 @@ test("daemon tiling election routes tiled commands and rebuild through the elect
       return defaultTilingMethods.swap!(layout, size, from, step);
     },
   });
-  const elected = resolveTilingAlgorithm([], "test", [algorithm], {
-    cols: 80,
-    rows: 24,
-  });
-  expect(elected).toBe(algorithm);
-  expect(resolveTilingAlgorithm([], "missing", [algorithm], { cols: 80, rows: 24 })).toBe(
-    defaultTilingAlgorithm,
+  const elected = resolveTilingAlgorithm(
+    [],
+    "test",
+    [{ id: algorithm.id }],
+    { cols: 80, rows: 24 },
+    { id: defaultTilingAlgorithm.id },
   );
+  expect(elected.id).toBe(algorithm.id);
+  expect(
+    resolveTilingAlgorithm(
+      [],
+      "missing",
+      [{ id: algorithm.id }],
+      { cols: 80, rows: 24 },
+      { id: defaultTilingAlgorithm.id },
+    ).id,
+  ).toBe(defaultTilingAlgorithm.id);
 
   let workspace = run(workspaceFromSession(wideBase()));
   workspace = applyWorkspaceCommand(
@@ -158,28 +166,28 @@ test("daemon tiling election routes tiled commands and rebuild through the elect
     command("pane.split", { axis: "row" }),
     context,
     undefined,
-    elected,
+    algorithm,
   ).snapshot;
   workspace = applyWorkspaceCommand(
     workspace,
     command("pane.swap", { to: "next" }),
     context,
     undefined,
-    elected,
+    algorithm,
   ).snapshot;
   workspace = applyWorkspaceCommand(
     workspace,
     command("pane.close"),
     context,
     undefined,
-    elected,
+    algorithm,
   ).snapshot;
   const rebuilt = applyWorkspaceCommand(
     workspace,
     command("workspace.rebuild-tiling"),
     context,
     undefined,
-    elected,
+    algorithm,
   );
 
   expect(calls).toEqual({ init: 2, split: 1, close: 1, swap: 1 });

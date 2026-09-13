@@ -1,5 +1,6 @@
-import { Match, Option, Schema as S } from "effect";
+import { Effect, Match, Option, Schema as S } from "effect";
 import { COMMAND_DEFS, COMMAND_META } from "./commands.ts";
+import { errorMessage } from "./error-message.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import type { DaemonCommandSpec } from "./plugin/services.ts";
 
@@ -14,7 +15,7 @@ type FieldSpec =
   | { name: string; kind: "literal"; required: boolean; literals: readonly string[] }
   | { name: string; kind: "array"; required: boolean };
 
-type JsonSchemaObject = {
+export type JsonSchemaObject = {
   properties?: Record<string, JsonSchemaObject>;
   required?: readonly string[];
   type?: string;
@@ -25,6 +26,25 @@ type JsonSchemaObject = {
   anyOf?: readonly JsonSchemaObject[];
   minimum?: number;
 };
+
+export const JsonSchemaObjectSchema: S.Codec<JsonSchemaObject> = S.suspend(() =>
+  S.Struct({
+    properties: S.optional(S.Record(S.String, JsonSchemaObjectSchema)),
+    required: S.optional(S.Array(S.String)),
+    type: S.optional(S.String),
+    enum: S.optional(S.Array(S.String)),
+    items: S.optional(JsonSchemaObjectSchema),
+    $ref: S.optional(S.String),
+    $defs: S.optional(S.Record(S.String, JsonSchemaObjectSchema)),
+    anyOf: S.optional(S.Array(JsonSchemaObjectSchema)),
+    minimum: S.optional(S.Finite),
+  }),
+);
+
+export class JsonSchemaDocumentError extends S.TaggedError<JsonSchemaDocumentError>()(
+  "JsonSchemaDocumentError",
+  { message: S.String },
+) {}
 
 function commandSchema(tag: string): JsonSchemaObject {
   const def = COMMAND_DEFS.find((item) => item.tag === tag);
@@ -66,12 +86,27 @@ export function fieldNames(tag: string): FieldSpec[] {
   return fieldsForSchema(schema);
 }
 
-function fieldNamesForFields(fields: S.Struct.Fields): FieldSpec[] {
-  const document = S.toJsonSchemaDocument(S.Struct(fields));
-  const schema = document.schema as JsonSchemaObject;
-  if (Object.keys(document.definitions).length > 0)
-    schema.$defs = document.definitions as Record<string, JsonSchemaObject>;
-  return fieldsForSchema(schema);
+/**
+ * Fields → JSON Schema document (definitions folded into `$defs`). Shared by
+ * CLI argv parse/help and plugin declaration publish — one converter only.
+ */
+export const toJsonSchemaDocument = (
+  fields: S.Struct.Fields,
+): Effect.Effect<JsonSchemaObject, JsonSchemaDocumentError> =>
+  Effect.gen(function* () {
+    const document = S.toJsonSchemaDocument(S.Struct(fields));
+    const merged =
+      Object.keys(document.definitions).length > 0
+        ? { ...document.schema, $defs: document.definitions }
+        : document.schema;
+    return yield* S.decodeEffect(JsonSchemaObjectSchema)(merged).pipe(
+      Effect.mapError((error) => new JsonSchemaDocumentError({ message: errorMessage(error) })),
+    );
+  });
+
+/** FieldSpec list from an already-decoded JSON Schema document. */
+export function fieldNamesForFields(document: JsonSchemaObject): FieldSpec[] {
+  return fieldsForSchema(document);
 }
 
 function fieldsForSchema(schema: JsonSchemaObject): FieldSpec[] {
@@ -91,9 +126,11 @@ export function parseArgs(tag: string, argv: string[]): ParseArgsResult {
 }
 
 /** Parse a daemon plugin's declared command fields with the core CLI grammar. */
-export function parseFields(tag: string, fields: S.Struct.Fields, argv: string[]): ParseArgsResult {
-  return parseFieldSpecs(tag, fieldNamesForFields(fields), argv);
-}
+export const parseFields = (
+  tag: string,
+  document: JsonSchemaObject,
+  argv: string[],
+): ParseArgsResult => parseFieldSpecs(tag, fieldNamesForFields(document), argv);
 
 function parseFieldSpecs(tag: string, fields: FieldSpec[], argv: string[]): ParseArgsResult {
   if (fields.length === 0) {
@@ -261,7 +298,12 @@ export function generateGroupHelp(group: string): string | undefined {
   ].join("\n");
 }
 
-export function generateHelp(daemonCommands: readonly DaemonCommandSpec[] = []): string {
+export const generateHelp = (
+  daemonCommands: readonly {
+    readonly command: DaemonCommandSpec;
+    readonly fields: JsonSchemaObject;
+  }[] = [],
+): string => {
   const lines: string[] = [
     "usage: amux <command> [args] [--flag=value] [--session=<id>]",
     "       amux <command> [args] \\; <command> [args] ...",
@@ -278,16 +320,17 @@ export function generateHelp(daemonCommands: readonly DaemonCommandSpec[] = []):
     groupEntries.push(entry);
     groups.set(def.group, groupEntries);
   }
-  for (const spec of daemonCommands) {
-    const entry = daemonCommandHelp(spec);
-    const groupEntries = groups.get(spec.meta.group) ?? [];
+  for (const record of daemonCommands) {
+    const entry = daemonCommandHelp(record.command, record.fields);
+    const groupEntries = groups.get(record.command.meta.group) ?? [];
     groupEntries.push(entry);
-    groups.set(spec.meta.group, groupEntries);
+    groups.set(record.command.meta.group, groupEntries);
   }
 
   for (const group of [...groups.keys()].sort()) {
     lines.push(`  ${group}:`);
-    lines.push(...groups.get(group)!);
+    const entries = groups.get(group);
+    if (entries !== undefined) lines.push(...entries);
   }
 
   lines.push("");
@@ -313,7 +356,7 @@ export function generateHelp(daemonCommands: readonly DaemonCommandSpec[] = []):
   lines.push("    SKIP if an amux skill is already in your context. Otherwise run: amux --skill");
   lines.push("    From an amux checkout with no `amux` on PATH: bun run cli --skill");
   return lines.join("\n");
-}
+};
 
 function commandHelp(def: (typeof COMMAND_DEFS)[number]): string {
   const syntax = fieldNames(def.tag)
@@ -329,8 +372,8 @@ function commandHelp(def: (typeof COMMAND_DEFS)[number]): string {
   return `  ${def.tag} ${syntax}`.trimEnd() + `\n      ${COMMAND_META[def.tag].desc}`;
 }
 
-function daemonCommandHelp(spec: DaemonCommandSpec): string {
-  const syntax = fieldNamesForFields(spec.fields)
+function daemonCommandHelp(spec: DaemonCommandSpec, document: JsonSchemaObject): string {
+  const syntax = fieldNamesForFields(document)
     .map((field) => {
       const value = field.kind === "literal" ? field.literals.join("|") : field.name;
       if (field.required) return `<${value}>`;

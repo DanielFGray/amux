@@ -6,16 +6,10 @@ import {
   resolveTilingAlgorithm,
   type LayoutRule,
 } from "./layout-rules.ts";
-import { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";
-import { tilingAlgorithmFromMethods } from "./tiling-algorithm.ts";
-import type { TilingAlgorithm } from "./tiling-algorithm.ts";
+import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 
-const algo = (id: string): TilingAlgorithm =>
-  tilingAlgorithmFromMethods({ ...defaultTilingMethods, id });
-
-const alpha = algo("alpha");
-const beta = algo("beta");
-const registered = [alpha, beta, defaultTilingAlgorithm] as const;
+const registered = [{ id: "alpha" }, { id: "beta" }, { id: defaultTilingAlgorithm.id }] as const;
+const defaultEntry = { id: defaultTilingAlgorithm.id };
 
 test("rules are checked in order; the first matching registered rule wins", () => {
   const rules: LayoutRule[] = [
@@ -23,8 +17,12 @@ test("rules are checked in order; the first matching registered rule wins", () =
     { algorithm: "alpha", when: { maxCols: 80 } },
     { algorithm: "beta", when: {} },
   ];
-  expect(resolveTilingAlgorithm(rules, "default", registered, { cols: 60, rows: 24 })).toBe(alpha);
-  expect(resolveTilingAlgorithm(rules, "default", registered, { cols: 120, rows: 24 })).toBe(beta);
+  expect(
+    resolveTilingAlgorithm(rules, "default", registered, { cols: 60, rows: 24 }, defaultEntry).id,
+  ).toBe("alpha");
+  expect(
+    resolveTilingAlgorithm(rules, "default", registered, { cols: 120, rows: 24 }, defaultEntry).id,
+  ).toBe("beta");
 });
 
 test("minCols includes the bound and excludes below it", () => {
@@ -75,25 +73,31 @@ test("a rule naming an unregistered algorithm is skipped", () => {
     { algorithm: "ghost", when: { maxCols: 200 } },
     { algorithm: "alpha", when: { maxCols: 200 } },
   ];
-  expect(resolveTilingAlgorithm(rules, "default", registered, { cols: 80, rows: 24 })).toBe(alpha);
+  expect(
+    resolveTilingAlgorithm(rules, "default", registered, { cols: 80, rows: 24 }, defaultEntry).id,
+  ).toBe("alpha");
 });
 
 test("with no matching rule, behaviour.tilingAlgorithm picks a registered algorithm", () => {
-  expect(resolveTilingAlgorithm([], "beta", registered, { cols: 80, rows: 24 })).toBe(beta);
+  expect(
+    resolveTilingAlgorithm([], "beta", registered, { cols: 80, rows: 24 }, defaultEntry).id,
+  ).toBe("beta");
 });
 
-test("an unregistered behaviour.tilingAlgorithm value gives the default", () => {
-  expect(resolveTilingAlgorithm([], "ghost", registered, { cols: 80, rows: 24 })).toBe(
-    defaultTilingAlgorithm,
-  );
+test("an unregistered selected id falls back to the default entry", () => {
+  expect(
+    resolveTilingAlgorithm([], "ghost", registered, { cols: 80, rows: 24 }, defaultEntry).id,
+  ).toBe(defaultTilingAlgorithm.id);
 });
 
-test("LayoutRuleSchema round-trips a rule", () => {
-  const rule = {
+test("LayoutRuleSchema accepts the documented shape", () => {
+  expect(
+    S.decodeSync(LayoutRuleSchema)({
+      algorithm: "niri",
+      when: { maxCols: 80, workspace: "phone" },
+    }),
+  ).toEqual({
     algorithm: "niri",
     when: { maxCols: 80, workspace: "phone" },
-  };
-  const decoded = S.decodeSync(LayoutRuleSchema)(rule);
-  expect(decoded).toEqual(rule);
-  expect(S.encodeSync(LayoutRuleSchema)(decoded)).toEqual(rule);
+  });
 });

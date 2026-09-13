@@ -14,10 +14,9 @@ import {
   type WorkspaceSnapshot,
 } from "./workspace.ts";
 import type { DaemonCommandRegistration } from "./plugin/services.ts";
-import {
-  preparePluginCommandApply,
-  workspaceTransactionPluginsFromRegistrations,
-} from "./effect/WorkspaceTransaction.ts";
+import { preparePluginCommandApply } from "./effect/WorkspaceTransaction.ts";
+import { PluginBehaviour } from "./plugin-behaviour.ts";
+import { pluginBehaviourFromRegistrations } from "./test-plugin-behaviour.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const path = run(nodePath);
@@ -29,12 +28,13 @@ const pluginApplyFor = (
   context: WorkspaceCommandContext,
 ) =>
   run(
-    preparePluginCommandApply(
-      workspaceTransactionPluginsFromRegistrations(regs),
-      cmd,
-      workspace,
-      context,
-    ),
+    Effect.gen(function* () {
+      const behaviour = yield* pluginBehaviourFromRegistrations(regs);
+      const declarations = yield* behaviour.declarations;
+      return yield* preparePluginCommandApply(cmd, workspace, context, declarations).pipe(
+        Effect.provideService(PluginBehaviour, behaviour),
+      );
+    }),
   );
 
 const applyWorkspaceCommand = (

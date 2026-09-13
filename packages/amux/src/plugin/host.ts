@@ -1,4 +1,16 @@
-import { Cause, Clock, Effect, Deferred, Exit, Fiber, Queue, Scope, Stream, Types } from "effect";
+import {
+  Cause,
+  Clock,
+  Effect,
+  Deferred,
+  Exit,
+  Fiber,
+  Option,
+  Queue,
+  Scope,
+  Stream,
+  Types,
+} from "effect";
 import { createPluginKV } from "./kv.ts";
 import {
   createPluginServices,
@@ -8,7 +20,6 @@ import {
   type PluginService,
   type PluginServices,
 } from "./services.ts";
-import { Option } from "effect";
 import type { PluginContributions, PluginInstance } from "./contributions.ts";
 import type {
   PluginDefinition,
@@ -19,6 +30,7 @@ import type {
   PluginStatus,
   SpawnProvider,
 } from "./types.ts";
+import type { PluginActivateError } from "./activate-error.ts";
 import { CurrentPlugin } from "./services.ts";
 
 export type {
@@ -270,16 +282,19 @@ export function createPluginHost(
 
     const finishActivation = Effect.fnUntraced(function* (
       instance: PluginInstance,
-      exit: Exit.Exit<void, never>,
+      exit: Exit.Exit<void, PluginActivateError>,
     ) {
       const candidate = candidates.get(instance.id);
       const state = candidate ?? activePlugins.get(instance.id);
       if (disposed || state?.instance !== instance) return;
-      const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
-      let error = Exit.isFailure(exit)
-        ? defect instanceof Error
-          ? defect
-          : new Error(String(defect))
+      let error: Error | undefined = Exit.isFailure(exit)
+        ? Option.match(Cause.findErrorOption(exit.cause), {
+            onSome: (typed) => (typed instanceof Error ? typed : new Error(String(typed))),
+            onNone: () => {
+              const defect = Cause.squash(exit.cause);
+              return defect instanceof Error ? defect : new Error(String(defect));
+            },
+          })
         : undefined;
       if (!error && candidate) {
         if (candidate.batch) {

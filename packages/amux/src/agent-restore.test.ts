@@ -16,6 +16,8 @@ import {
 import { claudeAdapter } from "../../plugin-agent-continuity/src/adapters/claude.ts";
 import { testEffect } from "./test-effect.ts";
 import { withCollectingLogger } from "./test-logger.ts";
+import { PluginBehaviour, buildPluginBehaviour } from "./plugin-behaviour.ts";
+import { emptyAlgorithms, emptyCommands } from "./test-plugin-behaviour.ts";
 
 const { effect: testClockEffect } = testEffect(Layer.empty);
 
@@ -133,31 +135,29 @@ testEffect("collectSessionResumePlans: a failing adapter leaves that session wit
           : claudeAdapter.planResume(ref),
     };
     table.register(selective);
+    const behaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table);
     const logs: string[] = [];
     const plans = yield* withCollectingLogger(
-      collectSessionResumePlans(
-        [
-          {
-            sessionId: "s-fail",
-            snapshot: {
-              source: "amux:claude",
-              agent: "claude",
-              kind: "id",
-              value: "fail-sess",
-            },
+      collectSessionResumePlans([
+        {
+          sessionId: "s-fail",
+          snapshot: {
+            source: "amux:claude",
+            agent: "claude",
+            kind: "id",
+            value: "fail-sess",
           },
-          {
-            sessionId: "s-ok",
-            snapshot: {
-              source: "amux:claude",
-              agent: "claude",
-              kind: "id",
-              value: "ok-sess",
-            },
+        },
+        {
+          sessionId: "s-ok",
+          snapshot: {
+            source: "amux:claude",
+            agent: "claude",
+            kind: "id",
+            value: "ok-sess",
           },
-        ],
-        table,
-      ),
+        },
+      ]).pipe(Effect.provideService(PluginBehaviour, behaviour)),
       logs,
     );
     expect(Option.isNone(plans.get("s-fail") ?? Option.none())).toBe(true);
@@ -183,22 +183,20 @@ testClockEffect("collectSessionResumePlans: a hanging adapter hits the time limi
         ),
     };
     table.register(hanging);
+    const behaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table);
     const logs: string[] = [];
     const fiber = yield* withCollectingLogger(
-      collectSessionResumePlans(
-        [
-          {
-            sessionId: "s-late",
-            snapshot: {
-              source: "amux:claude",
-              agent: "claude",
-              kind: "id",
-              value: "late-sess",
-            },
+      collectSessionResumePlans([
+        {
+          sessionId: "s-late",
+          snapshot: {
+            source: "amux:claude",
+            agent: "claude",
+            kind: "id",
+            value: "late-sess",
           },
-        ],
-        table,
-      ),
+        },
+      ]).pipe(Effect.provideService(PluginBehaviour, behaviour)),
       logs,
     ).pipe(Effect.exit, Effect.forkChild);
     yield* TestClock.adjust(Duration.millis(PLAN_RESUME_TIMEOUT_MS));

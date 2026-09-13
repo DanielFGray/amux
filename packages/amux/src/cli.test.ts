@@ -3,7 +3,9 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Effect } from "effect";
 import { resolveCommandSession, splitCommandArgs } from "./cli.ts";
+import { testEffect } from "./test-effect.ts";
 
 test("escaped shell semicolons divide command argument groups", () => {
   expect(splitCommandArgs(["pane.split", "row", ";", "pane.focus", "right"])).toEqual([
@@ -121,13 +123,15 @@ test("skill output documents the delegate loop against the real contract", () =>
   expect(stdout).toContain("agent.interrupt");
 });
 
-test("--help advertises --skill the way herdr does", async () => {
-  const { generateHelp } = await import("./command-cli.ts");
-  const help = generateHelp();
-  expect(help).toContain("--skill");
-  expect(help).toContain("bun run cli --skill");
-  expect(help).toContain("Are you an AI?");
-});
+testEffect("--help advertises --skill the way herdr does", () =>
+  Effect.gen(function* () {
+    const { generateHelp } = yield* Effect.promise(() => import("./command-cli.ts"));
+    const help = generateHelp();
+    expect(help).toContain("--skill");
+    expect(help).toContain("bun run cli --skill");
+    expect(help).toContain("Are you an AI?");
+  }),
+);
 
 test("a bare command group prints its derived syntax", () => {
   const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "panes"]);
@@ -156,16 +160,20 @@ test("a client launch refuses to nest inside a pane amux already owns", () => {
   expect(Buffer.from(result.stdout).toString()).toBe("");
 });
 
-test("--help prints the derived help, not a stale static copy", async () => {
-  const { generateHelp } = await import("./command-cli.ts");
-  const { daemonCommandRegistrations } = await import("./plugin/daemon-command-host.ts");
-  const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"], {
-    env: process.env,
-  });
-  const stdout = Buffer.from(result.stdout).toString();
-  expect(result.exitCode).toBe(0);
-  expect(stdout).toBe(generateHelp(await daemonCommandRegistrations()) + "\n");
-});
+testEffect("--help prints the derived help, not a stale static copy", () =>
+  Effect.gen(function* () {
+    const { generateHelp } = yield* Effect.promise(() => import("./command-cli.ts"));
+    const { daemonCommandRecords } = yield* Effect.promise(
+      () => import("./plugin/daemon-command-host.ts"),
+    );
+    const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"], {
+      env: process.env,
+    });
+    const stdout = Buffer.from(result.stdout).toString();
+    expect(result.exitCode).toBe(0);
+    expect(stdout).toBe(generateHelp(yield* Effect.promise(() => daemonCommandRecords())) + "\n");
+  }),
+);
 
 test("configured editor contributes editor.open to CLI help without a missing daemon warning", () => {
   const configHome = mkdtempSync(join(tmpdir(), "amux-editor-help-"));

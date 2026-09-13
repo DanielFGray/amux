@@ -26,6 +26,9 @@ import type { ProviderMessageRegistration } from "../session-provider-messages.t
 import type { DaemonEventPayload } from "../effect/EventBus.ts";
 import type { ControlError } from "../control.ts";
 import type { DaemonSessions } from "../daemon-sessions.ts";
+import type { JsonSchemaObject } from "../command-cli.ts";
+import { toJsonSchemaDocument } from "../command-cli.ts";
+import { PluginActivateError } from "./activate-error.ts";
 
 /** @effect-leakable-service */
 export class CurrentPlugin extends Context.Service<CurrentPlugin, PluginInstance>()(
@@ -143,6 +146,16 @@ export type DefinedDaemonCommand = DaemonCommandRegistration & {
   readonly __brand: "DefinedDaemonCommand";
 };
 
+/**
+ * A committed daemon-command table entry: the authored command plus the JSON
+ * Schema document converted once at register. Readers use `command` for
+ * handlers and `fields` for CLI / declarations.
+ */
+export interface DaemonCommandRecord {
+  readonly command: DaemonCommandRegistration;
+  readonly fields: JsonSchemaObject;
+}
+
 /** Per-call capabilities for a session-target daemon command. Read-only plus
  *  the live session surface — mutation of daemon-owned model state goes
  *  through workspace-target commands, never through here. */
@@ -150,8 +163,8 @@ export interface DaemonSessionCommandContext {
   readonly snapshot: WorkspaceSnapshot;
 }
 
-export interface DaemonCommandsService extends RegistryService<DaemonCommandRegistration> {
-  readonly all: () => readonly Contribution<DaemonCommandRegistration>[];
+export interface DaemonCommandsService extends RegistryService<DaemonCommandRecord> {
+  readonly all: () => readonly Contribution<DaemonCommandRecord>[];
 }
 
 export interface TilingAlgorithmRegistration {
@@ -270,8 +283,22 @@ export const registerCommand = <Fields extends S.Struct.Fields>(
  */
 export const registerDaemonCommand = (
   registration: DefinedDaemonCommand,
-): Effect.Effect<void, never, DaemonCommandsTag | CurrentPlugin | Scope.Scope> =>
-  DaemonCommandsTag.pipe(Effect.flatMap((commands) => commands.register(registration)));
+): Effect.Effect<void, PluginActivateError, DaemonCommandsTag | CurrentPlugin | Scope.Scope> =>
+  Effect.gen(function* () {
+    const fields = yield* toJsonSchemaDocument(registration.fields).pipe(
+      Effect.mapError(
+        (error) =>
+          new PluginActivateError({
+            message: `command '${registration.tag}' fields are not publishable as JSON Schema: ${error.message}`,
+          }),
+      ),
+    );
+    yield* DaemonCommandsTag.pipe(
+      Effect.flatMap((commands) =>
+        commands.register({ command: registration, fields } satisfies DaemonCommandRecord),
+      ),
+    );
+  });
 
 /** Contribute a value to an existing enum option's closed choice — the
  *  type-safe surface over `OptionsTag.registerEnumValue` a plugin actually

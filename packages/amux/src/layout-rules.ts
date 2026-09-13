@@ -6,8 +6,6 @@
  * unstated bound is free.
  */
 import { Schema as S } from "effect";
-import type { TilingAlgorithm } from "./tiling-algorithm.ts";
-import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 
 const NonNegativeInt = S.Int.pipe(S.check(S.isGreaterThanOrEqualTo(0)));
 
@@ -48,21 +46,25 @@ export function layoutRuleMatches(when: LayoutRuleWhen, viewport: LayoutElection
 }
 
 /**
- * First matching registered rule wins; otherwise `selectedId` if registered;
- * otherwise the built-in default. A rule that names an unregistered algorithm
- * is skipped.
+ * First matching registered rule wins; otherwise the entry whose id is
+ * `selectedId` if present; otherwise `defaultAlgorithm`. A rule that names an
+ * unregistered algorithm is skipped. Callers pass the default in `algorithms`
+ * when it should be electable by id.
  */
-export function resolveTilingAlgorithm(
+export function resolveTilingAlgorithm<A extends { readonly id: string }>(
   rules: readonly LayoutRule[],
   selectedId: string,
-  algorithms: readonly TilingAlgorithm[],
+  algorithms: readonly A[],
   viewport: LayoutElectionViewport,
-): TilingAlgorithm {
-  const byId = new Map(algorithms.map((algorithm) => [algorithm.id, algorithm] as const));
+  defaultAlgorithm: A,
+): A {
+  const byId = new Map(algorithms.map((entry) => [entry.id, entry] as const));
   for (const rule of rules) {
     if (!layoutRuleMatches(rule.when, viewport)) continue;
-    const matched = byId.get(rule.algorithm);
-    if (matched !== undefined) return matched;
+    const hit = byId.get(rule.algorithm);
+    if (hit !== undefined) return hit;
   }
-  return byId.get(selectedId) ?? defaultTilingAlgorithm;
+  const selected = byId.get(selectedId);
+  if (selected !== undefined) return selected;
+  return defaultAlgorithm;
 }

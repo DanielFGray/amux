@@ -9,6 +9,7 @@ import {
 import type { JSX } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import type { JsonValue } from "../layout.ts";
+import type { PluginActivateError } from "./activate-error.ts";
 
 export interface SpawnProvider {
   readonly argv: readonly string[];
@@ -46,7 +47,7 @@ export interface PluginDefinition {
   readonly activate: (
     context: PluginHostContext,
     provided: Context.Context<never>,
-  ) => Effect.Effect<void, never, Scope.Scope | CurrentPlugin>;
+  ) => Effect.Effect<void, PluginActivateError, Scope.Scope | CurrentPlugin>;
 }
 
 /** A host-owned consumer. It has dependencies and a scope, but no plugin
@@ -84,7 +85,7 @@ export const definePlugin = <
   readonly provide?: readonly PluginService[];
   readonly effect: (
     context: PluginHostContext,
-  ) => Effect.Effect<void, never, PluginRequirements<Dependencies>>;
+  ) => Effect.Effect<void, PluginActivateError, PluginRequirements<Dependencies>>;
 }): PluginDefinition => ({
   id: definition.id,
   inject: definition.inject,

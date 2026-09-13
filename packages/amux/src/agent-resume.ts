@@ -2,9 +2,10 @@
  * Turn a trusted agent session ref into resume argv — once.
  *
  * Borrowed from herdr's `src/agent_resume.rs` `plan` / `dedupe_key`. Per-harness
- * argv forms live on `ForeignHarnessAdapter.planResume` (continuity plugin);
- * this module owns the shared plan type, dedupe claims, and the allowlist gate
- * that refuses to consult an adapter for an unofficial (source, agent) pair.
+ * argv forms live on foreign-harness adapters (continuity plugin) behind
+ * {@link PluginBehaviour.planResume}; this module owns the shared plan type,
+ * dedupe claims, and the allowlist gate that refuses to consult an adapter for
+ * an unofficial (source, agent) pair.
  */
 import { Context, Duration, Effect, Layer, Match, Option, Schema as S } from "effect";
 import {
@@ -14,11 +15,8 @@ import {
   type PaneAgentSessionSnapshot,
   persistedAgentSessionFromSnapshot,
 } from "./agent-session.ts";
-import {
-  ForeignHarnessPlanResumeError,
-  type ForeignHarnessAdapter,
-  type ForeignHarnessAdapterLookup,
-} from "./foreign-harness.ts";
+import { ForeignHarnessPlanResumeError } from "./foreign-harness.ts";
+import { PluginBehaviour } from "./plugin-behaviour.ts";
 
 export const AgentResumePlanSchema = S.Struct({
   agent: S.String,
@@ -54,31 +52,34 @@ export const agentResumeDedupeKey = (
 export const PLAN_RESUME_TIMEOUT_MS = 2000;
 
 /**
- * Ask one adapter for a resume plan under {@link PLAN_RESUME_TIMEOUT_MS}.
+ * Ask {@link PluginBehaviour} for a resume plan under {@link PLAN_RESUME_TIMEOUT_MS}.
  * Failure or timeout yields none and a warning — that session takes the normal
  * spawn path.
  */
 export const askPlanResume = (
-  adapter: Pick<ForeignHarnessAdapter, "id" | "planResume">,
+  adapterId: string,
   ref: AgentSessionRef,
-): Effect.Effect<Option.Option<AgentResumePlan>> =>
-  adapter.planResume(ref).pipe(
-    Effect.timeoutOrElse({
-      duration: Duration.millis(PLAN_RESUME_TIMEOUT_MS),
-      orElse: () =>
-        Effect.fail(
-          new ForeignHarnessPlanResumeError({
-            adapter: adapter.id,
-            message: `timed out after ${PLAN_RESUME_TIMEOUT_MS}ms`,
-          }),
-        ),
-    }),
-    Effect.catch((error) =>
-      Effect.logWarning(
-        `foreign harness planResume failed adapter=${adapter.id} session=${ref.kind}:${ref.value}: ${error.message}`,
-      ).pipe(Effect.as(Option.none())),
-    ),
-  );
+): Effect.Effect<Option.Option<AgentResumePlan>, never, PluginBehaviour> =>
+  Effect.gen(function* () {
+    const behaviour = yield* PluginBehaviour;
+    return yield* behaviour.planResume(adapterId, ref).pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(PLAN_RESUME_TIMEOUT_MS),
+        orElse: () =>
+          Effect.fail(
+            new ForeignHarnessPlanResumeError({
+              adapter: adapterId,
+              message: `timed out after ${PLAN_RESUME_TIMEOUT_MS}ms`,
+            }),
+          ),
+      }),
+      Effect.catch((error) =>
+        Effect.logWarning(
+          `foreign harness planResume failed adapter=${adapterId} session=${ref.kind}:${ref.value}: ${error.message}`,
+        ).pipe(Effect.as(Option.none())),
+      ),
+    );
+  });
 
 /**
  * Build a plan from a verified argv form. Adapters call this from `planResume`
@@ -102,32 +103,34 @@ export const planResumeWithForm = (
 };
 
 /**
- * Map an allowlisted (source, agent, ref) to resume argv via a registered
- * harness adapter. Unsupported pairs and missing adapters yield none. Adapter
- * failure or timeout also yields none (see {@link askPlanResume}).
+ * Map an allowlisted (source, agent, ref) to resume argv via PluginBehaviour.
+ * Unsupported pairs and missing adapters yield none. Adapter failure or timeout
+ * also yields none (see {@link askPlanResume}).
  */
 export const planAgentResume = (
   source: string,
   agent: string,
   sessionRef: AgentSessionRef,
-  adapters: ForeignHarnessAdapterLookup,
-): Effect.Effect<Option.Option<AgentResumePlan>> => {
-  if (!isOfficialAgentSource(source, agent)) return Effect.succeed(Option.none());
-  const adapter = adapters.bySource(source);
-  if (adapter === undefined || adapter.id !== agent) return Effect.succeed(Option.none());
-  return askPlanResume(adapter, sessionRef);
-};
+): Effect.Effect<Option.Option<AgentResumePlan>, never, PluginBehaviour> =>
+  Effect.gen(function* () {
+    if (!isOfficialAgentSource(source, agent)) return Option.none();
+    const behaviour = yield* PluginBehaviour;
+    const declarations = yield* behaviour.declarations;
+    const adapter = declarations.adapters.find(
+      (entry) => entry.source === source && entry.id === agent,
+    );
+    if (adapter === undefined) return Option.none();
+    return yield* askPlanResume(adapter.id, sessionRef);
+  });
 
 /** Re-validate a layout snapshot entry, then plan — restore's usual entry. */
 export const planAgentResumeFromSnapshot = (
   snapshot: PaneAgentSessionSnapshot,
-  adapters: ForeignHarnessAdapterLookup,
-): Effect.Effect<Option.Option<AgentResumePlan>> =>
+): Effect.Effect<Option.Option<AgentResumePlan>, never, PluginBehaviour> =>
   persistedAgentSessionFromSnapshot(snapshot).pipe(
     Option.match({
       onNone: () => Effect.succeed(Option.none()),
-      onSome: ({ source, agent, sessionRef }) =>
-        planAgentResume(source, agent, sessionRef, adapters),
+      onSome: ({ source, agent, sessionRef }) => planAgentResume(source, agent, sessionRef),
     }),
   );
 

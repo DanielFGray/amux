@@ -10,6 +10,7 @@ import {
   type PluginHostContext,
   type PluginRequirements,
 } from "./types.ts";
+import { PluginActivateError } from "./activate-error.ts";
 import type { PluginService } from "./services.ts";
 import { key } from "./kv.ts";
 import { createTestRenderer } from "@opentui/core/testing";
@@ -52,7 +53,7 @@ function mkPlugin<const Tags extends readonly PluginService[] = []>(
     readonly inject?: Tags;
     readonly effect?: (
       context: PluginHostContext,
-    ) => Effect.Effect<void, never, PluginRequirements<Tags>>;
+    ) => Effect.Effect<void, PluginActivateError, PluginRequirements<Tags>>;
   } = {},
 ): PluginDefinition {
   return definePlugin({

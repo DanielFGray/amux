@@ -155,10 +155,10 @@ const dispatchPluginCommand = Effect.fnUntraced(function* (sub: string, argv: st
   const { dispatchCliCommand } = yield* Effect.promise(() => import("./plugin/cli-host.ts"));
   const result = yield* Effect.promise(() => dispatchCliCommand(sub, argv));
   if ("code" in result) return result.code;
-  const [{ generateHelp }, { daemonCommandRegistrations }] = yield* Effect.promise(() =>
+  const [{ generateHelp }, { daemonCommandRecords }] = yield* Effect.promise(() =>
     Promise.all([import("./command-cli.ts"), import("./plugin/daemon-command-host.ts")]),
   );
-  let text = generateHelp(yield* Effect.promise(() => daemonCommandRegistrations()));
+  let text = generateHelp(yield* Effect.promise(() => daemonCommandRecords()));
   if (result.refused.length > 0) {
     text +=
       "\n\nPlugins unavailable outside an attached client:\n" +
@@ -174,11 +174,11 @@ function main(): Effect.Effect<number> {
     const sub = argv[0];
 
     if (sub === "help" || sub === "--help" || sub === "-h") {
-      const [{ generateHelp }, { daemonCommandRegistrations }] = yield* Effect.promise(() =>
+      const [{ generateHelp }, { daemonCommandRecords }] = yield* Effect.promise(() =>
         Promise.all([import("./command-cli.ts"), import("./plugin/daemon-command-host.ts")]),
       );
       process.stdout.write(
-        generateHelp(yield* Effect.promise(() => daemonCommandRegistrations())) + "\n",
+        generateHelp(yield* Effect.promise(() => daemonCommandRecords())) + "\n",
       );
       return 0;
     }
@@ -316,13 +316,13 @@ function main(): Effect.Effect<number> {
       !(!sub.includes(".") && isSessionId(sub)) &&
       splitCommandArgs(argv).some((group) => group[0] !== undefined && !isCoreCommandTag(group[0]))
         ? yield* Effect.promise(() =>
-            import("./plugin/daemon-command-host.ts").then(({ daemonCommandRegistrations }) =>
-              daemonCommandRegistrations(),
+            import("./plugin/daemon-command-host.ts").then(({ daemonCommandRecords }) =>
+              daemonCommandRecords(),
             ),
           )
         : [];
     const daemonCommandByTag = new Map(
-      daemonCommands.map((registration) => [registration.tag, registration]),
+      daemonCommands.map((record) => [record.command.tag, record]),
     );
     type CommandTag = string;
     type CommandContext = {
@@ -380,32 +380,35 @@ function main(): Effect.Effect<number> {
       return { ...parsed, session };
     }
 
-    function parseCommandGroup(argv: string[]):
+    function parseCommandGroup(argv: string[]): Effect.Effect<
       | {
           tag: CommandTag;
           parsed: Record<string, JsonValue>;
           sessionFlag?: string;
         }
-      | { errors: string[] } {
-      const tag = argv[0];
-      if (!tag || !isCommandTag(tag))
-        return { errors: [`unknown command: ${JSON.stringify(tag ?? "")}`] };
+      | { errors: string[] }
+    > {
+      return Effect.sync(() => {
+        const tag = argv[0];
+        if (!tag || !isCommandTag(tag))
+          return { errors: [`unknown command: ${tag === undefined ? '""' : `"${tag}"`}`] };
 
-      const stripped = stripSessionFlag(argv.slice(1));
-      if ("error" in stripped) return { errors: [stripped.error] };
+        const stripped = stripSessionFlag(argv.slice(1));
+        if ("error" in stripped) return { errors: [stripped.error] };
 
-      const daemonCommand = daemonCommandByTag.get(tag);
-      const direct = isCoreCommandTag(tag)
-        ? parseArgs(tag, stripped.rest)
-        : daemonCommand
-          ? parseFields(tag, daemonCommand.fields, stripped.rest)
-          : parsePluginArgs(stripped.rest);
-      if (!direct.parsed) return { errors: direct.errors };
-      return {
-        tag,
-        parsed: fillCommandSession(tag, stripped.session, direct.parsed),
-        sessionFlag: stripped.session,
-      };
+        const daemonCommand = daemonCommandByTag.get(tag);
+        const direct = isCoreCommandTag(tag)
+          ? parseArgs(tag, stripped.rest)
+          : daemonCommand
+            ? parseFields(tag, daemonCommand.fields, stripped.rest)
+            : parsePluginArgs(stripped.rest);
+        if (!direct.parsed) return { errors: direct.errors };
+        return {
+          tag,
+          parsed: fillCommandSession(tag, stripped.session, direct.parsed),
+          sessionFlag: stripped.session,
+        };
+      });
     }
 
     // A plugin verb: no compile-time schema to chain, session-fill, or route by
@@ -495,7 +498,7 @@ function main(): Effect.Effect<number> {
           }
           return true;
         });
-        const parsed = parseCommandGroup(cleaned);
+        const parsed = yield* parseCommandGroup(cleaned);
         if ("errors" in parsed) {
           writeErr(`error: ${parsed.errors.join("\n  ")}`);
           return 2;
@@ -503,7 +506,7 @@ function main(): Effect.Effect<number> {
         const targetId: string | null = resolveCommandSession(
           isCoreCommandTag(parsed.tag)
             ? commandDefinition(parsed.tag).target
-            : (daemonCommandByTag.get(parsed.tag)?.meta.target ?? "workspace"),
+            : (daemonCommandByTag.get(parsed.tag)?.command.meta.target ?? "workspace"),
           parsed.sessionFlag,
         );
         if (!targetId) {

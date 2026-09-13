@@ -18,7 +18,6 @@ import { DaemonModel } from "./DaemonModel.ts";
 import { loadConfig } from "../config.ts";
 import { resolveOptions } from "../options.ts";
 import { resolveTilingAlgorithm } from "../layout-rules.ts";
-import { TilingAlgorithmsTag, type DaemonCommandRegistration } from "../plugin/services.ts";
 import {
   applyWorkspaceCommand,
   buildWorkspaceReadPackage,
@@ -28,14 +27,13 @@ import {
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
   type WorkspaceSpace,
-  type PluginWorkspaceReducer,
 } from "../workspace.ts";
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
+import { defaultTilingAlgorithm } from "../tiling-algorithm-default.ts";
 import {
   PLUGIN_REDUCE_TIMEOUT_MS,
   PLUGIN_DESCRIPTOR_CHECK_TIMEOUT_MS,
   PluginReducerError,
-  WorkspaceReducerAnswerSchema,
   type PluginCommandApply,
   type QueuedPluginAction,
   type WorkspaceChange,
@@ -51,8 +49,12 @@ import type { PtyError, SessionSpec } from "./SessionRegistry.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { errorMessage } from "../error-message.ts";
 import { DaemonSessions } from "../daemon-sessions.ts";
-
-const describe = errorMessage;
+import { PluginBehaviour, pluginApplyFromDeclarations } from "../plugin-behaviour.ts";
+import type {
+  PluginAlgorithmDeclaration,
+  PluginBehaviourService,
+  PluginDeclarations,
+} from "../plugin-behaviour.ts";
 
 export class WorkspaceTransactionError extends S.TaggedError<WorkspaceTransactionError>()(
   "WorkspaceTransactionError",
@@ -62,7 +64,7 @@ export class WorkspaceTransactionError extends S.TaggedError<WorkspaceTransactio
 const transactionError = <E>(error: E): WorkspaceTransactionError =>
   S.is(WorkspaceTransactionError)(error)
     ? error
-    : new WorkspaceTransactionError({ message: describe(error) });
+    : new WorkspaceTransactionError({ message: errorMessage(error) });
 
 /**
  * Daemon-local session ops for the workspace transaction: prepare, kill, write,
@@ -185,7 +187,7 @@ export const definePluginAction = <A, E>(reg: {
           Effect.mapError(
             (error) =>
               new WorkspaceTransactionError({
-                message: `action '${reg.tag}': ${describe(error)}`,
+                message: `action '${reg.tag}': ${errorMessage(error)}`,
               }),
           ),
         );
@@ -194,105 +196,33 @@ export const definePluginAction = <A, E>(reg: {
   };
 };
 
-export interface WorkspaceTransactionPluginsService {
-  readonly reducers: ReadonlyMap<string, PluginWorkspaceReducer>;
-  /** Action tag → run closure (decode then execute). */
-  readonly actions: ReadonlyMap<string, PluginActionRegistration["run"]>;
-  /** Per command tag: declared action tags. */
-  readonly actionTagsByCommand: ReadonlyMap<string, ReadonlySet<string>>;
-  /** Command tags that declared a result Schema. */
-  readonly commandsWithResult: ReadonlySet<string>;
-  /** Pane type → Effect-stage descriptor check. */
-  readonly paneChecks: ReadonlyMap<
-    string,
-    (descriptor: JsonValue) => Effect.Effect<JsonValue, PluginReducerError>
-  >;
-  /** Registered session provider ids. */
-  readonly providers: ReadonlySet<string>;
-}
-
-/** Build the transaction plugins service from daemon command registrations. */
-export const workspaceTransactionPluginsFromRegistrations = (
-  registrations: Iterable<DaemonCommandRegistration>,
-): WorkspaceTransactionPluginsService => {
-  const list = [...registrations];
-  return {
-    reducers: new Map(
-      list.flatMap((registration) =>
-        registration.reduce === undefined ? [] : [[registration.tag, registration.reduce] as const],
-      ),
-    ),
-    actions: new Map(
-      list
-        .flatMap((registration) => registration.actions ?? [])
-        .map((registration) => [registration.tag, registration.run]),
-    ),
-    actionTagsByCommand: new Map(
-      list
-        .filter((registration) => (registration.actions?.length ?? 0) > 0)
-        .map((registration) => [
-          registration.tag,
-          new Set((registration.actions ?? []).map((action) => action.tag)),
-        ]),
-    ),
-    commandsWithResult: new Set(
-      list.filter((registration) => registration.result !== undefined).map((r) => r.tag),
-    ),
-    paneChecks: new Map(
-      list
-        .flatMap((registration) => registration.paneTypes ?? [])
-        .map((registration) => [registration.type, registration.check]),
-    ),
-    providers: new Set(
-      list.flatMap((registration) => registration.providers ?? []).map((entry) => entry.provider),
-    ),
-  };
-};
-
-const emptyPluginApply = (
-  plugins: WorkspaceTransactionPluginsService,
-  commandTag: string,
-): PluginCommandApply => ({
-  changes: [],
-  declaresResult: plugins.commandsWithResult.has(commandTag),
-  actionTags: plugins.actionTagsByCommand.get(commandTag) ?? new Set(),
-  paneTypes: new Set(plugins.paneChecks.keys()),
-  providers: plugins.providers,
-});
-
 /**
- * Run a plugin reducer (timeout + answer Schema) and assemble the
- * {@link PluginCommandApply} the sync apply path consumes.
+ * Run a plugin reducer through {@link PluginBehaviour} (timeout at this call
+ * site) and assemble the {@link PluginCommandApply} the sync apply path consumes.
  */
 export const reducePluginCommand = (
-  plugins: WorkspaceTransactionPluginsService,
   command: RuntimeCommand,
   workspace: WorkspaceSnapshot,
   context: WorkspaceCommandContext,
-): Effect.Effect<PluginCommandApply, WorkspaceTransactionError> =>
+  declarations: PluginDeclarations,
+): Effect.Effect<PluginCommandApply, WorkspaceTransactionError, PluginBehaviour> =>
   Effect.gen(function* () {
-    const base = emptyPluginApply(plugins, command._tag);
-    const reducer = plugins.reducers.get(command._tag);
-    if (reducer === undefined) return base;
+    const behaviour = yield* PluginBehaviour;
+    const base: PluginCommandApply = {
+      changes: [],
+      ...pluginApplyFromDeclarations(declarations, command._tag),
+    };
     const reads = buildWorkspaceReadPackage(workspace, context);
-    const answer = yield* reducer({ command, context, reads }).pipe(
+    const answer = yield* behaviour.reduce(command, context, reads).pipe(
       Effect.timeout(Duration.millis(PLUGIN_REDUCE_TIMEOUT_MS)),
       Effect.mapError(
         (error) =>
           new WorkspaceTransactionError({
-            message: `plugin reducer for '${command._tag}': ${describe(error)}`,
+            message: `plugin reducer for '${command._tag}': ${errorMessage(error)}`,
           }),
       ),
     );
-    const decoded = yield* S.decodeEffect(WorkspaceReducerAnswerSchema)(answer).pipe(
-      Effect.mapError(
-        (error) =>
-          new WorkspaceTransactionError({
-            message: `plugin reducer for '${command._tag}' returned undecodable data: ${describe(error)}`,
-          }),
-      ),
-    );
-    return { ...base, changes: decoded.changes };
+    return { ...base, changes: answer.changes };
   });
 
 /**
@@ -300,23 +230,17 @@ export const reducePluginCommand = (
  * Same timeout budget as reducers.
  */
 export const checkOpenPluginDescriptor = (
-  plugins: WorkspaceTransactionPluginsService,
   type: string,
   descriptor: JsonValue,
-): Effect.Effect<JsonValue, WorkspaceTransactionError> =>
+): Effect.Effect<JsonValue, WorkspaceTransactionError, PluginBehaviour> =>
   Effect.gen(function* () {
-    const check = plugins.paneChecks.get(type);
-    if (check === undefined) {
-      return yield* new WorkspaceTransactionError({
-        message: `unknown pane type '${type}'`,
-      });
-    }
-    return yield* check(descriptor).pipe(
+    const behaviour = yield* PluginBehaviour;
+    return yield* behaviour.checkDescriptor(type, descriptor).pipe(
       Effect.timeout(Duration.millis(PLUGIN_DESCRIPTOR_CHECK_TIMEOUT_MS)),
       Effect.mapError(
         (error) =>
           new WorkspaceTransactionError({
-            message: `pane type '${type}' descriptor: ${describe(error)}`,
+            message: `pane type '${type}' descriptor: ${errorMessage(error)}`,
           }),
       ),
     );
@@ -333,35 +257,46 @@ export type PreparedPluginCommand = {
  * Sync apply then reads the command and apply facts with no codec closures.
  */
 export const preparePluginCommandApply = (
-  plugins: WorkspaceTransactionPluginsService,
   command: RuntimeCommand,
   workspace: WorkspaceSnapshot,
   context: WorkspaceCommandContext,
-): Effect.Effect<PreparedPluginCommand, WorkspaceTransactionError> =>
+  declarations: PluginDeclarations,
+): Effect.Effect<PreparedPluginCommand, WorkspaceTransactionError, PluginBehaviour> =>
   Effect.gen(function* () {
+    const facts = pluginApplyFromDeclarations(declarations, command._tag);
     if (isCoreCommand(command)) {
       const apply: PluginCommandApply = {
         changes: [],
         declaresResult: false,
         actionTags: new Set(),
-        paneTypes: new Set(plugins.paneChecks.keys()),
-        providers: plugins.providers,
+        paneTypes: facts.paneTypes,
+        providers: facts.providers,
       };
       if (command._tag !== "pane.open-plugin") return { command, apply };
-      const checked = yield* checkOpenPluginDescriptor(plugins, command.type, command.descriptor);
+      const checked = yield* checkOpenPluginDescriptor(command.type, command.descriptor);
       return {
         command: { ...command, descriptor: checked },
         apply,
       };
     }
-    const apply = yield* reducePluginCommand(plugins, command, workspace, context);
+    const apply = yield* reducePluginCommand(command, workspace, context, declarations);
     return { command, apply };
   });
 
-export class WorkspaceTransactionPlugins extends Context.Service<
-  WorkspaceTransactionPlugins,
-  WorkspaceTransactionPluginsService
->()("WorkspaceTransaction/Plugins") {}
+/** Wire an elected algorithm declaration to {@link TilingAlgorithm.run} for sync apply. */
+const algorithmForDeclaration = (
+  declaration: PluginAlgorithmDeclaration,
+  behaviour: PluginBehaviourService,
+): TilingAlgorithm => ({
+  id: declaration.id,
+  version: declaration.version,
+  run: (operation) => {
+    if (declaration.id === defaultTilingAlgorithm.id) {
+      return defaultTilingAlgorithm.run(operation);
+    }
+    return behaviour.runTiling(declaration.id, operation);
+  },
+});
 
 const withPanePid = (entry: PaneEntry, pids: ReadonlyMap<string, number>): PaneEntry =>
   entry.session === undefined ? entry : { ...entry, pid: pids.get(entry.session) };
@@ -464,8 +399,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
       const persistence = yield* WorkspaceTransactionPersistence;
       const events = yield* WorkspaceTransactionEvents;
       const lifecycle = yield* Effect.serviceOption(WorkspaceTransactionLifecycle);
-      const plugins = yield* Effect.serviceOption(WorkspaceTransactionPlugins);
-      const tilingAlgorithms = yield* Effect.serviceOption(TilingAlgorithmsTag);
+      const behaviour = yield* PluginBehaviour;
       const closeIfEmpty = lifecycle.pipe(
         Option.match({
           onNone: () => Effect.void,
@@ -520,21 +454,20 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
               }
 
               const config = yield* loadConfig().pipe(Effect.provide(BunFileSystem.layer));
-              // Every registered algorithm's own id is a legal choice for
-              // behaviour.tilingAlgorithm — the registry is the daemon-side
-              // source of truth for this option's live values, so a plugin
-              // algorithm never needs a second registration just to be
-              // selectable (see OptionsService.registerEnumValue for the
-              // client-side Settings UI's equivalent).
-              const registeredAlgorithmIds = Option.getOrElse(
-                Option.map(tilingAlgorithms, (service) =>
-                  service.all().map((entry) => entry.value.algorithm.id),
-                ),
-                (): readonly string[] => [],
-              );
+              // Declared algorithm ids (plus the core default) are the legal
+              // choices for behaviour.tilingAlgorithm — election reads data
+              // only; plugin run goes through PluginBehaviour.
+              const declarations = yield* behaviour.declarations;
+              const defaultDeclaration: PluginAlgorithmDeclaration = {
+                id: defaultTilingAlgorithm.id,
+                version: defaultTilingAlgorithm.version,
+              };
+              const algorithmDeclarations = [defaultDeclaration, ...declarations.algorithms];
               const selectedId = resolveOptions(
                 config.options,
-                new Map([["behaviour.tilingAlgorithm", registeredAlgorithmIds]]),
+                new Map([
+                  ["behaviour.tilingAlgorithm", algorithmDeclarations.map((entry) => entry.id)],
+                ]),
               )["behaviour.tilingAlgorithm"];
               const commandSpace = Option.flatMap(
                 S.decodeUnknownOption(S.Struct({ space: S.optional(S.String) }))(value),
@@ -546,34 +479,32 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                 spaceId === undefined
                   ? undefined
                   : cur.workspace.spaces.find((space) => space.id === spaceId)?.name;
-              const algorithm = resolveTilingAlgorithm(
+              const electedDeclaration = resolveTilingAlgorithm(
                 config.layoutRules,
                 selectedId,
-                Option.getOrElse(
-                  Option.map(tilingAlgorithms, (service) =>
-                    service.all().map((entry) => entry.value.algorithm),
-                  ),
-                  (): readonly TilingAlgorithm[] => [],
-                ),
+                algorithmDeclarations,
                 {
                   cols: context.size.cols,
                   rows: context.size.rows,
                   workspaceName,
                 },
+                defaultDeclaration,
               );
+              const algorithm = algorithmForDeclaration(electedDeclaration, behaviour);
 
               const path = yield* nodePath;
-              const pluginService = Option.getOrUndefined(plugins);
-              const pluginPrepared =
-                pluginService === undefined
-                  ? undefined
-                  : yield* preparePluginCommandApply(pluginService, value, cur.workspace, context);
+              const pluginPrepared = yield* preparePluginCommandApply(
+                value,
+                cur.workspace,
+                context,
+                declarations,
+              ).pipe(Effect.provideService(PluginBehaviour, behaviour));
               const mutation = yield* applyWorkspaceCommand(
                 cur.workspace,
-                pluginPrepared?.command ?? value,
+                pluginPrepared.command,
                 context,
                 path,
-                pluginPrepared?.apply,
+                pluginPrepared.apply,
                 algorithm,
               ).pipe(
                 Effect.mapError(
@@ -629,14 +560,13 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                   }
                   for (const action of mutation.actions) {
                     if (isCoreWorkspaceAction(action)) continue;
-                    const run = plugins.pipe(
-                      Option.flatMap((value) =>
-                        Option.fromNullishOr(value.actions.get(action._tag)),
-                      ),
-                    );
-                    if (Option.isNone(run)) continue;
                     yield* Effect.scoped(
-                      run.value(action).pipe(Effect.provideService(DaemonSessions, pluginSessions)),
+                      behaviour
+                        .runAction(action)
+                        .pipe(
+                          Effect.provideService(DaemonSessions, pluginSessions),
+                          Effect.mapError(transactionError),
+                        ),
                     ).pipe(Effect.timeout("30 seconds"), Effect.asVoid);
                   }
                   for (const wt of worktrees.removed) {
@@ -692,7 +622,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                     .pipe(Effect.ignore);
                 if (S.is(WorkspaceTransactionError)(error)) return yield* error;
                 return yield* new WorkspaceTransactionError({
-                  message: describe(error),
+                  message: errorMessage(error),
                 });
               }
 
@@ -703,7 +633,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
             Effect.mapError((e) =>
               S.is(WorkspaceTransactionError)(e)
                 ? e
-                : new WorkspaceTransactionError({ message: describe(e) }),
+                : new WorkspaceTransactionError({ message: errorMessage(e) }),
             ),
           );
 
@@ -795,7 +725,7 @@ export const makePersistence = <PersistenceError>(
             Schedule.tap(({ input: error }) =>
               model.updateObligation(
                 obligation,
-                `${reason} is waiting for durable storage: ${describe(error)}`,
+                `${reason} is waiting for durable storage: ${errorMessage(error)}`,
               ),
             ),
             Schedule.while(() => Effect.map(model.isClosing, (closing) => !closing)),

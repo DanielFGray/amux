@@ -49,11 +49,14 @@ import {
   makeWorktreeOps,
   makePersistence,
   makeEvents,
-  WorkspaceTransactionPlugins,
-  workspaceTransactionPluginsFromRegistrations,
   type WorkspaceTransactionResult,
 } from "./effect/WorkspaceTransaction.ts";
 import { DaemonSessions, buildDaemonSessions } from "./daemon-sessions.ts";
+import {
+  PluginBehaviour,
+  buildPluginBehaviour,
+  runPluginSessionCommand,
+} from "./plugin-behaviour.ts";
 import { configPath, loadConfig, type Config } from "./config.ts";
 import { createPluginContributions } from "./plugin/contributions.ts";
 import type { DaemonKernelPhase } from "./daemon-kernel.ts";
@@ -63,7 +66,7 @@ import {
   DaemonCommandsTag,
   TilingAlgorithmsTag,
   scopedRegistry,
-  type DaemonCommandRegistration,
+  type DaemonCommandRecord,
   type TilingAlgorithmRegistration,
 } from "./plugin/services.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
@@ -451,11 +454,11 @@ export const makeDaemonService = Effect.fnUntraced(
     const pluginHostClient = yield* SubscriptionRef.make(Option.none<PluginHostClient>());
 
     const pluginContributions = createPluginContributions();
-    const daemonCommandTable = pluginContributions.table<DaemonCommandRegistration>();
+    const daemonCommandTable = pluginContributions.table<DaemonCommandRecord>();
     const daemonCommands = scopedRegistry(
       { all: daemonCommandTable.all },
-      (owner, registration: DaemonCommandRegistration) =>
-        daemonCommandTable.add(owner, registration.tag, registration),
+      (owner, record: DaemonCommandRecord) =>
+        daemonCommandTable.add(owner, record.command.tag, record),
     );
     const tilingAlgorithmTable = pluginContributions.table<TilingAlgorithmRegistration>();
     const tilingAlgorithms = scopedRegistry(
@@ -496,6 +499,12 @@ export const makeDaemonService = Effect.fnUntraced(
           Effect.sync(() => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters)),
       },
     ];
+
+    const pluginBehaviour = buildPluginBehaviour(
+      daemonCommands,
+      tilingAlgorithms,
+      foreignHarnessAdapters,
+    );
 
     const activeSaveRef = {
       current: null as Fiber.Fiber<void, WorkspaceTransactionError> | null,
@@ -802,9 +811,8 @@ export const makeDaemonService = Effect.fnUntraced(
           // Ask adapters before the spawn loop so a future plugin-host socket
           // round trip stays off the claim-order path. Claims still run below
           // in loop order so the first pane wins.
-          const plansBySession = yield* collectSessionResumePlans(
-            planCandidates,
-            foreignHarnessAdapters,
+          const plansBySession = yield* collectSessionResumePlans(planCandidates).pipe(
+            Effect.provideService(PluginBehaviour, pluginBehaviour),
           );
           for (const { session: a, pane } of restoreEntries) {
             // Native agent resume: park the plan until a client resize
@@ -1261,31 +1269,6 @@ export const makeDaemonService = Effect.fnUntraced(
       },
     );
 
-    const transactionPlugins = {
-      get current() {
-        return workspaceTransactionPluginsFromRegistrations(
-          daemonCommandTable.all().map(({ value }) => value),
-        );
-      },
-      get reducers() {
-        return this.current.reducers;
-      },
-      get actions() {
-        return this.current.actions;
-      },
-      get actionTagsByCommand() {
-        return this.current.actionTagsByCommand;
-      },
-      get commandsWithResult() {
-        return this.current.commandsWithResult;
-      },
-      get paneChecks() {
-        return this.current.paneChecks;
-      },
-      get providers() {
-        return this.current.providers;
-      },
-    };
     const daemonSessions = buildDaemonSessions(requireHost);
     const transactionSessions = buildWorkspaceTransactionSessions(requireHost, (id) =>
       killSession(id),
@@ -1315,8 +1298,7 @@ export const makeDaemonService = Effect.fnUntraced(
       WorkspaceTransaction.layer.pipe(
         Layer.provide(Layer.succeed(DaemonModel, model)),
         Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
-        Layer.provide(Layer.succeed(WorkspaceTransactionPlugins, transactionPlugins)),
-        Layer.provide(Layer.succeed(TilingAlgorithmsTag, tilingAlgorithms)),
+        Layer.provide(Layer.succeed(PluginBehaviour, pluginBehaviour)),
         Layer.provide(Layer.succeed(DaemonSessions, daemonSessions)),
         Layer.provide(Layer.succeed(WorkspaceTransactionSessions, transactionSessions)),
         Layer.provide(makeWorktreeOps),
@@ -1527,7 +1509,8 @@ export const makeDaemonService = Effect.fnUntraced(
     ) {
       const meta = (COMMAND_META as Record<string, CommandMeta>)[value._tag];
       if (!meta) {
-        const registration = daemonCommandTable.get(value._tag);
+        const declarations = yield* pluginBehaviour.declarations;
+        const registration = declarations.commands.find((entry) => entry.tag === value._tag);
         if (registration) {
           if (registration.meta.target === "workspace") {
             const cur = yield* model.get;
@@ -1540,14 +1523,21 @@ export const makeDaemonService = Effect.fnUntraced(
             if (output.result === undefined) return { workspace: encodeJson(output.snapshot) };
             return { workspace: encodeJson(output.snapshot), result: output.result };
           }
-          if (registration.meta.target === "session" && registration.run) {
+          if (registration.meta.target === "session") {
             const cur = yield* model.get;
             const commandContext = {
               snapshot: structuredClone(cur.workspace),
             };
-            const result = yield* registration
-              .run(value, commandContext)
-              .pipe(Effect.provideService(DaemonSessions, daemonSessions));
+            const result = yield* runPluginSessionCommand(value, commandContext).pipe(
+              Effect.provideService(PluginBehaviour, pluginBehaviour),
+              Effect.provideService(DaemonSessions, daemonSessions),
+              Effect.mapError(
+                (error) =>
+                  new ControlError({
+                    message: error.message,
+                  }),
+              ),
+            );
             return result === undefined ? {} : { result };
           }
           return yield* controlFail(`daemon command '${value._tag}' has no handler`);

@@ -1,12 +1,14 @@
 import { test, expect } from "bun:test";
-import { Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import {
   parseArgs,
   parseFields,
   fieldNames,
   generateGroupHelp,
   generateHelp,
+  toJsonSchemaDocument,
 } from "./command-cli.ts";
+import { testEffect } from "./test-effect.ts";
 
 test("parseArgs handles commands with no arguments", () => {
   expect(parseArgs("pane.zoom", [])).toEqual({ parsed: {}, errors: [] });
@@ -182,18 +184,23 @@ test("the read surface is exposed to agents with derived fields", () => {
   expect(generateGroupHelp("windows")).toContain("window.list");
 });
 
-test("a lone optional string absorbs a positional even when a boolean flag remains", () => {
-  const fields = {
-    file: S.optionalKey(S.String),
-    split: S.optionalKey(S.Boolean),
-  };
-  expect(parseFields("editor.open", fields, ["src/a.ts"]).parsed).toEqual({ file: "src/a.ts" });
-  expect(parseFields("editor.open", fields, ["src/a.ts", "--split"]).parsed).toEqual({
-    file: "src/a.ts",
-    split: true,
-  });
-  expect(parseFields("editor.open", fields, ["--split", "src/a.ts"]).parsed).toEqual({
-    split: true,
-    file: "src/a.ts",
-  });
-});
+testEffect("a lone optional string absorbs a positional even when a boolean flag remains", () =>
+  Effect.gen(function* () {
+    const fields = {
+      file: S.optionalKey(S.String),
+      split: S.optionalKey(S.Boolean),
+    };
+    const document = yield* toJsonSchemaDocument(fields);
+    expect(parseFields("editor.open", document, ["src/a.ts"]).parsed).toEqual({
+      file: "src/a.ts",
+    });
+    expect(parseFields("editor.open", document, ["src/a.ts", "--split"]).parsed).toEqual({
+      file: "src/a.ts",
+      split: true,
+    });
+    expect(parseFields("editor.open", document, ["--split", "src/a.ts"]).parsed).toEqual({
+      split: true,
+      file: "src/a.ts",
+    });
+  }),
+);
