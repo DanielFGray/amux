@@ -1,6 +1,6 @@
 /**
  * Session-provider message codecs — validates `session.add` `firstMessage`
- * (and the same shape ResumeAgent delivers via `SessionOps.message`).
+ * (and the same shape ResumeAgent delivers via `DaemonSessions.message`).
  *
  * Client {@link SpawnProvidersTag} only supplies argv/env. A provider's
  * message Schema is declared on the daemon plugin registration; the daemon

@@ -115,8 +115,23 @@ export type {
 } from "./workspace.ts";
 export type { PermissionAnswer, JsonValue } from "./effect/AttachProtocol.ts";
 export { JsonValueSchema } from "./effect/AttachProtocol.ts";
+export {
+  definePluginAction,
+  reducePluginCommand,
+  workspaceTransactionPluginsFromRegistrations,
+  WorkspaceTransactionError,
+} from "./effect/WorkspaceTransaction.ts";
+export type { PluginActionRegistration } from "./effect/WorkspaceTransaction.ts";
+export {
+  DaemonSessions,
+  DaemonSessionsError,
+  buildDaemonSessions,
+  makeDaemonSessions,
+  type DaemonSessionsService,
+  type DaemonSessionsHost,
+} from "./daemon-sessions.ts";
 export type { PromptOptions } from "./effect/SessionRegistry.ts";
-
+export { PromptOptionsSchema } from "./effect/SessionRegistry.ts";
 export {
   PLUGIN_REDUCE_TIMEOUT_MS,
   PLUGIN_TILING_TIMEOUT_MS,
@@ -140,14 +155,6 @@ export {
   sessionProviderMessageCodec,
   type ProviderMessageRegistration,
 } from "./session-provider-messages.ts";
-export {
-  definePluginAction,
-  reducePluginCommand,
-  workspaceTransactionPluginsFromRegistrations,
-  type PluginActionRegistration,
-  type SessionOps,
-  WorkspaceTransactionError,
-} from "./effect/WorkspaceTransaction.ts";
 export { creationResultSchema } from "./creation-result.ts";
 export { AgentEntrySchema, AgentListResultSchema, AgentGetResultSchema } from "./read-model.ts";
 

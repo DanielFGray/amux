@@ -11,6 +11,7 @@ import {
   AgentListResultSchema,
   CommandError,
   DaemonCommandsTag,
+  DaemonSessions,
   JsonValueSchema,
   ProcessStateSchema,
   WorkspaceTransactionError,
@@ -23,6 +24,7 @@ import {
   type DaemonCommandRegistration,
   type PluginDefinition,
   type JsonValue,
+  type PromptOptions,
 } from "@danielfgray/amux";
 import { PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
 import { NativeControl } from "./native-control.ts";
@@ -53,12 +55,9 @@ const agentPluginMeta = (
   target,
   exposure,
 });
-interface PromptOptionsDraft {
-  id?: string;
-  delivery?: "steer" | "queue";
-  resume?: boolean;
-  replace?: string;
-}
+type PromptOptionsDraft = {
+  -readonly [K in keyof PromptOptions]?: PromptOptions[K];
+};
 
 const AgentInterruptAction = S.TaggedStruct("agent.interrupt", {
   agent: S.String,
@@ -91,9 +90,7 @@ const agentNew = {
   },
   meta: agentPluginMeta("start a coding agent", "workspace", "agent"),
   resources: (args) =>
-    [args.provider, args.resumeFrom].flatMap((value) =>
-      typeof value === "string" ? [value] : [],
-    ),
+    [args.provider, args.resumeFrom].flatMap((value) => (typeof value === "string" ? [value] : [])),
   result: commandResultCodec(creationResultSchema("agent.new")),
   providerMessages: [sessionProviderMessageCodec("native", NativeControl)],
   reduce: ({ command, context, reads }) =>
@@ -172,17 +169,21 @@ const agentPrompt = {
   },
   meta: agentPluginMeta("send a prompt to an agent", "session", "agent"),
   resources: (args) => (typeof args.target === "string" ? [args.target] : []),
-  run: (command, context) => {
-    if (typeof command.target !== "string" || typeof command.text !== "string")
-      return Effect.fail(new CommandError({ message: "agent.prompt requires target and text" }));
-    const options: PromptOptionsDraft = {};
-    if (typeof command.id === "string") options.id = command.id;
-    if (command.delivery === "steer" || command.delivery === "queue")
-      options.delivery = command.delivery;
-    if (typeof command.resume === "boolean") options.resume = command.resume;
-    if (typeof command.replace === "string") options.replace = command.replace;
-    return context.prompt(command.target, command.text, options);
-  },
+  run: (command, _context) =>
+    Effect.gen(function* () {
+      if (typeof command.target !== "string" || typeof command.text !== "string")
+        return yield* new CommandError({ message: "agent.prompt requires target and text" });
+      const options: PromptOptionsDraft = {};
+      if (typeof command.id === "string") options.id = command.id;
+      if (command.delivery === "steer" || command.delivery === "queue")
+        options.delivery = command.delivery;
+      if (typeof command.resume === "boolean") options.resume = command.resume;
+      if (typeof command.replace === "string") options.replace = command.replace;
+      const sessions = yield* DaemonSessions;
+      return yield* sessions
+        .prompt(command.target, command.text, options)
+        .pipe(Effect.mapError((error) => new CommandError({ message: error.message })));
+    }),
 } satisfies DaemonCommandRegistration;
 
 const agentWatch = {
@@ -218,14 +219,16 @@ const agentInterrupt = {
     definePluginAction({
       tag: "agent.interrupt",
       payload: AgentInterruptAction,
-      execute: (action, sessionOps) => {
+      execute: (action) => {
         const control: NativeControl =
           action.reason === undefined
             ? { _tag: "agent.interrupt" }
             : { _tag: "agent.interrupt", reason: action.reason };
-        return encodeNativeControl(control).pipe(
-          Effect.flatMap((message) => sessionOps.message(action.agent, message)),
-        );
+        return Effect.gen(function* () {
+          const sessions = yield* DaemonSessions;
+          const message = yield* encodeNativeControl(control);
+          yield* sessions.message(action.agent, message);
+        });
       },
     }),
   ],
@@ -262,14 +265,16 @@ const agentCompact = {
     definePluginAction({
       tag: "agent.compact",
       payload: AgentCompactAction,
-      execute: (action, sessionOps) => {
+      execute: (action) => {
         const control: NativeControl =
           action.instructions === undefined
             ? { _tag: "agent.compact" }
             : { _tag: "agent.compact", instructions: action.instructions };
-        return encodeNativeControl(control).pipe(
-          Effect.flatMap((message) => sessionOps.message(action.agent, message)),
-        );
+        return Effect.gen(function* () {
+          const sessions = yield* DaemonSessions;
+          const message = yield* encodeNativeControl(control);
+          yield* sessions.message(action.agent, message);
+        });
       },
     }),
   ],
@@ -321,7 +326,7 @@ const agentPermission = {
     definePluginAction({
       tag: "agent.permission",
       payload: AgentPermissionAction,
-      execute: (action, sessionOps) => {
+      execute: (action) => {
         const control: NativeControl =
           action.answer.feedback === undefined
             ? {
@@ -335,9 +340,11 @@ const agentPermission = {
                 decision: action.answer.decision,
                 feedback: action.answer.feedback,
               };
-        return encodeNativeControl(control).pipe(
-          Effect.flatMap((message) => sessionOps.message(action.agent, message)),
-        );
+        return Effect.gen(function* () {
+          const sessions = yield* DaemonSessions;
+          const message = yield* encodeNativeControl(control);
+          yield* sessions.message(action.agent, message);
+        });
       },
     }),
   ],

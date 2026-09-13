@@ -55,6 +55,7 @@ import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { PtyError, SessionSpec } from "./SessionRegistry.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { errorMessage } from "../error-message.ts";
+import { DaemonSessions } from "../daemon-sessions.ts";
 
 const describe = errorMessage;
 
@@ -68,23 +69,88 @@ const transactionError = <E>(error: E): WorkspaceTransactionError =>
     ? error
     : new WorkspaceTransactionError({ message: describe(error) });
 
-export interface SessionOps {
+/**
+ * Daemon-local session ops for the workspace transaction: prepare, kill, write,
+ * pids. Lives only in-process — prepare returns live handles that must not
+ * cross a socket. Plugin code never sees this service.
+ */
+export interface WorkspaceTransactionSessionsService {
   readonly prepare: (
     session: PersistedSession,
     paneId?: string,
   ) => Effect.Effect<PreparedSession, WorkspaceTransactionError>;
   readonly kill: (id: string) => Effect.Effect<void, WorkspaceTransactionError>;
   readonly write: (id: string, data: string) => Effect.Effect<void, WorkspaceTransactionError>;
-  /** Deliver an opaque payload to a live session's backend. Core assigns no
-   *  meaning to `message` — a turn prompt, an interrupt, a permission answer
-   *  are all just this, interpreted by whichever plugin's worker reads it. */
-  readonly message: (
-    id: string,
-    message: JsonValue,
-  ) => Effect.Effect<void, WorkspaceTransactionError>;
   /** Each live session's leader pid, for enriching `pane.list`/`pane.current`. */
   readonly pids: Effect.Effect<ReadonlyMap<string, number>, WorkspaceTransactionError>;
 }
+
+export class WorkspaceTransactionSessions extends Context.Service<
+  WorkspaceTransactionSessions,
+  WorkspaceTransactionSessionsService
+>()("WorkspaceTransaction/Sessions") {}
+
+/** Host surface for {@link buildWorkspaceTransactionSessions}. */
+export interface WorkspaceTransactionSessionsHost {
+  readonly prepare: (spec: SessionSpec) => Effect.Effect<PreparedSession, PtyError>;
+  readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
+  readonly pids: Effect.Effect<ReadonlyMap<string, number>>;
+}
+
+/**
+ * Map a persisted session into a prepare spec. Optional keys appear only when
+ * defined. `declaredAgent` becomes `SessionSpec.agent` — the same mapping
+ * restore and pending-resume paths in daemon.ts use.
+ */
+const sessionSpecFromPersisted = (
+  session: PersistedSession,
+  paneId: string | undefined,
+): Effect.Effect<SessionSpec, WorkspaceTransactionError> => {
+  if (session.cmd === undefined || session.cmd.length === 0) {
+    return Effect.fail(
+      new WorkspaceTransactionError({
+        message: `session '${session.id}' has no command to prepare`,
+      }),
+    );
+  }
+  const base = {
+    id: session.id,
+    cmd: session.cmd,
+    cols: session.cols,
+    rows: session.rows,
+  };
+  const withKind = session.kind === undefined ? base : { ...base, kind: session.kind };
+  const withAgent =
+    session.declaredAgent === undefined ? withKind : { ...withKind, agent: session.declaredAgent };
+  const withEnv = session.env === undefined ? withAgent : { ...withAgent, env: session.env };
+  const withCwd = session.cwd === undefined ? withEnv : { ...withEnv, cwd: session.cwd };
+  return Effect.succeed(paneId === undefined ? withCwd : { ...withCwd, paneId });
+};
+
+export const buildWorkspaceTransactionSessions = <HostError, KillError>(
+  getHost: Effect.Effect<WorkspaceTransactionSessionsHost, HostError>,
+  killFn: (id: string) => Effect.Effect<void, KillError>,
+): WorkspaceTransactionSessionsService => ({
+  prepare: (session, paneId) =>
+    sessionSpecFromPersisted(session, paneId).pipe(
+      Effect.flatMap((spec) =>
+        getHost.pipe(
+          Effect.flatMap((host) => host.prepare(spec)),
+          Effect.mapError(transactionError),
+        ),
+      ),
+    ),
+  kill: (id) => killFn(id).pipe(Effect.mapError(transactionError)),
+  write: (id, data) =>
+    getHost.pipe(
+      Effect.flatMap((host) => host.write(id, data)),
+      Effect.mapError(transactionError),
+    ),
+  pids: getHost.pipe(
+    Effect.flatMap((host) => host.pids),
+    Effect.mapError(transactionError),
+  ),
+});
 
 export interface PluginActionRegistration {
   readonly tag: string;
@@ -96,21 +162,17 @@ export interface PluginActionRegistration {
   /** Run after the transaction: decode the queued payload once, then execute. */
   readonly run: (
     action: QueuedPluginAction,
-    sessionOps: SessionOps,
-  ) => Effect.Effect<void, WorkspaceTransactionError>;
+  ) => Effect.Effect<void, WorkspaceTransactionError, DaemonSessions>;
 }
 
 /**
  * Pair a payload Schema with its executor. The returned registration stores
  * only closures — no `Schema<unknown>` and no cast.
  */
-export const definePluginAction = <A>(reg: {
+export const definePluginAction = <A, E>(reg: {
   readonly tag: string;
   readonly payload: S.Codec<A>;
-  readonly execute: (
-    action: A,
-    sessionOps: SessionOps,
-  ) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly execute: (action: A) => Effect.Effect<void, E, DaemonSessions>;
 }): PluginActionRegistration => ({
   tag: reg.tag,
   decode: (encoded) => {
@@ -140,7 +202,7 @@ export const definePluginAction = <A>(reg: {
     }
     return Result.succeed({ _tag: reg.tag, payload: wire.success });
   },
-  run: (queued, sessionOps) =>
+  run: (queued) =>
     Effect.gen(function* () {
       const decoded = S.decodeUnknownResult(reg.payload)(queued.payload);
       if (Result.isFailure(decoded)) {
@@ -148,7 +210,7 @@ export const definePluginAction = <A>(reg: {
           message: `action '${reg.tag}': ${describe(decoded.failure)}`,
         });
       }
-      yield* reg.execute(decoded.success, sessionOps);
+      yield* reg.execute(decoded.success).pipe(Effect.mapError(transactionError));
     }),
 });
 
@@ -276,10 +338,10 @@ const withPanePid = (entry: PaneEntry, pids: ReadonlyMap<string, number>): PaneE
 const withPanePids = (
   tag: string,
   result: JsonValue,
-  sessionOps: SessionOps,
+  sessions: WorkspaceTransactionSessionsService,
 ): Effect.Effect<JsonValue, WorkspaceTransactionError> => {
   if (tag !== "pane.list" && tag !== "pane.current") return Effect.succeed(result);
-  return sessionOps.pids.pipe(
+  return sessions.pids.pipe(
     Effect.map((pids) =>
       Array.isArray(result)
         ? result.map((entry) => withPanePid(entry as PaneEntry, pids))
@@ -289,13 +351,6 @@ const withPanePids = (
     ),
   );
 };
-
-interface SessionHost {
-  readonly prepare: (spec: SessionSpec) => Effect.Effect<PreparedSession, PtyError>;
-  readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-  readonly message: (id: string, message: JsonValue) => Effect.Effect<void, PtyError>;
-  readonly pids: Effect.Effect<ReadonlyMap<string, number>>;
-}
 
 interface WorktreeOps {
   readonly add: (
@@ -326,11 +381,6 @@ interface Events {
 interface Lifecycle {
   readonly onEmpty: Effect.Effect<void>;
 }
-
-export class WorkspaceTransactionSessionOps extends Context.Service<
-  WorkspaceTransactionSessionOps,
-  SessionOps
->()("WorkspaceTransaction/SessionOps") {}
 
 export class WorkspaceTransactionWorktreeOps extends Context.Service<
   WorkspaceTransactionWorktreeOps,
@@ -374,7 +424,8 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
   {
     make: Effect.gen(function* () {
       const model = yield* DaemonModel;
-      const sessionOps = yield* WorkspaceTransactionSessionOps;
+      const transactionSessions = yield* WorkspaceTransactionSessions;
+      const pluginSessions = yield* DaemonSessions;
       const worktreeOps = yield* WorkspaceTransactionWorktreeOps;
       const persistence = yield* WorkspaceTransactionPersistence;
       const events = yield* WorkspaceTransactionEvents;
@@ -536,13 +587,13 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                     if (!isCoreWorkspaceAction(a)) continue;
                     if (a._tag !== "spawn") continue;
                     if (a.agent.kind === "component") continue;
-                    prepared.push(yield* sessionOps.prepare(a.agent, a.pane));
+                    prepared.push(yield* transactionSessions.prepare(a.agent, a.pane));
                   }
                   for (const a of mutation.actions) {
                     if (!isCoreWorkspaceAction(a)) continue;
                     yield* Match.value(a).pipe(
-                      Match.tag("kill", (a) => sessionOps.kill(a.agent)),
-                      Match.tag("input", (a) => sessionOps.write(a.agent, a.data)),
+                      Match.tag("kill", (a) => transactionSessions.kill(a.agent)),
+                      Match.tag("input", (a) => transactionSessions.write(a.agent, a.data)),
                       Match.orElse(() => Effect.void),
                     );
                   }
@@ -554,10 +605,9 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                       ),
                     );
                     if (Option.isNone(run)) continue;
-                    yield* Effect.scoped(run.value(action, sessionOps)).pipe(
-                      Effect.timeout("30 seconds"),
-                      Effect.asVoid,
-                    );
+                    yield* Effect.scoped(
+                      run.value(action).pipe(Effect.provideService(DaemonSessions, pluginSessions)),
+                    ).pipe(Effect.timeout("30 seconds"), Effect.asVoid);
                   }
                   for (const wt of worktrees.removed) {
                     const dirty = yield* worktreeOps.isDirty(wt!.path);
@@ -589,7 +639,11 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                     snapshot: structuredClone(final.workspace),
                   };
                   if (mutation.result !== undefined) {
-                    const result = yield* withPanePids(value._tag, mutation.result, sessionOps);
+                    const result = yield* withPanePids(
+                      value._tag,
+                      mutation.result,
+                      transactionSessions,
+                    );
                     return { ...committed, result };
                   }
                   return committed;
@@ -666,45 +720,6 @@ export function gitWorktreesFor(
     Match.orElse(() => none),
   );
 }
-
-export const buildSessionOps = <HostError, KillError>(
-  getHost: Effect.Effect<SessionHost, HostError>,
-  killFn: (id: string) => Effect.Effect<void, KillError>,
-): SessionOps => ({
-  prepare: (agent, paneId) =>
-    getHost.pipe(
-      // The transaction only prepares non-component agents, which always
-      // carry a command; PersistedSession only leaves `cmd` optional because
-      // component sessions do not need one.
-      Effect.flatMap((host) => {
-        const spec = { ...(agent as SessionSpec) };
-        if (paneId) spec.paneId = paneId;
-        return host.prepare(spec);
-      }),
-      Effect.mapError(transactionError),
-    ),
-  kill: (id) => killFn(id).pipe(Effect.mapError(transactionError)),
-  write: (id, data) =>
-    getHost.pipe(
-      Effect.flatMap((host) => host.write(id, data)),
-      Effect.mapError(transactionError),
-    ),
-  message: (id, message) =>
-    getHost.pipe(
-      Effect.flatMap((host) => host.message(id, message)),
-      Effect.mapError(transactionError),
-    ),
-  pids: getHost.pipe(
-    Effect.flatMap((host) => host.pids),
-    Effect.mapError(transactionError),
-  ),
-});
-
-export const makeSessionOps = <HostError, KillError>(
-  getHost: Effect.Effect<SessionHost, HostError>,
-  killFn: (id: string) => Effect.Effect<void, KillError>,
-): Layer.Layer<WorkspaceTransactionSessionOps> =>
-  Layer.succeed(WorkspaceTransactionSessionOps, buildSessionOps(getHost, killFn));
 
 export const makeWorktreeOps: Layer.Layer<WorkspaceTransactionWorktreeOps> = Layer.succeed(
   WorkspaceTransactionWorktreeOps,

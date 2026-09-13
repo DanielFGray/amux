@@ -260,7 +260,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
 
 // A turn's prompt/interrupt/permission-decision used to be named tags here.
 // They carried no meaning core acts on beyond "deliver this opaque payload to
-// a live session" — exactly what `SessionOps.message` already does generically
+// a live session" — exactly what `DaemonSessions.message` already does generically
 // — so they are ordinary `PluginWorkspaceAction`s now, owned and interpreted
 // by whichever plugin pushes them (plugin-agent-harness).
 export type CoreWorkspaceAction =

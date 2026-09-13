@@ -18,7 +18,6 @@ import type { CommandError, Commands, Meta, RuntimeCommand } from "../commands.t
 export { SessionFactsTag } from "../session-facts.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
-import type { PromptOptions } from "../effect/SessionRegistry.ts";
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "../tiling-algorithm-default.ts";
 import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
@@ -28,6 +27,7 @@ import type { PaneDescriptorRegistration } from "../pane-descriptors.ts";
 import type { ProviderMessageRegistration } from "../session-provider-messages.ts";
 import type { DaemonEventPayload } from "../effect/EventBus.ts";
 import type { ControlError } from "../control.ts";
+import type { DaemonSessions } from "../daemon-sessions.ts";
 
 /** @effect-leakable-service */
 export class CurrentPlugin extends Context.Service<CurrentPlugin, PluginInstance>()(
@@ -113,8 +113,8 @@ export type CommandsService = Omit<Commands, "registerCommand" | "registerFullCo
  * Workspace-target commands reduce through the daemon's model queue: `reduce`
  * returns an Effect of workspace changes as data; core applies them
  * synchronously inside the transaction. Session-target commands never touch
- * the model queue: `run` executes directly with a per-call context (a fresh
- * snapshot read plus the live session capabilities).
+ * the model queue: `run` executes directly with a per-call snapshot and reads
+ * live session capabilities from {@link DaemonSessions}.
  */
 export interface DaemonCommandSpec {
   readonly tag: string;
@@ -130,7 +130,7 @@ export interface DaemonCommandRegistration extends DaemonCommandSpec {
   readonly run?: (
     command: RuntimeCommand,
     context: DaemonSessionCommandContext,
-  ) => Effect.Effect<unknown, CommandError>;
+  ) => Effect.Effect<unknown, CommandError, DaemonSessions>;
   /** New WorkspaceAction variants this command's reducer may push, with the
    *  executors the transaction routes them to. */
   readonly actions?: readonly PluginActionRegistration[];
@@ -145,12 +145,6 @@ export interface DaemonCommandRegistration extends DaemonCommandSpec {
  *  through workspace-target commands, never through here. */
 export interface DaemonSessionCommandContext {
   readonly snapshot: WorkspaceSnapshot;
-  readonly prompt: (
-    target: string,
-    text: string,
-    options?: PromptOptions,
-  ) => Effect.Effect<void, CommandError>;
-  readonly capture: (session: string) => Effect.Effect<string, CommandError>;
 }
 
 export interface DaemonCommandsService extends RegistryService<DaemonCommandRegistration> {

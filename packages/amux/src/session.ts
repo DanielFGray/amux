@@ -118,7 +118,7 @@ export interface PersistedSession {
   /**
    * The session provider's message in its Encoded form. Validated against the
    * provider's message Schema when session.add applies; ResumeAgent delivers
-   * it via `SessionOps.message` after spawn, then clears the field.
+   * it via `DaemonSessions.message` after spawn, then clears the field.
    */
   firstMessage?: JsonValue;
 }

@@ -44,8 +44,8 @@ import {
   WorkspaceTransactionError,
   WorkspaceTransactionLifecycle,
   WorkspaceTransactionPersistence,
-  WorkspaceTransactionSessionOps,
-  buildSessionOps,
+  WorkspaceTransactionSessions,
+  buildWorkspaceTransactionSessions,
   makeWorktreeOps,
   makePersistence,
   makeEvents,
@@ -53,6 +53,7 @@ import {
   workspaceTransactionPluginsFromRegistrations,
   type WorkspaceTransactionResult,
 } from "./effect/WorkspaceTransaction.ts";
+import { DaemonSessions, buildDaemonSessions } from "./daemon-sessions.ts";
 import { configPath, loadConfig, type Config } from "./config.ts";
 import { createPluginContributions } from "./plugin/contributions.ts";
 import type { DaemonKernelPhase } from "./daemon-kernel.ts";
@@ -70,12 +71,7 @@ import type { PlatformError } from "effect/PlatformError";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
 import { pathFromDocumentUri } from "./document-uri.ts";
-import type {
-  ManagedSession,
-  PromptOptions,
-  PtyError,
-  SessionSpec,
-} from "./effect/SessionRegistry.ts";
+import type { ManagedSession, PtyError, SessionSpec } from "./effect/SessionRegistry.ts";
 import {
   isSessionId,
   processAlive,
@@ -98,7 +94,6 @@ const decodeJson = S.decodeSync(S.fromJsonString(S.Unknown));
 import {
   command,
   commandDefinition,
-  CommandError,
   COMMAND_META,
   fieldDeclaresPaneTarget,
   isCoreCommand,
@@ -1293,7 +1288,10 @@ export const makeDaemonService = Effect.fnUntraced(
         return this.current.providerMessages;
       },
     };
-    const sessionOps = buildSessionOps(requireHost, (id) => killSession(id));
+    const daemonSessions = buildDaemonSessions(requireHost);
+    const transactionSessions = buildWorkspaceTransactionSessions(requireHost, (id) =>
+      killSession(id),
+    );
     const persistenceContext = yield* Layer.build(
       makePersistence(persist, activeSaveRef, daemonScope).pipe(
         Layer.provide(Layer.succeed(DaemonModel, model)),
@@ -1321,7 +1319,8 @@ export const makeDaemonService = Effect.fnUntraced(
         Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
         Layer.provide(Layer.succeed(WorkspaceTransactionPlugins, transactionPlugins)),
         Layer.provide(Layer.succeed(TilingAlgorithmsTag, tilingAlgorithms)),
-        Layer.provide(Layer.succeed(WorkspaceTransactionSessionOps, sessionOps)),
+        Layer.provide(Layer.succeed(DaemonSessions, daemonSessions)),
+        Layer.provide(Layer.succeed(WorkspaceTransactionSessions, transactionSessions)),
         Layer.provide(makeWorktreeOps),
         Layer.provide(
           Layer.succeed(WorkspaceTransactionLifecycle, {
@@ -1547,18 +1546,10 @@ export const makeDaemonService = Effect.fnUntraced(
             const cur = yield* model.get;
             const commandContext = {
               snapshot: structuredClone(cur.workspace),
-              prompt: (target: string, text: string, options?: PromptOptions) =>
-                requireHost.pipe(
-                  Effect.flatMap((host) => host.prompt(target, text, options)),
-                  Effect.mapError((error) => new CommandError({ message: describe(error) })),
-                ),
-              capture: (target: string) =>
-                requireHost.pipe(
-                  Effect.flatMap((host) => host.capture(target)),
-                  Effect.mapError((error) => new CommandError({ message: describe(error) })),
-                ),
             };
-            const result = yield* registration.run(value, commandContext);
+            const result = yield* registration
+              .run(value, commandContext)
+              .pipe(Effect.provideService(DaemonSessions, daemonSessions));
             return result === undefined ? {} : { result };
           }
           return yield* controlFail(`daemon command '${value._tag}' has no handler`);
@@ -1956,7 +1947,7 @@ export const makeDaemonService = Effect.fnUntraced(
               );
               const firstMessage = found.session.firstMessage;
               if (firstMessage !== undefined) {
-                yield* sessionOps.message(sessionId, firstMessage).pipe(
+                yield* daemonSessions.message(sessionId, firstMessage).pipe(
                   Effect.matchEffect({
                     onFailure: (error) =>
                       Effect.logWarning(

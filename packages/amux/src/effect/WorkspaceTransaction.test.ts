@@ -1,19 +1,22 @@
 import { testEffect } from "../test-effect.ts";
-import { Duration, Effect, Exit, Fiber, Layer, Ref, Scope } from "effect";
+import { Duration, Effect, Exit, Fiber, Layer, Ref, Scope, Stream } from "effect";
 import { expect } from "bun:test";
 import * as TestClock from "effect/testing/TestClock";
 import { layerDaemonModel } from "./DaemonModel.ts";
 import {
   WorkspaceTransaction,
-  WorkspaceTransactionSessionOps,
   WorkspaceTransactionWorktreeOps,
   WorkspaceTransactionPersistence,
   WorkspaceTransactionEvents,
   WorkspaceTransactionError,
   WorkspaceTransactionPlugins,
+  WorkspaceTransactionSessions,
+  buildWorkspaceTransactionSessions,
   reducePluginCommand,
   type WorkspaceTransactionPluginsService,
+  type WorkspaceTransactionSessionsService,
 } from "./WorkspaceTransaction.ts";
+import { DaemonSessions, type DaemonSessionsService } from "../daemon-sessions.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import { workspaceFromSession } from "../workspace.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
@@ -21,11 +24,8 @@ import { command, runtimeCommand } from "../commands.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
-import type { JsonValue } from "./AttachProtocol.ts";
-import {
-  PLUGIN_REDUCE_TIMEOUT_MS,
-  PluginReducerError,
-} from "../workspace-changes.ts";
+import { PLUGIN_REDUCE_TIMEOUT_MS, PluginReducerError } from "../workspace-changes.ts";
+import type { ManagedSession, SessionSpec } from "./SessionRegistry.ts";
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
@@ -113,7 +113,26 @@ interface FakeSessionState {
   fail: boolean;
 }
 
-function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
+function stubManagedSession(id: string): ManagedSession {
+  return {
+    id,
+    kind: "pty",
+    output: Stream.empty,
+    exit: Effect.succeed(null),
+    write: () => Effect.void,
+    prompt: () => Effect.void,
+    decide: () => Effect.void,
+    interrupt: () => Effect.void,
+    message: () => Effect.void,
+    resize: () => Effect.void,
+    kill: Effect.void,
+    foreground: () => ({ pgid: -1, sid: -1 }),
+  };
+}
+
+function trackingTransactionSessions(
+  stateRef: Ref.Ref<FakeSessionState>,
+): WorkspaceTransactionSessionsService {
   return {
     prepare: (agent: PersistedSession) =>
       Effect.gen(function* () {
@@ -137,7 +156,7 @@ function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
           aborted: [...s.aborted, agent.id],
         }));
         return {
-          session: { id: agent.id } as any,
+          session: stubManagedSession(agent.id),
           activate,
           abort,
         } satisfies PreparedSession;
@@ -168,14 +187,15 @@ function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
           written: [...s.written, { id, data }],
         }));
       }),
-    message: (id: string, message: JsonValue) =>
-      Ref.update(stateRef, (s) => ({
-        ...s,
-        written: [...s.written, { id, data: JSON.stringify(message) }],
-      })),
     pids: Effect.succeed(new Map()),
   };
 }
+
+const idleDaemonSessions: DaemonSessionsService = {
+  message: () => Effect.void,
+  prompt: () => Effect.void,
+  capture: () => Effect.succeed(""),
+};
 
 interface FakeWorktreeState {
   added: { repo: string; spec: WorktreeSpec; path: string }[];
@@ -301,7 +321,10 @@ function testLayer(
   });
 
   const layer = Layer.provide(WorkspaceTransaction.layer, layerDaemonModel(initial)).pipe(
-    Layer.provide(Layer.succeed(WorkspaceTransactionSessionOps, trackingSessionOps(sessionRef))),
+    Layer.provide(
+      Layer.succeed(WorkspaceTransactionSessions, trackingTransactionSessions(sessionRef)),
+    ),
+    Layer.provide(Layer.succeed(DaemonSessions, idleDaemonSessions)),
     Layer.provide(Layer.succeed(WorkspaceTransactionWorktreeOps, trackingWorktreeOps(worktreeRef))),
     Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, trackingPersistence(persistRef))),
     Layer.provide(Layer.succeed(WorkspaceTransactionEvents, trackingEvents(eventsRef))),
@@ -427,9 +450,7 @@ testEffect("a failing plugin reducer leaves the revision unchanged", () => {
   return Effect.gen(function* () {
     const tx = yield* WorkspaceTransaction;
     const before = initial.workspace.revision;
-    const result = yield* Effect.exit(
-      tx.run(runtimeCommand("probe.fail", {}), before, context),
-    );
+    const result = yield* Effect.exit(tx.run(runtimeCommand("probe.fail", {}), before, context));
     expect(result._tag).toBe("Failure");
     const persisted = yield* Ref.get(persistRef);
     expect(persisted.persisted).toHaveLength(0);
@@ -461,3 +482,35 @@ testEffect("a timed-out plugin reducer fails under TestClock", () => {
     expect(Exit.isFailure(result)).toBe(true);
   }).pipe(Effect.provide(TestClock.layer()));
 });
+
+testEffect("transaction prepare maps declaredAgent to SessionSpec.agent", () =>
+  Effect.gen(function* () {
+    const seen: SessionSpec[] = [];
+    const host = {
+      prepare: (spec: SessionSpec) => {
+        seen.push(spec);
+        return Effect.succeed({
+          session: stubManagedSession(spec.id),
+          activate: Effect.void,
+          abort: Effect.void,
+        } satisfies PreparedSession);
+      },
+      write: () => Effect.void,
+      pids: Effect.succeed(new Map<string, number>()),
+    };
+    const sessions = buildWorkspaceTransactionSessions(Effect.succeed(host), () => Effect.void);
+    yield* sessions.prepare({
+      id: "agent-1",
+      name: "agent-1",
+      cmd: ["echo", "hi"],
+      cols: 80,
+      rows: 24,
+      exited: false,
+      exitCode: null,
+      declaredAgent: "claude",
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.agent).toBe("claude");
+    expect(Object.hasOwn(seen[0]!, "declaredAgent")).toBe(false);
+  }),
+);

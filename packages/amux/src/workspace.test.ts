@@ -1742,7 +1742,7 @@ test("agent.permission carries the answer to the session that asked", () => {
 /* An initial prompt has nowhere live to go yet at reduce time — the
  * component's backend spawns later, when a client calls resumeAgent — so
  * core stores it on the session as firstMessage. ResumeAgent delivers it
- * via SessionOps.message after spawn and clears the field. */
+ * via DaemonSessions.message after spawn and clears the field. */
 test("agent.new creates an agent session without pushing a prompt through core", () => {
   const current = run(workspaceFromSession(base(twoPaneLayout)));
   const mutation = applyWorkspaceCommand(

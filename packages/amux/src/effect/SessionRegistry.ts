@@ -97,12 +97,15 @@ export interface ManagedSession {
   readonly foreground: () => SessionForeground;
 }
 
-export type PromptOptions = {
-  readonly id?: string;
-  readonly delivery?: "steer" | "queue";
-  readonly resume?: boolean;
-  readonly replace?: string;
-};
+/** Wire shape for prompt options; daemon session RPC will encode this. */
+export const PromptOptionsSchema = S.Struct({
+  id: S.optionalKey(S.String),
+  delivery: S.optionalKey(S.Literals(["steer", "queue"])),
+  resume: S.optionalKey(S.Boolean),
+  replace: S.optionalKey(S.String),
+});
+
+export type PromptOptions = typeof PromptOptionsSchema.Type;
 
 /** The foreground of a session's tty, as the owner sees it. A session with no
  *  process behind it (an agent stub) reports -1 for both. */
