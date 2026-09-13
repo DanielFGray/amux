@@ -127,11 +127,7 @@ export interface PluginHostContext {
    * realm without conflict. That is how one plugin serves many panes — see
    * `PluginServices.realmContext`. Omit it for the one shared binding.
    */
-  readonly provide: <Id, S>(
-    tag: Context.Service<Id, S>,
-    service: S,
-    realm?: string,
-  ) => () => void;
+  readonly provide: <Id, S>(tag: Context.Service<Id, S>, service: S, realm?: string) => () => void;
   /** Read a service without depending on it. `inject` is what makes the host wait. */
   readonly get: <Id, S>(tag: Context.Service<Id, S>) => Option.Option<S>;
 }
