@@ -11,7 +11,6 @@ import {
   type PaneRef,
 } from "./layout.ts";
 import {
-  paneHasNeighbour,
   paneInDirection,
   resizeDivider as resizeLayoutDivider,
   resizePane,
@@ -19,13 +18,19 @@ import {
   type LayoutSize,
 } from "./geometry.ts";
 import type { Direction, SplitDirection } from "./window.ts";
-import type { TilingAlgorithm } from "./tiling-algorithm.ts";
+import {
+  TilingAlgorithmError,
+  tilingAlgorithmFromMethods,
+  type TilingAlgorithm,
+  type TilingAlgorithmMethods,
+} from "./tiling-algorithm.ts";
+import { Effect } from "effect";
 
 const defaultInit = (panes: readonly PaneRef[], _size: LayoutSize): Layout => {
   return panes.reduce((current, pane) => appendPane(current, pane), makeLayout({ root: null }));
 };
 
-export const defaultTilingAlgorithm: TilingAlgorithm = {
+export const defaultTilingMethods: TilingAlgorithmMethods = {
   id: "default",
   version: 1,
 
@@ -92,14 +97,39 @@ export const defaultTilingAlgorithm: TilingAlgorithm = {
   ): Layout {
     return resizeLayoutDivider(layout, size, path, index, delta);
   },
+};
 
-  hasNeighbour(
-    layout: Layout,
-    _size: LayoutSize,
-    paneId: string,
-    axis: SplitDirection,
-    side: -1 | 1,
-  ): boolean {
-    return paneHasNeighbour(layout, paneId, axis, side);
+const fromMethods = tilingAlgorithmFromMethods(defaultTilingMethods);
+
+/**
+ * Default algorithm. `close` on a foreign container that would drop a column
+ * refuses via {@link TilingAlgorithmError} — closeLayout would leave the
+ * opaque arrangement (e.g. niri sizes/active) index-misaligned with children.
+ */
+export const defaultTilingAlgorithm: TilingAlgorithm = {
+  id: defaultTilingMethods.id,
+  version: defaultTilingMethods.version,
+  run: (operation) => {
+    if (operation._tag !== "close") return fromMethods.run(operation);
+    return Effect.gen(function* () {
+      const root = operation.layout.root;
+      if (root?.type === "container") {
+        const before = root.children.length;
+        const next = closeLayout(operation.layout, operation.pane);
+        const after =
+          next.root?.type === "container"
+            ? next.root.children.length
+            : next.root === null
+              ? 0
+              : before;
+        if (after !== before) {
+          return yield* new TilingAlgorithmError({
+            algorithm: defaultTilingMethods.id,
+            message: `default tiling cannot close a column of foreign layout kind '${root.kind}'`,
+          });
+        }
+      }
+      return yield* fromMethods.run(operation);
+    });
   },
 };

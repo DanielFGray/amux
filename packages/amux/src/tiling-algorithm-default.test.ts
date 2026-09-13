@@ -19,7 +19,7 @@ import {
   resizePane,
   type LayoutSize,
 } from "./geometry.ts";
-import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
+import { defaultTilingMethods } from "./tiling-algorithm-default.ts";
 
 const size: LayoutSize = { cols: 80, rows: 24 };
 
@@ -43,7 +43,7 @@ test("init appends panes in the same order as the existing layout builder", () =
     expected = appendPane(expected, ref);
   }
 
-  const actual = defaultTilingAlgorithm.init(panes, size);
+  const actual = defaultTilingMethods.init(panes, size);
   expect(actual).toEqual(expected);
 });
 
@@ -61,22 +61,22 @@ test("delegates split, swap, and close without changing layout behavior", () => 
     "b",
   );
   const added = pane("d");
-  const split = defaultTilingAlgorithm.split!(original, size, "b", "row", added);
+  const split = defaultTilingMethods.split!(original, size, "b", "row", added);
   expect(split).toEqual(splitLayout(original, 1, "row", added));
 
-  const swapped = defaultTilingAlgorithm.swap!(split, size, "d", -1);
+  const swapped = defaultTilingMethods.swap!(split, size, "d", -1);
   const panes = layoutPanes(split.root);
   const index = panes.findIndex((candidate) => candidate.id === "d");
   expect(swapped).toEqual(swapLayout(split, index, (index - 1 + panes.length) % panes.length));
 
-  expect(defaultTilingAlgorithm.close!(swapped, size, "c")).toEqual(closeLayout(swapped, "c"));
+  expect(defaultTilingMethods.close!(swapped, size, "c")).toEqual(closeLayout(swapped, "c"));
 
   const onePane = closeLayout(
     layout({ type: "split", direction: "row", weight: 1, children: [node("x"), node("y")] }, "y"),
     "x",
   );
   expect(
-    defaultTilingAlgorithm.close!(
+    defaultTilingMethods.close!(
       layout({ type: "split", direction: "row", weight: 1, children: [node("x"), node("y")] }, "y"),
       size,
       "x",
@@ -100,7 +100,7 @@ test("delegates presets while preserving the non-tiled planes", () => {
       docks: original.docks,
       dockSizes: original.dockSizes,
     });
-    expect(defaultTilingAlgorithm.applyPreset!(original, size, preset)).toEqual(expected);
+    expect(defaultTilingMethods.applyPreset!(original, size, preset)).toEqual(expected);
   }
 });
 
@@ -109,29 +109,25 @@ test("delegates focused and divider resizing", () => {
     { type: "split", direction: "row", weight: 1, children: [node("a"), node("b"), node("c")] },
     "b",
   );
-  expect(defaultTilingAlgorithm.resizeFocus!(original, size, "b", "right", 4)).toEqual(
+  expect(defaultTilingMethods.resizeFocus!(original, size, "b", "right", 4)).toEqual(
     resizePane(original, size, "b", "right", 4),
   );
-  expect(defaultTilingAlgorithm.resizeDivider!(original, size, [], 1, -3)).toEqual(
+  expect(defaultTilingMethods.resizeDivider!(original, size, [], 1, -3)).toEqual(
     resizeDivider(original, size, [], 1, -3),
   );
 });
 
-test("delegates directional focus and neighbour queries", () => {
+test("delegates directional focus queries", () => {
   const original = layout(
     { type: "split", direction: "row", weight: 1, children: [node("a"), node("b")] },
     "a",
   );
-  expect(defaultTilingAlgorithm.focusInDirection(original, size, "a", "left")).toBe(
+  expect(defaultTilingMethods.focusInDirection(original, size, "a", "left")).toBe(
     paneInDirection(original, size, "a", "left"),
   );
-  expect(defaultTilingAlgorithm.focusInDirection(original, size, "a", "right")).toBe(
+  expect(defaultTilingMethods.focusInDirection(original, size, "a", "right")).toBe(
     paneInDirection(original, size, "a", "right"),
   );
-  expect(defaultTilingAlgorithm.hasNeighbour!(original, size, "a", "row", 1)).toBe(
-    paneHasNeighbour(original, "a", "row", 1),
-  );
-  expect(defaultTilingAlgorithm.hasNeighbour!(original, size, "a", "row", -1)).toBe(
-    paneHasNeighbour(original, "a", "row", -1),
-  );
+  expect(paneHasNeighbour(original, "a", "row", 1)).toBe(true);
+  expect(paneHasNeighbour(original, "a", "row", -1)).toBe(false);
 });

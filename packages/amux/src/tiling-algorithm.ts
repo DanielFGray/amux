@@ -5,33 +5,61 @@
  * renders is exactly what the elected algorithm hands back from `Layout`,
  * and every arrangement command (split, close, swap, preset, resize,
  * directional focus) is routed to whichever algorithm currently holds the
- * pane-host slot rather than called on `layout.ts`'s free functions
- * directly. Election works like root-slot frame election (ADR 0002):
+ * pane-host slot. Election works like root-slot frame election (ADR 0002):
  * live-context selectors, first match wins, re-evaluated every render.
  *
- * Only `close` and `focusInDirection` are required — the one operation
- * every algorithm must support to stay usable (a pane can always be
- * closed, and focus can always move) and the one query Window's directional
- * keys always need. Everything else is a capability an algorithm may omit;
- * Window hides or no-ops the corresponding command rather than assuming
- * universal support. See docs/adr/0002-tiling-algorithm-as-slot-occupant.md
- * and docs/adr/0003-tiling-materialization-is-tree-shaped.md.
+ * The boundary is one layout operation → one answer, as an Effect, so a
+ * future plugin-host process can carry the same Schemas over a socket.
+ * Visibility of the focused pane is folded into answers that move focus;
+ * core never calls a second ensureVisible step. An unsupported answer
+ * tells core to fall through to layout.ts free functions.
  *
- * An algorithm's own decision state may be anything it likes — this
- * interface only fixes what crosses the boundary with Window, which is
- * always a `Layout` (always tree-shaped, per ADR 0003) plus the pane it
- * acted on. `Layout` carries the elected algorithm's id/version alongside
- * the tree purely as a record of provenance (ts-b3df09) — ADR 0003's tree
- * shape (including niri's "scroll" node) already round-trips full
- * arrangement fidelity through the ordinary tree, so nothing needs to
- * persist or restore an algorithm's state separately from it.
+ * Authors may still write a method-shaped object and pass it through
+ * {@link tilingAlgorithmFromMethods}; client-side render queries such as
+ * hasNeighbour stay outside this contract.
  */
 
-import type { Layout, LayoutPreset, PaneRef } from "./layout.ts";
+import { Duration, Effect, Match, Schema as S } from "effect";
+import { makeLayout, type Layout, type LayoutPreset, type PaneRef } from "./layout.ts";
 import type { LayoutPath, LayoutSize } from "./geometry.ts";
 import type { Direction, SplitDirection } from "./window.ts";
+import { errorMessage } from "./error-message.ts";
+import { PLUGIN_TILING_TIMEOUT_MS } from "./workspace-changes.ts";
+import type { TilingAnswer, TilingOperation } from "./tiling-operation.ts";
+
+export class TilingAlgorithmError extends S.TaggedError<TilingAlgorithmError>()(
+  "TilingAlgorithmError",
+  {
+    algorithm: S.String,
+    message: S.String,
+  },
+) {}
 
 export interface TilingAlgorithm {
+  readonly id: string;
+  readonly version: number;
+  readonly run: (operation: TilingOperation) => Effect.Effect<TilingAnswer, TilingAlgorithmError>;
+}
+
+/**
+ * Sync method bag authors write against. Optional methods become
+ * `unsupported` answers; capability is no longer modeled as missing methods
+ * on {@link TilingAlgorithm} itself.
+ *
+ * Only `close` and `focusInDirection` are required on this bag — the one
+ * operation every algorithm must support to stay usable (a pane can always
+ * be closed, and focus can always move) and the one query Window's
+ * directional keys always need. Everything else is a capability an author
+ * may omit; omitted methods answer `unsupported` and core falls through to
+ * layout.ts.
+ *
+ * `ensureVisible` is the scroll-into-view transform folded into `close`,
+ * `focusDirection`, and `reveal` answers. A split-tree algorithm omits it
+ * (every pane is already on screen). A viewport-based algorithm (niri-style
+ * scroll) supplies it so focus moves revise the layout's scroll position
+ * in the same answer.
+ */
+export interface TilingAlgorithmMethods {
   readonly id: string;
   readonly version: number;
 
@@ -46,7 +74,8 @@ export interface TilingAlgorithm {
 
   /** The pane tmux-style directional focus reaches from `from`, or null at
    *  an edge the algorithm has nothing beyond. Required: Window's
-   *  directional-focus keys always need an answer, even a trivial one. */
+   *  directional-focus keys always need an answer, even a trivial one.
+   *  Scroll/visibility changes travel via `ensureVisible` in the answer. */
   focusInDirection(
     layout: Layout,
     size: LayoutSize,
@@ -94,29 +123,109 @@ export interface TilingAlgorithm {
     delta: number,
   ): Layout;
 
-  /** Whether a pane has a neighbour on `side` along `axis` — whether a
-   *  resize or directional move in that direction has anywhere to go. */
-  hasNeighbour?(
-    layout: Layout,
-    size: LayoutSize,
-    paneId: string,
-    axis: SplitDirection,
-    side: -1 | 1,
-  ): boolean;
-
   /**
    * Bring `paneId` fully into view, as a pure transform of `layout`.
    *
-   * A split-tree algorithm has nothing to do here: every pane it places is
-   * already on screen. A viewport-based algorithm (a niri-style scroll strip)
-   * is different — its own decision state includes a scroll position, and
-   * moving focus onto a pane outside the current viewport requires changing
-   * that position too. `focusInDirection` cannot carry that change itself:
-   * its return type is only the focused pane's id, with no channel back to a
-   * revised `Layout`. `applyWorkspaceCommand`'s `setFocus` (and `closePane`)
-   * call `ensureVisible` right after any operation that moves focus, passing
-   * the pane that ended up focused; an algorithm with no viewport concept
-   * omits it, which is treated as "already visible."
+   * Folded into `close` / `focusDirection` / `reveal` answers by
+   * {@link tilingAlgorithmFromMethods}. A split-tree algorithm has nothing
+   * to do here: every pane it places is already on screen. A viewport-based
+   * algorithm (a niri-style scroll strip) includes scroll position in its
+   * layout, and moving focus onto a pane outside the current viewport
+   * requires changing that position too.
    */
   ensureVisible?(layout: Layout, size: LayoutSize, paneId: string): Layout;
 }
+
+const reveal = (
+  methods: TilingAlgorithmMethods,
+  layout: Layout,
+  size: LayoutSize,
+  paneId: string,
+): Layout => methods.ensureVisible?.(layout, size, paneId) ?? layout;
+
+const dispatch = (methods: TilingAlgorithmMethods, operation: TilingOperation): TilingAnswer =>
+  Match.valueTags(operation, {
+    init: (op): TilingAnswer => ({ _tag: "ok", layout: methods.init(op.panes, op.size) }),
+    close: (op): TilingAnswer => {
+      let layout = methods.close(op.layout, op.size, op.pane);
+      const focus = layout.focus;
+      if (focus) layout = reveal(methods, layout, op.size, focus);
+      return { _tag: "ok", layout, focus: layout.focus ?? null };
+    },
+    focusDirection: (op): TilingAnswer => {
+      const focus = methods.focusInDirection(op.layout, op.size, op.from, op.direction);
+      if (!focus) return { _tag: "ok", layout: op.layout, focus: null };
+      const shown = reveal(methods, makeLayout({ ...op.layout, focus }), op.size, focus);
+      return { _tag: "ok", layout: shown, focus };
+    },
+    reveal: (op): TilingAnswer => ({
+      _tag: "ok",
+      layout: reveal(methods, op.layout, op.size, op.pane),
+    }),
+    split: (op): TilingAnswer => {
+      if (!methods.split) return { _tag: "unsupported" };
+      return {
+        _tag: "ok",
+        layout: methods.split(op.layout, op.size, op.at, op.direction, op.pane),
+      };
+    },
+    swap: (op): TilingAnswer => {
+      if (!methods.swap) return { _tag: "unsupported" };
+      return { _tag: "ok", layout: methods.swap(op.layout, op.size, op.from, op.step) };
+    },
+    preset: (op): TilingAnswer => {
+      if (!methods.applyPreset) return { _tag: "unsupported" };
+      return { _tag: "ok", layout: methods.applyPreset(op.layout, op.size, op.preset) };
+    },
+    resizeFocus: (op): TilingAnswer => {
+      if (!methods.resizeFocus) return { _tag: "unsupported" };
+      return {
+        _tag: "ok",
+        layout: methods.resizeFocus(op.layout, op.size, op.pane, op.direction, op.delta),
+      };
+    },
+    resizeDivider: (op): TilingAnswer => {
+      if (!methods.resizeDivider) return { _tag: "unsupported" };
+      return {
+        _tag: "ok",
+        layout: methods.resizeDivider(op.layout, op.size, op.path, op.index, op.delta),
+      };
+    },
+  });
+
+/** Build a {@link TilingAlgorithm} from a method-shaped object.
+ *  `Effect.try` only guards genuine bugs in author methods — never as a
+ *  channel for declared refusals. */
+export const tilingAlgorithmFromMethods = (methods: TilingAlgorithmMethods): TilingAlgorithm => ({
+  id: methods.id,
+  version: methods.version,
+  run: (operation) =>
+    Effect.try({
+      try: () => dispatch(methods, operation),
+      catch: (error) =>
+        new TilingAlgorithmError({
+          algorithm: methods.id,
+          message: errorMessage(error) || "algorithm threw",
+        }),
+    }),
+});
+
+/**
+ * Run one operation on an elected algorithm under {@link PLUGIN_TILING_TIMEOUT_MS}.
+ * In-process algorithms (including default) answer immediately; the budget
+ * only bites a hung plugin-host call.
+ */
+export const invokeTilingAlgorithm = (
+  algorithm: TilingAlgorithm,
+  operation: TilingOperation,
+): Effect.Effect<TilingAnswer, TilingAlgorithmError> =>
+  algorithm.run(operation).pipe(
+    Effect.timeout(Duration.millis(PLUGIN_TILING_TIMEOUT_MS)),
+    Effect.mapError(
+      (error) =>
+        new TilingAlgorithmError({
+          algorithm: algorithm.id,
+          message: errorMessage(error) || "timed out",
+        }),
+    ),
+  );

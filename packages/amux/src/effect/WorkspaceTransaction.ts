@@ -486,26 +486,22 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                         paneDescriptors: pluginService.paneDescriptors,
                         providerMessages: pluginService.providerMessages,
                       }
-                    : yield* reducePluginCommand(
-                        pluginService,
-                        value,
-                        cur.workspace,
-                        context,
-                      );
-              const applied = applyWorkspaceCommand(
+                    : yield* reducePluginCommand(pluginService, value, cur.workspace, context);
+              const mutation = yield* applyWorkspaceCommand(
                 cur.workspace,
                 value,
                 context,
                 path,
                 pluginApply,
                 algorithm,
+              ).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new WorkspaceTransactionError({
+                      message: error.message,
+                    }),
+                ),
               );
-              if (Result.isFailure(applied)) {
-                return yield* new WorkspaceTransactionError({
-                  message: applied.failure.message,
-                });
-              }
-              const mutation = applied.success;
               const candidate = yield* workspaceSession(mutation.snapshot, cur.state);
               const worktrees = gitWorktreesFor(value, mutation.snapshot, cur.workspace);
               const prepared: PreparedSession[] = [];

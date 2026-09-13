@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
 import { Effect, Layer } from "effect";
-import { niriTilingAlgorithm } from "../../plugin-niri/src/niri.ts";
+import { niriTilingMethods } from "../../plugin-niri/src/niri.ts";
 import { project } from "./harness.ts";
 import {
   decodeLayout,
@@ -33,7 +33,7 @@ const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 
 test("a multi-column niri scroll root round-trips through encode and decode", () => {
   const original = makeLayout({
-    ...niriTilingAlgorithm.init([ref("a"), ref("b"), ref("c")], { cols: 80, rows: 24 }),
+    ...niriTilingMethods.init([ref("a"), ref("b"), ref("c")], { cols: 80, rows: 24 }),
     algorithmId: "niri",
     algorithmVersion: 1,
   });
@@ -48,7 +48,7 @@ live("a scroll container without its renderer still places columns side by side"
     // No registerLayoutKindRenderer — Window falls back to a row flex box.
     // Before the remount-after-plugin-load fix, Yoga's default column stacked
     // these as rows; detach/reattach then looked like a vertical split.
-    const layout = niriTilingAlgorithm.init([ref("a"), ref("b")], { cols: 80, rows: 24 });
+    const layout = niriTilingMethods.init([ref("a"), ref("b")], { cols: 80, rows: 24 });
     const scene = yield* project(layout, { width: 80, height: 24 });
     yield* scene.renderOnce();
 
@@ -62,7 +62,7 @@ live("a scroll container without its renderer still places columns side by side"
 
 live("remounting after the scroll renderer registers keeps columns side by side", () =>
   Effect.gen(function* () {
-    const layout = niriTilingAlgorithm.init([ref("a"), ref("b")], { cols: 80, rows: 24 });
+    const layout = niriTilingMethods.init([ref("a"), ref("b")], { cols: 80, rows: 24 });
     const scene = yield* project(layout, { width: 80, height: 24 });
     yield* scene.renderOnce();
 

@@ -113,9 +113,7 @@ test("agentSession on a pane round-trips and a bogus snapshot entry is stripped"
     kind: "path",
     value: "relative/transcript.jsonl",
   };
-  expect(
-    (run(parseLayout(raw)).root as { agentSession?: unknown }).agentSession,
-  ).toBeUndefined();
+  expect((run(parseLayout(raw)).root as { agentSession?: unknown }).agentSession).toBeUndefined();
 });
 
 test("the elected algorithm's id and version round-trip through encode and decode", () => {
@@ -261,6 +259,14 @@ test("a focus not present in the tree is dropped on parse", () => {
 
 test("an empty layout round-trips", () => {
   expect(run(decodeLayout(encodeLayout(layout(null))))).toEqual(layout(null));
+});
+
+test("a saved layout with only a version decodes as empty", () => {
+  expect(run(parseLayout({ version: LAYOUT_VERSION }))).toEqual(layout(null));
+});
+
+test("a layout without floats or docks still decodes", () => {
+  expect(run(parseLayout({ version: LAYOUT_VERSION, root: pane("a") }))).toEqual(layout(pane("a")));
 });
 
 test("a missing weight defaults to an even share", () => {

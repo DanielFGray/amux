@@ -88,7 +88,15 @@ export {
   type ResumeArgvForm,
 } from "./agent-resume.ts";
 export type { AgentSessionRef, AgentSessionRefKind, OfficialAgentSource } from "./agent-session.ts";
-export type { TilingAlgorithm } from "./tiling-algorithm.ts";
+export type { TilingAlgorithm, TilingAlgorithmMethods } from "./tiling-algorithm.ts";
+export { tilingAlgorithmFromMethods, TilingAlgorithmError } from "./tiling-algorithm.ts";
+export {
+  TilingOperationSchema,
+  TilingAnswerSchema,
+  type TilingOperation,
+  type TilingAnswer,
+} from "./tiling-operation.ts";
+export { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";
 export type { Meta } from "./commands.ts";
 export type {
   CoreWorkspaceAction,
@@ -102,6 +110,7 @@ export type { PromptOptions } from "./effect/SessionRegistry.ts";
 
 export {
   PLUGIN_REDUCE_TIMEOUT_MS,
+  PLUGIN_TILING_TIMEOUT_MS,
   PluginReducerError,
   WorkspaceChangeError,
   WorkspaceChangeSchema,
@@ -131,11 +140,7 @@ export {
   WorkspaceTransactionError,
 } from "./effect/WorkspaceTransaction.ts";
 export { creationResultSchema } from "./creation-result.ts";
-export {
-  AgentEntrySchema,
-  AgentListResultSchema,
-  AgentGetResultSchema,
-} from "./read-model.ts";
+export { AgentEntrySchema, AgentListResultSchema, AgentGetResultSchema } from "./read-model.ts";
 
 export {
   type ForegroundProcessFact,
@@ -159,9 +164,7 @@ export {
   type RuntimeCommand,
 } from "./commands.ts";
 
-export {
-  quoteSendKeysLiteral,
-} from "./send.ts";
+export { quoteSendKeysLiteral } from "./send.ts";
 
 export {
   evalScratch,

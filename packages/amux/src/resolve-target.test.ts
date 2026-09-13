@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
 import { command, type RuntimeCommand } from "./commands.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { layoutPanes } from "./layout.ts";
@@ -44,10 +44,10 @@ const applyWorkspaceCommand = (
   regs?: readonly DaemonCommandRegistration[],
 ): WorkspaceMutation => {
   const plugins =
-    regs === undefined ? undefined : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
-  const result = applyWorkspaceCommandWithPath(workspace, cmd, context, path, plugins);
-  if (Result.isFailure(result)) throw new Error(result.failure.message);
-  return result.success;
+    regs === undefined
+      ? undefined
+      : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
+  return run(applyWorkspaceCommandWithPath(workspace, cmd, context, path, plugins));
 };
 
 const editorPlugins = editorDaemonCommands;

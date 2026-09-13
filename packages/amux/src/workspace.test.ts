@@ -17,16 +17,14 @@ import {
 import { resolveRefsInJson } from "./workspace-changes.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { layoutPanes, makeLayout, DescriptorSchema } from "./layout.ts";
-import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
+import { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";
+import { tilingAlgorithmFromMethods } from "./tiling-algorithm.ts";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
-import {
-  resolveTilingAlgorithm,
-  type DaemonCommandRegistration,
-} from "./plugin/services.ts";
+import { resolveTilingAlgorithm, type DaemonCommandRegistration } from "./plugin/services.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
-import { niriTilingAlgorithm } from "../../plugin-niri/src/niri.ts";
+import { niriTilingAlgorithm, niriTilingMethods } from "../../plugin-niri/src/niri.ts";
 import {
   definePluginAction,
   reducePluginCommand,
@@ -51,13 +49,6 @@ const pluginApplyFor = (
     ),
   );
 
-const unwrapMutation = (
-  result: Result.Result<WorkspaceMutation, { message: string }>,
-): WorkspaceMutation => {
-  if (Result.isFailure(result)) throw new Error(result.failure.message);
-  return result.success;
-};
-
 const applyWorkspaceCommand = (
   workspace: Parameters<typeof applyWorkspaceCommandWithPath>[0],
   cmd: Parameters<typeof applyWorkspaceCommandWithPath>[1],
@@ -66,10 +57,10 @@ const applyWorkspaceCommand = (
   algorithm?: Parameters<typeof applyWorkspaceCommandWithPath>[5],
 ): WorkspaceMutation => {
   const plugins =
-    regs === undefined ? undefined : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
-  return unwrapMutation(
-    applyWorkspaceCommandWithPath(workspace, cmd, context, path, plugins, algorithm),
-  );
+    regs === undefined
+      ? undefined
+      : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
+  return run(applyWorkspaceCommandWithPath(workspace, cmd, context, path, plugins, algorithm));
 };
 
 const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
@@ -121,25 +112,26 @@ const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
 test("daemon tiling election routes tiled commands and rebuild through the elected algorithm", () => {
   const calls = { init: 0, split: 0, close: 0, swap: 0 };
-  const algorithm: TilingAlgorithm = {
-    ...defaultTilingAlgorithm,
+  const algorithm: TilingAlgorithm = tilingAlgorithmFromMethods({
+    ...defaultTilingMethods,
+    id: "test",
     init(panes, size) {
       calls.init++;
-      return defaultTilingAlgorithm.init([...panes].reverse(), size);
+      return defaultTilingMethods.init([...panes].reverse(), size);
     },
     split(layout, size, at, direction, pane) {
       calls.split++;
-      return defaultTilingAlgorithm.split!(layout, size, at, direction, pane);
+      return defaultTilingMethods.split!(layout, size, at, direction, pane);
     },
     close(layout, size, paneId) {
       calls.close++;
-      return defaultTilingAlgorithm.close(layout, size, paneId);
+      return defaultTilingMethods.close(layout, size, paneId);
     },
     swap(layout, size, from, step) {
       calls.swap++;
-      return defaultTilingAlgorithm.swap!(layout, size, from, step);
+      return defaultTilingMethods.swap!(layout, size, from, step);
     },
-  };
+  });
   const registration = {
     owner: { id: "test", generation: 0 },
     name: algorithm.id,
@@ -1068,9 +1060,9 @@ test("editor.open replace of a non-focused pane keeps layout.focus in sync", () 
   const window = opened.snapshot.spaces[0]!.windows[0]!;
   expect(window.state.focus).toBe("pane-b");
   expect(window.layout.focus).toBe("pane-b");
-  expect(run(parseWorkspace(structuredClone(opened.snapshot))).spaces[0]!.windows[0]!.state.focus).toBe(
-    "pane-b",
-  );
+  expect(
+    run(parseWorkspace(structuredClone(opened.snapshot))).spaces[0]!.windows[0]!.state.focus,
+  ).toBe("pane-b");
   expect(layoutPanes(window.layout.root).find((pane) => pane.id === "pane-b")!.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
@@ -1310,13 +1302,14 @@ test("pane.focus from a tiled pane still focuses directionally", () => {
 
 test("pane.focus asks the tiling algorithm to bring the new focus into view", () => {
   let ensured: string | undefined;
-  const algorithm: TilingAlgorithm = {
-    ...defaultTilingAlgorithm,
+  const algorithm: TilingAlgorithm = tilingAlgorithmFromMethods({
+    ...defaultTilingMethods,
+    id: "test-reveal",
     ensureVisible(layout, _size, paneId) {
       ensured = paneId;
       return layout;
     },
-  };
+  });
   const adopted = run(workspaceFromSession(twoPaneSession()));
   applyWorkspaceCommand(
     adopted,
@@ -1333,7 +1326,7 @@ test("pane.focus under niri scrolls an offscreen column into view", () => {
   // Hand the window a niri strip: three half-width columns, only a+b fit.
   const window = adopted.spaces[0]!.windows[0]!;
   const panes = layoutPanes(window.layout.root);
-  window.layout = niriTilingAlgorithm.init(
+  window.layout = niriTilingMethods.init(
     panes.map((pane) => ({ id: pane.id, content: pane.content })),
     context.size,
   );
@@ -1361,9 +1354,8 @@ test("pane.focus under niri scrolls an offscreen column into view", () => {
 
   const focused = snapshot.spaces[0]!.windows[0]!;
   expect(focused.state.focus).toBe("pane-c");
-  const arrangement = (
-    focused.layout.root as { arrangement: { offset: number } } | null
-  )?.arrangement;
+  const arrangement = (focused.layout.root as { arrangement: { offset: number } } | null)
+    ?.arrangement;
   expect(arrangement?.offset).toBeGreaterThan(0);
 });
 
@@ -2314,12 +2306,9 @@ const badFirstMessageProbe: DaemonCommandRegistration = {
 test("firstMessage that fails the provider Schema is rejected", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   expect(() =>
-    applyWorkspaceCommand(
-      adopted,
-      command("probe.bad-first-message"),
-      context,
-      [badFirstMessageProbe],
-    ),
+    applyWorkspaceCommand(adopted, command("probe.bad-first-message"), context, [
+      badFirstMessageProbe,
+    ]),
   ).toThrow(/firstMessage|NativeControl|agent\.prompt/i);
 });
 
@@ -2355,12 +2344,9 @@ const gitRefActionProbe: DaemonCommandRegistration = {
 
 test("a plain { ref: main } action field passes through when a session ref shares the name", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
-  const mutation = applyWorkspaceCommand(
-    adopted,
-    command("probe.git-ref-action"),
-    context,
-    [gitRefActionProbe],
-  );
+  const mutation = applyWorkspaceCommand(adopted, command("probe.git-ref-action"), context, [
+    gitRefActionProbe,
+  ]);
   const queued = mutation.actions.find((action) => "payload" in action);
   if (queued === undefined || !("payload" in queued)) {
     throw new Error("expected queued plugin action");

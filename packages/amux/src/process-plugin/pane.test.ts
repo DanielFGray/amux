@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
 import { command, commandInvocation, CurrentInvocation } from "../commands.ts";
 import {
   applyWorkspaceCommand as applyWorkspaceCommandWithPath,
@@ -29,18 +29,8 @@ const applyWorkspaceCommand = (
     Parameters<typeof applyWorkspaceCommandWithPath>[4]?,
     Parameters<typeof applyWorkspaceCommandWithPath>[5]?,
   ]
-): WorkspaceMutation => {
-  const result = applyWorkspaceCommandWithPath(
-    args[0],
-    args[1],
-    args[2],
-    path,
-    args[3],
-    args[4],
-  );
-  if (Result.isFailure(result)) throw new Error(result.failure.message);
-  return result.success;
-};
+): WorkspaceMutation =>
+  run(applyWorkspaceCommandWithPath(args[0], args[1], args[2], path, args[3], args[4]));
 
 const base = (): SessionState => ({
   version: 1,
@@ -193,9 +183,7 @@ test("processPluginBindingSpecs emits unbound action and pane entries", () => {
   expect(specs[0]?.desc).toBe("Smoke: Ping");
   expect(specs[1]?.desc).toBe("Smoke: Board");
   // Mirrors what dispatch supplies: the keystroke, and the realm it ran in.
-  const withKey = <A, E>(
-    effect: Effect.Effect<A, E, KeyInvocation | Realm | CurrentInvocation>,
-  ) =>
+  const withKey = <A, E>(effect: Effect.Effect<A, E, KeyInvocation | Realm | CurrentInvocation>) =>
     effect.pipe(
       Effect.provideService(KeyInvocation, {
         event: {} as never,

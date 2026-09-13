@@ -12,6 +12,7 @@ import { Effect } from "effect";
 import {
   COLUMN_GAP,
   niriTilingAlgorithm,
+  niriTilingMethods,
   transferColumnCells,
   type NiriArrangement,
 } from "./niri.ts";
@@ -119,8 +120,7 @@ const scrollRenderer: LayoutKindRenderer = {
     // double-count against COLUMN_GAP in the model.
     content.gap = 0;
     const total =
-      sizes.reduce((sum, size) => sum + size, 0) +
-      COLUMN_GAP * Math.max(0, sizes.length - 1);
+      sizes.reduce((sum, size) => sum + size, 0) + COLUMN_GAP * Math.max(0, sizes.length - 1);
     requestPaint = () => ctx.requestRender();
     liveContent = content;
     applyOffset(content, displayOffset);
@@ -176,7 +176,7 @@ const scrollRenderer: LayoutKindRenderer = {
   },
 
   hasNeighbour(node, paneId, axis, side) {
-    return niriTilingAlgorithm.hasNeighbour!(
+    return niriTilingMethods.hasNeighbour(
       makeLayout({ root: node }),
       { cols: 1, rows: 1 },
       paneId,

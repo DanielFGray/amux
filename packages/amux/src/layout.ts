@@ -1152,61 +1152,51 @@ const LayoutNodeSchema = S.Union([
 ]) as S.Codec<LayoutNode>;
 
 export const LayoutSchema = S.Struct({
-  version: S.Finite,
-  root: S.optional(S.NullOr(LayoutNodeSchema)),
-  floats: S.optional(
-    S.Array(
-      S.Struct({
-        id: paneId.pipe(S.annotateKey({ messageMissingKey: "float needs a pane id" })),
-        content: PaneContentSchema.pipe(
-          S.annotateKey({ messageMissingKey: "float needs content" }),
-        ),
-        agentSession: S.optional(PaneAgentSessionSnapshotSchema),
-        x: origin,
-        y: origin,
-        width: size,
-        height: size,
-      }),
-    ),
-  ),
+  version: S.Literal(LAYOUT_VERSION).annotate({
+    message: `unsupported layout version (expected ${LAYOUT_VERSION})`,
+  }),
+  root: S.NullOr(LayoutNodeSchema).pipe(S.withDecodingDefaultType(Effect.succeed(null))),
+  floats: S.Array(
+    S.Struct({
+      id: paneId.pipe(S.annotateKey({ messageMissingKey: "float needs a pane id" })),
+      content: PaneContentSchema.pipe(S.annotateKey({ messageMissingKey: "float needs content" })),
+      agentSession: S.optional(PaneAgentSessionSnapshotSchema),
+      x: origin,
+      y: origin,
+      width: size,
+      height: size,
+    }),
+  ).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
   docks: S.optional(
     S.Struct({
-      left: S.optional(
-        S.Array(
-          S.Struct({
-            id: paneId,
-            content: PaneContentSchema,
-            agentSession: S.optional(PaneAgentSessionSnapshotSchema),
-          }),
-        ),
-      ),
-      right: S.optional(
-        S.Array(
-          S.Struct({
-            id: paneId,
-            content: PaneContentSchema,
-            agentSession: S.optional(PaneAgentSessionSnapshotSchema),
-          }),
-        ),
-      ),
-      top: S.optional(
-        S.Array(
-          S.Struct({
-            id: paneId,
-            content: PaneContentSchema,
-            agentSession: S.optional(PaneAgentSessionSnapshotSchema),
-          }),
-        ),
-      ),
-      bottom: S.optional(
-        S.Array(
-          S.Struct({
-            id: paneId,
-            content: PaneContentSchema,
-            agentSession: S.optional(PaneAgentSessionSnapshotSchema),
-          }),
-        ),
-      ),
+      left: S.Array(
+        S.Struct({
+          id: paneId,
+          content: PaneContentSchema,
+          agentSession: S.optional(PaneAgentSessionSnapshotSchema),
+        }),
+      ).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
+      right: S.Array(
+        S.Struct({
+          id: paneId,
+          content: PaneContentSchema,
+          agentSession: S.optional(PaneAgentSessionSnapshotSchema),
+        }),
+      ).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
+      top: S.Array(
+        S.Struct({
+          id: paneId,
+          content: PaneContentSchema,
+          agentSession: S.optional(PaneAgentSessionSnapshotSchema),
+        }),
+      ).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
+      bottom: S.Array(
+        S.Struct({
+          id: paneId,
+          content: PaneContentSchema,
+          agentSession: S.optional(PaneAgentSessionSnapshotSchema),
+        }),
+      ).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
     }),
   ),
   dockSizes: S.optional(
@@ -1344,11 +1334,6 @@ function validateDecodedLayout(
   decoded: S.Schema.Type<typeof LayoutSchema>,
 ): Effect.Effect<Layout, LayoutFormatError> {
   return Effect.gen(function* () {
-    if (decoded.version !== LAYOUT_VERSION) {
-      return yield* new LayoutFormatError({
-        message: `unsupported layout version ${String(decoded.version)}`,
-      });
-    }
     let nodes = 0;
     const visit = (node: LayoutNode, depth: number): Effect.Effect<void, LayoutFormatError> => {
       if (depth > MAX_LAYOUT_DEPTH)
@@ -1367,9 +1352,9 @@ function validateDecodedLayout(
       }
       return Effect.forEach(node.children, (child) => visit(child, depth + 1)).pipe(Effect.asVoid);
     };
-    const root = decoded.root ?? null;
+    const root = decoded.root;
     if (root) yield* visit(root, 1);
-    const floats = decoded.floats ?? [];
+    const floats = decoded.floats;
     for (const float of floats) {
       if (++nodes > MAX_LAYOUT_NODES)
         return yield* new LayoutFormatError({
@@ -1377,10 +1362,7 @@ function validateDecodedLayout(
         });
       reservePaneId(float.id);
     }
-    const rawDocks = decoded.docks ?? {};
-    const docks = Object.fromEntries(
-      DOCK_SIDES.map((side) => [side, rawDocks[side] ?? []]),
-    ) as DockStrips;
+    const docks = decoded.docks ?? emptyDockStrips();
     for (const side of DOCK_SIDES) for (const pane of docks[side]) reservePaneId(pane.id);
     const sanitizeRef = <T extends PaneRef>(pane: T): T => {
       if (pane.agentSession === undefined) return pane;
@@ -1396,14 +1378,15 @@ function validateDecodedLayout(
     return makeLayout({
       root: collapse(sanitizeNode(root)),
       floats: floats.map(sanitizeRef),
-      docks: decoded.docks !== undefined
-        ? ({
-            left: docks.left.map(sanitizeRef),
-            right: docks.right.map(sanitizeRef),
-            top: docks.top.map(sanitizeRef),
-            bottom: docks.bottom.map(sanitizeRef),
-          } as DockStrips)
-        : undefined,
+      docks:
+        decoded.docks !== undefined
+          ? ({
+              left: docks.left.map(sanitizeRef),
+              right: docks.right.map(sanitizeRef),
+              top: docks.top.map(sanitizeRef),
+              bottom: docks.bottom.map(sanitizeRef),
+            } as DockStrips)
+          : undefined,
       dockSizes: decoded.dockSizes,
       focus: decoded.focus,
       algorithmId: decoded.algorithmId,

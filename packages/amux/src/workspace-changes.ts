@@ -15,6 +15,9 @@ import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 
 export const PLUGIN_REDUCE_TIMEOUT_MS = 2000;
 
+/** Per-call budget for an elected plugin tiling algorithm (same scale as reducers). */
+export const PLUGIN_TILING_TIMEOUT_MS = 2000;
+
 export class WorkspaceChangeError extends S.TaggedError<WorkspaceChangeError>()(
   "WorkspaceChangeError",
   { message: S.String },
@@ -106,9 +109,7 @@ export type WorkspaceReducerAnswer = typeof WorkspaceReducerAnswerSchema.Type;
  * Owner-supplied decode→encode→JsonValue closure. Built by {@link ownerJsonCodec}
  * (and pane-descriptor / action helpers that layer checks on top).
  */
-export type OwnerJsonCodec = (
-  raw: JsonValue,
-) => Result.Result<JsonValue, WorkspaceChangeError>;
+export type OwnerJsonCodec = (raw: JsonValue) => Result.Result<JsonValue, WorkspaceChangeError>;
 
 /** Alias kept for call sites that name a command result codec. */
 export type ResultCodec = OwnerJsonCodec;

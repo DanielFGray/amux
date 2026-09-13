@@ -15,20 +15,15 @@
  * registers `"./daemon"`'s schema and `"."`'s renderer for kind `"scroll"`
  * (see daemon.ts, index.ts); it only produces and reads the data here.
  *
- * Only `close` and `focusInDirection` are required by `TilingAlgorithm`, plus
- * `init` to build the first arrangement, plus `resizeFocus` as the one resize
- * with a clean niri-native meaning (column width for left/right, the column's
- * own vertical weight split for up/down). `swap` and `applyPreset` are
- * deliberately omitted (no preset vocabulary). `resizeDivider` moves the seam
- * between adjacent columns — the drag target the scroll renderer inserts.
- * `hasNeighbour` and `ensureVisible` keep chrome and focus-scroll honest.
+ * Method-shaped helpers build the Effect algorithm via tilingAlgorithmFromMethods.
+ * `hasNeighbour` stays a client-side render query on the methods object (not a
+ * core layout operation). `ensureVisible` folds into focus/close answers.
  *
  * The `split` method dispatches to the niri-native column operations:
  * "row" (side-by-side) inserts a new column via `insertColumn`, and "column"
  * (stacked) inserts into the focused column's vertical stack via
- * `insertIntoColumn`. This gives the algorithm the full `TilingAlgorithm`
- * vocabulary while keeping its own extended helpers on `niriColumns` for
- * callers that need the raw primitives.
+ * `insertIntoColumn`. Extended helpers stay on `niriColumns` for callers that
+ * need the raw primitives.
  */
 
 import {
@@ -38,13 +33,15 @@ import {
   emptyDockStrips,
   layoutPanes,
   makeLayout,
+  tilingAlgorithmFromMethods,
   type Direction,
   type Layout,
   type LayoutContainer,
   type LayoutNode,
   type LayoutSize,
   type PaneRef,
-  type TilingAlgorithm,
+  type SplitDirection,
+  type TilingAlgorithmMethods,
 } from "@danielfgray/amux";
 
 /** A fresh column is half the viewport, so two new columns sit side by side —
@@ -300,8 +297,7 @@ function adaptViewport(layout: Layout, size: LayoutSize): Layout {
       : arrangement.sizes.map((s) => Math.max(MIN_COLUMN_WIDTH, Math.round(s * (cols / basis))));
   const sizes = fillSoleColumn(scaled, cols);
   const sameSizes =
-    sizes.length === arrangement.sizes.length &&
-    sizes.every((s, i) => s === arrangement.sizes[i]);
+    sizes.length === arrangement.sizes.length && sizes.every((s, i) => s === arrangement.sizes[i]);
   if (basis === cols && arrangement.basisCols === cols && sameSizes) return layout;
   const offset = clampOffset(
     basis === cols ? arrangement.offset : Math.round(arrangement.offset * (cols / basis)),
@@ -472,8 +468,7 @@ function closeScroll(
   const next = removed ? removed.next : root;
   const survivors = layoutPanes(next);
   const remaining = [...survivors, ...DOCK_SIDES.flatMap((side) => docks[side]), ...floats];
-  const focus =
-    layout.focus === paneId ? (removed?.heir ?? remaining.at(-1)?.id) : layout.focus;
+  const focus = layout.focus === paneId ? (removed?.heir ?? remaining.at(-1)?.id) : layout.focus;
   return makeLayout({ ...layout, root: next, floats, docks, focus });
 }
 
@@ -583,10 +578,7 @@ function resizeStackDivider(
   const right = sizes[index + 1]!;
   const pair = left + right;
   if (pair < MIN_CELL_HEIGHT * 2) return layout;
-  const nextLeft = Math.max(
-    MIN_CELL_HEIGHT,
-    Math.min(pair - MIN_CELL_HEIGHT, left + delta),
-  );
+  const nextLeft = Math.max(MIN_CELL_HEIGHT, Math.min(pair - MIN_CELL_HEIGHT, left + delta));
   if (nextLeft === left) return layout;
   sizes[index] = nextLeft;
   sizes[index + 1] = pair - nextLeft;
@@ -622,17 +614,20 @@ export function transferColumnCells(
   const right = sizes[index + 1]!;
   const total = left + right;
   if (total < MIN_COLUMN_WIDTH * 2) return null;
-  const nextLeft = Math.max(
-    MIN_COLUMN_WIDTH,
-    Math.min(total - MIN_COLUMN_WIDTH, left + delta),
-  );
+  const nextLeft = Math.max(MIN_COLUMN_WIDTH, Math.min(total - MIN_COLUMN_WIDTH, left + delta));
   if (nextLeft === left) return null;
-  return sizes.map((s, i) =>
-    i === index ? nextLeft : i === index + 1 ? total - nextLeft : s,
-  );
+  return sizes.map((s, i) => (i === index ? nextLeft : i === index + 1 ? total - nextLeft : s));
 }
 
-export const niriTilingAlgorithm: TilingAlgorithm = {
+export const niriTilingMethods: TilingAlgorithmMethods & {
+  hasNeighbour(
+    layout: Layout,
+    size: LayoutSize,
+    paneId: string,
+    axis: SplitDirection,
+    side: -1 | 1,
+  ): boolean;
+} = {
   id: "niri",
   version: 1,
 
@@ -663,11 +658,9 @@ export const niriTilingAlgorithm: TilingAlgorithm = {
     return closeScroll(layout, size, root, paneId);
   },
 
-  focusInDirection(layout, size, from, direction) {
-    // A pure query: the interface returns only the focused pane's id, with no
-    // channel back to a revised Layout, so any scroll-position change travels
-    // separately via `ensureVisible` below (which setFocus calls right after
-    // any focus move). Nothing here is mutated.
+  focusInDirection(layout, _size, from, direction) {
+    // Visibility is folded into the focusDirection answer by
+    // tilingAlgorithmFromMethods (via ensureVisible below).
     return neighbour(layout.root, from, direction);
   },
 
@@ -713,17 +706,18 @@ export const niriTilingAlgorithm: TilingAlgorithm = {
     return resizeStackDivider(layout, size, root, path[0]!, index, delta);
   },
 
+  // Client-side render query — not a core layout operation. Kept on the
+  // methods object so the scroll renderer can call it synchronously.
   hasNeighbour(layout, _size, paneId, axis, side) {
     const root = layout.root;
     if (!isScrollRoot(root)) return false;
     return columnHasNeighbour(root, paneId, axis, side);
   },
 
-  // The scroll-into-view half of a focus move: the pure transform above, which
-  // setFocus calls right after any operation that moves focus. Also the hook
-  // that rescales column widths when the pane host's cell count changed.
   ensureVisible: scrollIntoView,
 };
+
+export const niriTilingAlgorithm = tilingAlgorithmFromMethods(niriTilingMethods);
 
 /** Insert `pane` into an existing column node (a lone pane or a vertical
  *  split), before/after `atPaneId`. Null when the column isn't a stackable
@@ -741,9 +735,7 @@ function stackIntoColumn(
       direction: "column",
       weight: column.weight,
       children:
-        position === "after"
-          ? [{ ...column, weight: 1 }, leaf]
-          : [leaf, { ...column, weight: 1 }],
+        position === "after" ? [{ ...column, weight: 1 }, leaf] : [leaf, { ...column, weight: 1 }],
     };
   }
   if (column.type !== "split") return null;
@@ -751,11 +743,7 @@ function stackIntoColumn(
     (child) => child.type === "pane" && child.id === atPaneId,
   );
   const children = [...column.children];
-  children.splice(
-    index === -1 ? children.length : index + (position === "after" ? 1 : 0),
-    0,
-    leaf,
-  );
+  children.splice(index === -1 ? children.length : index + (position === "after" ? 1 : 0), 0, leaf);
   return { ...column, children };
 }
 
