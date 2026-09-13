@@ -89,6 +89,7 @@ import {
   SessionSizeError,
   type SessionLease,
   type SessionState,
+  type PersistedSession,
   type SessionPaths,
 } from "./session.ts";
 
@@ -122,9 +123,11 @@ import {
 import { paneAgentSessionSnapshot, type AgentSessionRecord } from "./agent-session.ts";
 import { AgentResumeClaimsLive, AgentResumeClaimsTag } from "./agent-resume.ts";
 import {
+  collectSessionResumePlans,
   paneRestoreStartup,
   PendingAgentResumesLive,
   PendingAgentResumesTag,
+  type ResumePlanCandidate,
 } from "./agent-restore.ts";
 import {
   ForeignHarnessAdaptersTag,
@@ -769,6 +772,10 @@ export const makeDaemonService = Effect.fnUntraced(
           const cur = yield* model.get;
           let next = cur.workspace;
           let changed = false;
+          const restoreEntries: {
+            readonly session: PersistedSession;
+            readonly pane: ReturnType<typeof findPaneBySession>;
+          }[] = [];
           for (const space of next.spaces) {
             if (space.worktree) {
               const exists = yield* Effect.promise(() => gitWorktreeExists(space.worktree!.path));
@@ -786,56 +793,77 @@ export const makeDaemonService = Effect.fnUntraced(
             for (const w of space.windows) {
               for (const a of w.sessions) {
                 if (a.exited || a.kind === "component") continue;
-                const pane = findPaneBySession(next, a.id);
-                // Native agent resume: park the plan until a client resize
-                // settles geometry. Spawning at persisted cols/rows now would
-                // lay the transcript out at the wrong width (herdr's gate).
-                const startup = paneRestoreStartup(pane?.agentSession, undefined, {
-                  resumeEnabled: true,
-                  claims: resumeClaims,
-                  adapters: foreignHarnessAdapters,
+                restoreEntries.push({
+                  session: a,
+                  pane: findPaneBySession(next, a.id),
                 });
-                if (Option.isSome(startup.restorePlan)) {
-                  pendingResumes.enqueue({
-                    sessionId: a.id,
-                    paneId: pane?.id,
-                    cwd: a.cwd,
-                    plan: startup.restorePlan.value,
-                    extras:
-                      a.declaredAgent === undefined
-                        ? { kind: "pty" as const, rpcPath: paths.socket, daemonSession: id }
-                        : {
-                            kind: "pty" as const,
-                            rpcPath: paths.socket,
-                            daemonSession: id,
-                            declaredAgent: a.declaredAgent,
-                          },
-                  });
-                  continue;
-                }
-                const spec = {
-                  kind: a.kind,
-                  id: a.id,
-                  cmd: a.cmd ?? [],
-                  cwd: a.cwd,
-                  rpcPath: paths.socket,
-                  daemonSession: id,
-                  cols: a.cols,
-                  rows: a.rows,
-                };
-                const withEnv = a.env === undefined ? spec : { ...spec, env: a.env };
-                const withAgent =
-                  a.declaredAgent === undefined ? withEnv : { ...withEnv, agent: a.declaredAgent };
-                const finalSpec = pane === null ? withAgent : { ...withAgent, paneId: pane.id };
-                yield* rawSpawn(finalSpec, host).pipe(
-                  Effect.catch((error) => {
-                    next = markSessionUnavailable(next, a.id, describe(error));
-                    changed = true;
-                    return Effect.void;
-                  }),
-                );
               }
             }
+          }
+          const planCandidates: ResumePlanCandidate[] = [];
+          for (const { session, pane } of restoreEntries) {
+            if (pane?.agentSession !== undefined) {
+              planCandidates.push({ sessionId: session.id, snapshot: pane.agentSession });
+            }
+          }
+          // Ask adapters before the spawn loop so a future plugin-host socket
+          // round trip stays off the claim-order path. Claims still run below
+          // in loop order so the first pane wins.
+          const plansBySession = yield* collectSessionResumePlans(
+            planCandidates,
+            foreignHarnessAdapters,
+          );
+          for (const { session: a, pane } of restoreEntries) {
+            // Native agent resume: park the plan until a client resize
+            // settles geometry. Spawning at persisted cols/rows now would
+            // lay the transcript out at the wrong width (herdr's gate).
+            const startup = paneRestoreStartup(
+              undefined,
+              plansBySession.get(a.id) ?? Option.none(),
+              {
+                resumeEnabled: true,
+                claims: resumeClaims,
+              },
+            );
+            if (Option.isSome(startup.restorePlan)) {
+              pendingResumes.enqueue({
+                sessionId: a.id,
+                paneId: pane?.id,
+                cwd: a.cwd,
+                plan: startup.restorePlan.value,
+                extras:
+                  a.declaredAgent === undefined
+                    ? { kind: "pty" as const, rpcPath: paths.socket, daemonSession: id }
+                    : {
+                        kind: "pty" as const,
+                        rpcPath: paths.socket,
+                        daemonSession: id,
+                        declaredAgent: a.declaredAgent,
+                      },
+              });
+              continue;
+            }
+            const spec = {
+              kind: a.kind,
+              id: a.id,
+              cmd: a.cmd ?? [],
+              cwd: a.cwd,
+              rpcPath: paths.socket,
+              daemonSession: id,
+              cols: a.cols,
+              rows: a.rows,
+            };
+            const withEnv = a.env === undefined ? spec : { ...spec, env: a.env };
+            const withAgent =
+              a.declaredAgent === undefined ? withEnv : { ...withEnv, agent: a.declaredAgent };
+            const finalSpec = pane === null ? withAgent : { ...withAgent, paneId: pane.id };
+            yield* rawSpawn(finalSpec, host).pipe(
+              Effect.catch((error) => {
+                next = markSessionUnavailable(next, a.id, describe(error));
+                changed = true;
+                return Effect.void;
+              }),
+            );
           }
           const newState = yield* workspaceSession(next, cur.state);
           if (changed) yield* persist(newState);

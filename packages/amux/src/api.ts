@@ -75,6 +75,7 @@ export {
   ForeignHarnessAdaptersTag,
   ForeignHarnessAdapterTable,
   ForeignHarnessHookError,
+  ForeignHarnessPlanResumeError,
   makeForeignHarnessAdapters,
   registerForeignHarnessAdapter,
   type ForeignHarnessAdapter,
@@ -84,10 +85,18 @@ export {
 export {
   planResumeWithForm,
   agentResumeDedupeKey,
+  PLAN_RESUME_TIMEOUT_MS,
+  askPlanResume,
+  AgentResumePlanSchema,
   type AgentResumePlan,
   type ResumeArgvForm,
 } from "./agent-resume.ts";
-export type { AgentSessionRef, AgentSessionRefKind, OfficialAgentSource } from "./agent-session.ts";
+export {
+  AgentSessionRefSchema,
+  type AgentSessionRef,
+  type AgentSessionRefKind,
+  type OfficialAgentSource,
+} from "./agent-session.ts";
 export type { TilingAlgorithm, TilingAlgorithmMethods } from "./tiling-algorithm.ts";
 export { tilingAlgorithmFromMethods, TilingAlgorithmError } from "./tiling-algorithm.ts";
 export {

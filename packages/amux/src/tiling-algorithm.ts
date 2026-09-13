@@ -220,12 +220,14 @@ export const invokeTilingAlgorithm = (
   operation: TilingOperation,
 ): Effect.Effect<TilingAnswer, TilingAlgorithmError> =>
   algorithm.run(operation).pipe(
-    Effect.timeout(Duration.millis(PLUGIN_TILING_TIMEOUT_MS)),
-    Effect.mapError(
-      (error) =>
-        new TilingAlgorithmError({
-          algorithm: algorithm.id,
-          message: errorMessage(error) || "timed out",
-        }),
-    ),
+    Effect.timeoutOrElse({
+      duration: Duration.millis(PLUGIN_TILING_TIMEOUT_MS),
+      orElse: () =>
+        Effect.fail(
+          new TilingAlgorithmError({
+            algorithm: algorithm.id,
+            message: `timed out after ${PLUGIN_TILING_TIMEOUT_MS}ms`,
+          }),
+        ),
+    }),
   );

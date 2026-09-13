@@ -22,12 +22,22 @@ export class ForeignHarnessHookError extends S.TaggedError<ForeignHarnessHookErr
   { message: S.String },
 ) {}
 
+export class ForeignHarnessPlanResumeError extends S.TaggedError<ForeignHarnessPlanResumeError>()(
+  "ForeignHarnessPlanResumeError",
+  {
+    adapter: S.String,
+    message: S.String,
+  },
+) {}
+
 export type ForeignHarnessAdapter = {
   readonly id: string;
   readonly source: OfficialAgentSource;
   readonly label: string;
   readonly integrationVersion: number;
-  readonly planResume: (ref: AgentSessionRef) => Option<AgentResumePlan>;
+  readonly planResume: (
+    ref: AgentSessionRef,
+  ) => Effect.Effect<Option<AgentResumePlan>, ForeignHarnessPlanResumeError>;
   readonly hooks: {
     readonly install: (
       home?: string,
@@ -38,7 +48,7 @@ export type ForeignHarnessAdapter = {
   };
 };
 
-/** Sync lookup restore uses — no Effect context on the startup path. */
+/** Lookup table for registered foreign-harness adapters (daemon and CLI each own one). */
 export type ForeignHarnessAdapterLookup = {
   readonly bySource: (source: string) => ForeignHarnessAdapter | undefined;
   readonly byId: (id: string) => ForeignHarnessAdapter | undefined;

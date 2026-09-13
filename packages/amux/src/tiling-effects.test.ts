@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Duration, Effect, Exit, Fiber, Logger, Schema as S } from "effect";
+import { Duration, Effect, Exit, Fiber, Schema as S } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { command } from "./commands.ts";
 import { nodePath } from "./effect/node-path.ts";
@@ -24,6 +24,7 @@ import {
 } from "./workspace.ts";
 import { niriTilingMethods } from "../../plugin-niri/src/niri.ts";
 import type { SessionState } from "./session.ts";
+import { withCollectingLogger } from "./test-logger.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const path = run(nodePath);
@@ -85,20 +86,6 @@ const apply = (
   cmd: ReturnType<typeof command>,
   algorithm = defaultTilingAlgorithm,
 ) => run(applyWorkspaceCommand(workspace, cmd, context, path, undefined, algorithm));
-
-const withCollectingLogger = <A, E>(effect: Effect.Effect<A, E>, sink: string[]) =>
-  effect.pipe(
-    Effect.withLogger(
-      Logger.make(({ message }) => {
-        const text = Array.isArray(message)
-          ? message.map(String).join(" ")
-          : typeof message === "string"
-            ? message
-            : String(message);
-        sink.push(text);
-      }),
-    ),
-  );
 
 test("a failing plugin algorithm falls back to the default result and warns", () => {
   let workspace = run(workspaceFromSession(paneBase()));

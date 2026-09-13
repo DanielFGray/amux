@@ -10,7 +10,7 @@
  *    the first client size after restore (herdr waits for layout area > 0 and
  *    geometry_dirty=false).
  */
-import { Context, Layer, Option } from "effect";
+import { Context, Effect, Layer, Option } from "effect";
 import {
   planAgentResumeFromSnapshot,
   type AgentResumeClaims,
@@ -32,26 +32,26 @@ export type PaneRestoreStartup = {
 export type AgentRestoreOptions = {
   readonly resumeEnabled: boolean;
   readonly claims: AgentResumeClaims;
-  readonly adapters: ForeignHarnessAdapterLookup;
 };
 
 /**
  * Decide plan + history for one pane. Mirrors herdr
  * `persist/restore.rs::pane_restore_startup`.
+ *
+ * `planned` is the already-computed adapter answer (none when there was no
+ * snapshot, resume was skipped, or the adapter failed/timed out). Claims stay
+ * here so loop order still decides which pane wins a shared conversation.
  */
 export const paneRestoreStartup = (
-  session: PaneAgentSessionSnapshot | undefined,
   history: string | undefined,
+  planned: Option.Option<AgentResumePlan>,
   options: AgentRestoreOptions,
 ): PaneRestoreStartup => {
-  const planned =
-    session !== undefined && options.resumeEnabled
-      ? planAgentResumeFromSnapshot(session, options.adapters)
-      : Option.none();
+  const usable = options.resumeEnabled ? planned : Option.none();
   // Suppress history whenever a plan *could* be taken — including when this
   // pane loses the dedupe race. The agent (or the winning pane) owns redraw.
-  const hasNativeAgentRestore = Option.isSome(planned);
-  const taken = planned.pipe(Option.flatMap((plan) => options.claims.take(plan)));
+  const hasNativeAgentRestore = Option.isSome(usable);
+  const taken = usable.pipe(Option.flatMap((plan) => options.claims.take(plan)));
   const duplicateAgentSession = hasNativeAgentRestore && Option.isNone(taken);
 
   return {
@@ -62,6 +62,29 @@ export const paneRestoreStartup = (
     reservedDedupeKey: taken.pipe(Option.map((plan) => plan.dedupeKey)),
   };
 };
+
+export type ResumePlanCandidate = {
+  readonly sessionId: string;
+  readonly snapshot: PaneAgentSessionSnapshot;
+};
+
+/**
+ * Ask every restore candidate for a plan concurrently. Each call carries the
+ * {@link planAgentResumeFromSnapshot} time budget and failure rule; results are
+ * keyed by session id for the later claim loop.
+ */
+export const collectSessionResumePlans = (
+  candidates: readonly ResumePlanCandidate[],
+  adapters: ForeignHarnessAdapterLookup,
+): Effect.Effect<ReadonlyMap<string, Option.Option<AgentResumePlan>>> =>
+  Effect.forEach(
+    candidates,
+    ({ sessionId, snapshot }) =>
+      planAgentResumeFromSnapshot(snapshot, adapters).pipe(
+        Effect.map((plan) => [sessionId, plan] as const),
+      ),
+    { concurrency: "unbounded" },
+  ).pipe(Effect.map((entries) => new Map(entries)));
 
 export type PendingAgentResume = {
   readonly sessionId: string;

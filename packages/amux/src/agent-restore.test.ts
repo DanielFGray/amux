@@ -1,41 +1,42 @@
 import { expect, test } from "bun:test";
-import { Option } from "effect";
-import { AgentResumeClaimSet } from "./agent-resume.ts";
+import { Duration, Effect, Exit, Fiber, Layer, Option } from "effect";
+import * as TestClock from "effect/testing/TestClock";
+import { AgentResumeClaimSet, PLAN_RESUME_TIMEOUT_MS } from "./agent-resume.ts";
 import {
+  collectSessionResumePlans,
   paneRestoreStartup,
   PendingAgentResumeScheduler,
   type PendingAgentResume,
 } from "./agent-restore.ts";
-import { ForeignHarnessAdapterTable } from "./foreign-harness.ts";
+import {
+  ForeignHarnessAdapterTable,
+  ForeignHarnessPlanResumeError,
+  type ForeignHarnessAdapter,
+} from "./foreign-harness.ts";
 import { claudeAdapter } from "../../plugin-agent-continuity/src/adapters/claude.ts";
+import { testEffect } from "./test-effect.ts";
+import { withCollectingLogger } from "./test-logger.ts";
 
-const adapters = new ForeignHarnessAdapterTable();
-adapters.register(claudeAdapter);
+const { effect: testClockEffect } = testEffect(Layer.empty);
 
-const claudeSnapshot = {
-  source: "amux:claude",
+const claudePlan = {
   agent: "claude",
-  kind: "id" as const,
-  value: "claude-session",
+  argv: ["claude", "--resume", "claude-session"],
+  dedupeKey: "amux:claude\0claude\0id\0claude-session",
 };
 
 const pending = (sessionId: string): PendingAgentResume => ({
   sessionId,
   paneId: `pane-${sessionId}`,
   cwd: "/tmp",
-  plan: {
-    agent: "claude",
-    argv: ["claude", "--resume", "claude-session"],
-    dedupeKey: "amux:claude\0claude\0id\0claude-session",
-  },
+  plan: claudePlan,
 });
 
 test("paneRestoreStartup suppresses history when a native resume plan exists", () => {
   const claims = new AgentResumeClaimSet();
-  const startup = paneRestoreStartup(claudeSnapshot, "RESTORED_HISTORY\r\n", {
+  const startup = paneRestoreStartup("RESTORED_HISTORY\r\n", Option.some(claudePlan), {
     resumeEnabled: true,
     claims,
-    adapters,
   });
   expect(Option.isSome(startup.restorePlan)).toBe(true);
   expect(Option.getOrThrow(startup.restorePlan).argv).toEqual([
@@ -49,15 +50,13 @@ test("paneRestoreStartup suppresses history when a native resume plan exists", (
 
 test("paneRestoreStartup suppresses history for a duplicate native agent session too", () => {
   const claims = new AgentResumeClaimSet();
-  const first = paneRestoreStartup(claudeSnapshot, "RESTORED_HISTORY\r\n", {
+  const first = paneRestoreStartup("RESTORED_HISTORY\r\n", Option.some(claudePlan), {
     resumeEnabled: true,
     claims,
-    adapters,
   });
-  const duplicate = paneRestoreStartup(claudeSnapshot, "RESTORED_HISTORY\r\n", {
+  const duplicate = paneRestoreStartup("RESTORED_HISTORY\r\n", Option.some(claudePlan), {
     resumeEnabled: true,
     claims,
-    adapters,
   });
   expect(Option.isSome(first.restorePlan)).toBe(true);
   expect(Option.isNone(first.initialHistory)).toBe(true);
@@ -68,10 +67,9 @@ test("paneRestoreStartup suppresses history for a duplicate native agent session
 
 test("paneRestoreStartup keeps history when resume is disabled", () => {
   const claims = new AgentResumeClaimSet();
-  const startup = paneRestoreStartup(claudeSnapshot, "RESTORED_HISTORY\r\n", {
+  const startup = paneRestoreStartup("RESTORED_HISTORY\r\n", Option.some(claudePlan), {
     resumeEnabled: false,
     claims,
-    adapters,
   });
   expect(Option.isNone(startup.restorePlan)).toBe(true);
   expect(Option.getOrNull(startup.initialHistory)).toBe("RESTORED_HISTORY\r\n");
@@ -81,10 +79,9 @@ test("paneRestoreStartup keeps history when resume is disabled", () => {
 
 test("paneRestoreStartup keeps history for a plain shell pane (no agent session)", () => {
   const claims = new AgentResumeClaimSet();
-  const startup = paneRestoreStartup(undefined, "shell-history\r\n", {
+  const startup = paneRestoreStartup("shell-history\r\n", Option.none(), {
     resumeEnabled: true,
     claims,
-    adapters,
   });
   expect(Option.isNone(startup.restorePlan)).toBe(true);
   expect(Option.getOrNull(startup.initialHistory)).toBe("shell-history\r\n");
@@ -119,3 +116,97 @@ test("takeAllReady drains every pending resume under one geometry", () => {
   expect(ready.map((entry) => entry.sessionId).sort()).toEqual(["a", "b"]);
   expect(queue.sessionIds()).toEqual([]);
 });
+
+testEffect("collectSessionResumePlans: a failing adapter leaves that session with no plan", () =>
+  Effect.gen(function* () {
+    const table = new ForeignHarnessAdapterTable();
+    const selective: ForeignHarnessAdapter = {
+      ...claudeAdapter,
+      planResume: (ref) =>
+        ref.value === "fail-sess"
+          ? Effect.fail(
+              new ForeignHarnessPlanResumeError({
+                adapter: "claude",
+                message: "adapter exploded",
+              }),
+            )
+          : claudeAdapter.planResume(ref),
+    };
+    table.register(selective);
+    const logs: string[] = [];
+    const plans = yield* withCollectingLogger(
+      collectSessionResumePlans(
+        [
+          {
+            sessionId: "s-fail",
+            snapshot: {
+              source: "amux:claude",
+              agent: "claude",
+              kind: "id",
+              value: "fail-sess",
+            },
+          },
+          {
+            sessionId: "s-ok",
+            snapshot: {
+              source: "amux:claude",
+              agent: "claude",
+              kind: "id",
+              value: "ok-sess",
+            },
+          },
+        ],
+        table,
+      ),
+      logs,
+    );
+    expect(Option.isNone(plans.get("s-fail") ?? Option.none())).toBe(true);
+    expect(Option.isSome(plans.get("s-ok") ?? Option.none())).toBe(true);
+    expect(logs.some((line) => line.includes("claude") && line.includes("fail-sess"))).toBe(true);
+  }),
+);
+
+testClockEffect("collectSessionResumePlans: a hanging adapter hits the time limit", () =>
+  Effect.gen(function* () {
+    const table = new ForeignHarnessAdapterTable();
+    const hanging: ForeignHarnessAdapter = {
+      ...claudeAdapter,
+      planResume: () =>
+        Effect.sleep(Duration.minutes(1)).pipe(
+          Effect.as(
+            Option.some({
+              agent: "claude",
+              argv: ["claude", "--resume", "late"],
+              dedupeKey: "never",
+            }),
+          ),
+        ),
+    };
+    table.register(hanging);
+    const logs: string[] = [];
+    const fiber = yield* withCollectingLogger(
+      collectSessionResumePlans(
+        [
+          {
+            sessionId: "s-late",
+            snapshot: {
+              source: "amux:claude",
+              agent: "claude",
+              kind: "id",
+              value: "late-sess",
+            },
+          },
+        ],
+        table,
+      ),
+      logs,
+    ).pipe(Effect.exit, Effect.forkChild);
+    yield* TestClock.adjust(Duration.millis(PLAN_RESUME_TIMEOUT_MS));
+    const result = yield* Fiber.join(fiber);
+    expect(Exit.isSuccess(result)).toBe(true);
+    if (Exit.isSuccess(result)) {
+      expect(Option.isNone(result.value.get("s-late") ?? Option.none())).toBe(true);
+    }
+    expect(logs.some((line) => line.includes("claude") && line.includes("late-sess"))).toBe(true);
+  }),
+);
