@@ -12,8 +12,8 @@
  * The data model lives in `./schema.ts`; this file owns the reducer.
  */
 import type { KeyEvent } from "@opentui/core";
-import { pathToFiletype } from "@opentui/core";
 import { Option } from "effect";
+import type { Grammar } from "@danielfgray/amux-highlight";
 import { BUILTIN_COMMANDS, resolveCommand, type RegisteredCommand } from "./api.ts";
 import {
   adjustCursorPastEol,
@@ -184,6 +184,7 @@ export function initialEditor(): EditorState {
     nomodifiable: false,
     command: "",
     file: null,
+    grammar: null,
     generation: null,
     dirty: false,
     message: null,
@@ -251,6 +252,7 @@ export function reduceEditor(
         buffer,
         cursor,
         file: event.file,
+        grammar: null,
         generation: event.generation ?? null,
         dirty: false,
         command: "",
@@ -593,10 +595,8 @@ const armSurround = (state: EditorState, kind: OperatorKind, count: number): Edi
   return { ...cleared, pendingSurround: { mode: "change", phase: "old" } };
 };
 
-const filetypeOf = (state: EditorState): Option.Option<string> => {
-  if (state.file === null) return Option.none();
-  return Option.fromNullishOr(pathToFiletype(state.file));
-};
+const grammarOf = (state: EditorState): Option.Option<Grammar> =>
+  Option.fromNullishOr(state.grammar);
 
 const applySurroundEdit = (
   state: EditorState,
@@ -711,7 +711,7 @@ const finishTagPrompt = (
       recorded.cursor,
       "t",
       pending.name,
-      filetypeOf(recorded),
+      grammarOf(recorded),
     ),
     "no surrounding tag",
   );
@@ -841,7 +841,7 @@ const finishSurroundDelete = (state: EditorState, key: KeyEvent): EditorState =>
   const recorded = appendChangeKey(state, char);
   return applySurroundEdit(
     recorded,
-    deleteSurround(linesOf(recorded.buffer), recorded.cursor, char, filetypeOf(recorded)),
+    deleteSurround(linesOf(recorded.buffer), recorded.cursor, char, grammarOf(recorded)),
     char === "t" ? "no surrounding tag" : `no surrounding ${char}`,
   );
 };
@@ -852,7 +852,7 @@ const finishSurroundChange = (state: EditorState, old: string, key: KeyEvent): E
   const recorded = appendChangeKey(state, char);
   return applySurroundEdit(
     recorded,
-    changeSurround(linesOf(recorded.buffer), recorded.cursor, old, char, filetypeOf(recorded)),
+    changeSurround(linesOf(recorded.buffer), recorded.cursor, old, char, grammarOf(recorded)),
     `no surrounding ${old}`,
   );
 };
@@ -1763,7 +1763,7 @@ function textObjectRange(state: EditorState, symbol: string, inner: boolean): Mo
   if (symbol === "s") return sentence(state, inner);
   if (symbol === "t") {
     return Option.getOrNull(
-      tagTextObjectRange(linesOf(state.buffer), state.cursor, filetypeOf(state), inner),
+      tagTextObjectRange(linesOf(state.buffer), state.cursor, grammarOf(state), inner),
     );
   }
   // Brackets/quotes: open or close form (`i)` ≡ `i(`). Multi-line brackets via

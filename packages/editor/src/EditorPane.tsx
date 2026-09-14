@@ -61,7 +61,12 @@ import { fileArgCompletion, fileCompletionItems, splitPathPrefix } from "./comma
 import { editReplaceLines, linesOf, rowCount, textOf } from "./buffer-state.ts";
 import { finishChange, startChange } from "./history.ts";
 import { fitViewport } from "./vim-slices.ts";
-import type { HighlightProviderService, LineChunks } from "@danielfgray/amux-highlight";
+import type {
+  HighlightProviderService,
+  LineChunks,
+  TreeSitterService,
+} from "@danielfgray/amux-highlight";
+import { pathToFiletype } from "@opentui/core";
 import {
   InlinePicker,
   filterEntries,
@@ -140,6 +145,12 @@ export interface EditorViewProps extends PaneViewProps {
    *  when tests mount the view directly without highlighting — the pane then
    *  renders plain text. */
   readonly highlight?: HighlightProviderService;
+  /**
+   * Structural TreeSitter service for tag textobjects / surround. Required on
+   * the editor path — web-tree-sitter is a declared dependency; a missing
+   * runtime wasm fails plugin activation rather than soft-disabling tags.
+   */
+  readonly treeSitter: TreeSitterService;
   /** LSP document + server services when `amux.lsp` is loaded. Soft-get at
    *  call time — activation order must not freeze "absent" for the pane's life
    *  (ts-e56b4e). */
@@ -655,6 +666,58 @@ function createEditorBuffer(props: EditorViewProps) {
     });
   };
 
+  /** Load the structural grammar for the buffer's filetype on open so tag
+   *  textobjects / surround stay sync on the keypress path. */
+  const syncStructure = (prev: EditorState, next: EditorState): Effect.Effect<void> => {
+    if (next.file === null) {
+      if (prev.grammar !== null) {
+        return store.update((s) => (s.grammar === null ? s : { ...s, grammar: null }));
+      }
+      return Effect.void;
+    }
+    if (next.file === prev.file && next.grammar !== null) return Effect.void;
+    const filetype = pathToFiletype(next.file);
+    if (filetype === undefined) {
+      return store.update((s) =>
+        s.file === next.file && s.grammar !== null ? { ...s, grammar: null } : s,
+      );
+    }
+    const opened = next.file;
+    return props.treeSitter.grammar(filetype).pipe(
+      Effect.flatMap((grammar) => store.update((s) => (s.file === opened ? { ...s, grammar } : s))),
+      Effect.catchTags({
+        // No wasm for this filetype — tag ops stay no-ops; not an error.
+        GrammarSourceMissing: () =>
+          store.update((s) =>
+            s.file === opened && s.grammar !== null ? { ...s, grammar: null } : s,
+          ),
+        GrammarDownloadFailed: (error) =>
+          store.update((s) =>
+            s.file !== opened
+              ? s
+              : {
+                  ...s,
+                  grammar: null,
+                  message:
+                    error.status === undefined
+                      ? `grammar download failed: ${error.grammar}`
+                      : `grammar download failed: ${error.grammar} (${error.status})`,
+                },
+          ),
+        GrammarWasmLoadFailed: (error) =>
+          store.update((s) =>
+            s.file !== opened
+              ? s
+              : {
+                  ...s,
+                  grammar: null,
+                  message: `grammar load failed: ${error.grammar}`,
+                },
+          ),
+      }),
+    );
+  };
+
   /** Close the provider buffer and clear the screen's colors. Used on `:q`,
    *  `:wq`, and unmount. */
   function forgetFile(): Effect.Effect<void> {
@@ -675,6 +738,7 @@ function createEditorBuffer(props: EditorViewProps) {
       yield* store.update(f);
       const next = yield* store.get;
       yield* syncHighlight(prev, next);
+      yield* syncStructure(prev, next);
       yield* syncLsp(prev, next);
     });
 

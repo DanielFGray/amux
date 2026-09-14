@@ -2,11 +2,11 @@
  * HTML/JSX tag locations via in-process tree-sitter.
  *
  * Maps grammar nodes (`jsx_element` / `element`) to the same open/close
- * spans surround.ts already edits. Filetype must already be warm —
- * `ensureGrammar(filetype)` on file open — so findTagAt stays sync.
+ * spans surround.ts already edits. Callers pass a loaded Grammar — none
+ * means findTagAt stays a no-op (grammar still loading or unavailable).
  */
 import { Match, Option } from "effect";
-import { nodeAt, parseStructure, type StructureNode } from "@danielfgray/amux-highlight";
+import { type Grammar, type StructureNode } from "@danielfgray/amux-highlight";
 import type { Cursor } from "./schema.ts";
 import type { MotionRange } from "./motions.ts";
 
@@ -133,20 +133,19 @@ const isElementType = (type: string): boolean =>
 
 /**
  * Innermost HTML/JSX element containing the cursor.
- * None when the grammar is unloaded or no element wraps the point.
+ * None when no grammar is loaded or no element wraps the point.
  */
 export function findTagAt(
   lines: readonly string[],
   cursor: Cursor,
-  filetype: Option.Option<string>,
+  grammar: Option.Option<Grammar>,
 ): Option.Option<TagMatch> {
-  return Option.flatMap(
-    Option.filter(filetype, (ft) => ft.length > 0),
-    (ft) => {
-      const content = lines.join("\n");
-      const tree = parseStructure(content, ft);
-      if (tree === null) return Option.none();
-      const node = nodeAt(tree, cursor.row, cursor.col);
+  return Option.flatMap(grammar, (g) => {
+    const content = lines.join("\n");
+    const tree = g.parse(content);
+    if (tree === null) return Option.none();
+    try {
+      const node = tree.nodeAt(cursor.row, cursor.col);
       if (node === null) return Option.none();
       for (const ancestor of node.ancestors()) {
         if (!isElementType(ancestor.type)) continue;
@@ -154,8 +153,10 @@ export function findTagAt(
         if (Option.isSome(match)) return match;
       }
       return Option.none();
-    },
-  );
+    } finally {
+      tree.delete();
+    }
+  });
 }
 
 /** tpope-style tag delimiters from the typed prompt (text before `>`). */
@@ -174,10 +175,10 @@ export function tagDelimiters(input: string): Option.Option<{ open: string; clos
 export function tagTextObjectRange(
   lines: readonly string[],
   cursor: Cursor,
-  filetype: Option.Option<string>,
+  grammar: Option.Option<Grammar>,
   inner: boolean,
 ): Option.Option<MotionRange> {
-  return Option.flatMap(findTagAt(lines, cursor, filetype), (match) => {
+  return Option.flatMap(findTagAt(lines, cursor, grammar), (match) => {
     if (inner) {
       if (match.selfClosing) return Option.none();
       if (

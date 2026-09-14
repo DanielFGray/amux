@@ -7,6 +7,7 @@
  * use the open form (`(`, `{`, `[`); the close form omits spaces.
  */
 import { Match, Option } from "effect";
+import type { Grammar } from "@danielfgray/amux-highlight";
 import type { Cursor } from "./schema.ts";
 import type { MotionRange } from "./motions.ts";
 import { findTagAt, tagDelimiters } from "./tags.ts";
@@ -266,15 +267,15 @@ export function addTagSurround(
   );
 }
 
-/** Remove the surrounding pair for `target`. `t` uses tree-sitter when filetype is set. */
+/** Remove the surrounding pair for `target`. `t` uses tree-sitter when a grammar is loaded. */
 export function deleteSurround(
   lines: readonly string[],
   cursor: Cursor,
   target: string,
-  filetype: Option.Option<string> = Option.none(),
+  grammar: Option.Option<Grammar> = Option.none(),
 ): Option.Option<SurroundEdit> {
   if (target === "t") {
-    return Option.flatMap(findTagAt(lines, cursor, filetype), (tag) =>
+    return Option.flatMap(findTagAt(lines, cursor, grammar), (tag) =>
       tag.selfClosing
         ? Option.none()
         : Option.some(
@@ -298,10 +299,10 @@ export function changeSurround(
   cursor: Cursor,
   oldTarget: string,
   newTarget: string,
-  filetype: Option.Option<string> = Option.none(),
+  grammar: Option.Option<Grammar> = Option.none(),
 ): Option.Option<SurroundEdit> {
   if (oldTarget === "t") {
-    return Option.flatMap(findTagAt(lines, cursor, filetype), (tag) => {
+    return Option.flatMap(findTagAt(lines, cursor, grammar), (tag) => {
       if (tag.selfClosing) return Option.none();
       const fromTag =
         newTarget.length > 1 || newTarget === "t" ? tagDelimiters(newTarget) : Option.none();

@@ -17,6 +17,7 @@
  */
 import { Schema as S } from "effect";
 import type { KeyEvent } from "@opentui/core";
+import type { Grammar } from "@danielfgray/amux-highlight";
 import type { TextBuffer, TextEdit } from "@danielfgray/amux-text-buffer";
 import type { CmdAtom } from "./cmd-atom.ts";
 import type { ChangeList, JumpList } from "./jumps.ts";
@@ -293,6 +294,11 @@ export type EditorState = {
   readonly nomodifiable: boolean;
   readonly command: string;
   readonly file: string | null;
+  /**
+   * Loaded structural grammar for the current filetype, or null until the
+   * open path finishes TreeSitter.grammar (tag ops then no-op).
+   */
+  readonly grammar: Grammar | null;
   /** Daemon OpenDocumentStore generation; null for scratch / offline buffers. */
   readonly generation: number | null;
   readonly dirty: boolean;

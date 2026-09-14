@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test";
-import { Data, Duration, Effect, Option, Schedule } from "effect";
+import { Context, Data, Duration, Effect, Layer, Option, Schedule } from "effect";
 import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, type CliRenderer, type KeyEvent } from "@opentui/core";
 import { RendererContext, _render } from "@opentui/solid";
@@ -20,12 +20,20 @@ import {
 import type { Command, JsonValue, PaneViewProps } from "@danielfgray/amux";
 import { theme } from "@danielfgray/amux";
 import { createPluginHost, type PluginHost } from "@danielfgray/amux/plugin/host.ts";
+import { BunFileSystem, BunPath } from "@effect/platform-bun";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { editorPlugin, Editor, handleCommandPickerKey } from "./plugin.tsx";
 import { createEditor } from "./api.ts";
 import { EditorPane, type EditorController } from "./EditorPane.tsx";
-import { makeHighlightProvider, type HighlightProviderService } from "@danielfgray/amux-highlight";
+import {
+  makeHighlightProvider,
+  TreeSitter,
+  treeSitterLayer,
+  type HighlightProviderService,
+} from "@danielfgray/amux-highlight";
 import { makeTestEditorIo, type TestEditorIoState } from "./test/io.ts";
 import type { EditorService } from "./api.ts";
+import { linesOf } from "./buffer-state.ts";
 
 const applyHostConfig = (host: PluginHost, entries: Parameters<PluginHost["prepare"]>[0]) =>
   host.prepare(entries).pipe(Effect.tap(() => host.publish));
@@ -37,6 +45,14 @@ type Renderer = Awaited<ReturnType<typeof createTestRenderer>>;
 
 const keystroke = (name: string): KeyEvent =>
   ({ raw: name, sequence: name, name, eventType: "press" }) as KeyEvent;
+
+/** Real TreeSitter into the ambient testEffect Scope (daemon Layer.build). */
+const buildTreeSitter = () =>
+  Layer.build(
+    treeSitterLayer.pipe(
+      Layer.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer)),
+    ),
+  ).pipe(Effect.map((services) => Context.get(services, TreeSitter)));
 
 type Registries = ReturnType<typeof testPluginEnvironment>["registries"];
 
@@ -138,6 +154,7 @@ const mount = (
   editor?: EditorService,
 ) =>
   Effect.gen(function* () {
+    const treeSitter = yield* buildTreeSitter();
     const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
     t.renderer.root.add(paneHost);
     const content = new BoxRenderable(t.renderer, {
@@ -180,6 +197,7 @@ const mount = (
             io={makeTestEditorIo(ioState)}
             editor={editor}
             highlight={highlight}
+            treeSitter={treeSitter}
             registerController={(_paneId, next) => {
               controller = next;
               return () => {
@@ -346,6 +364,7 @@ testEffect(
       captureKeys: () => {},
     };
     const renderer = t.renderer as CliRenderer;
+    const treeSitter = yield* buildTreeSitter();
     const dispose = _render(
       () => (
         <RendererContext.Provider value={renderer}>
@@ -356,6 +375,7 @@ testEffect(
             lineNumbers={() => true}
             keyProfile={() => "cua"}
             io={makeTestEditorIo(ioState)}
+            treeSitter={treeSitter}
           />
         </RendererContext.Provider>
       ),
@@ -663,6 +683,38 @@ testEffect(
             row.spans.some((span) => span.text === "cons" && span.fg.toString() === mauve),
           ),
       "edit re-highlights",
+    );
+  }),
+);
+
+testEffect(
+  "opening a TSX buffer loads grammar so dit works without ensureGrammar",
+  Effect.gen(function* () {
+    const ioState = makeIo("/workspace", {
+      "Widget.tsx": ["<div>", "  hello", "</div>"],
+    });
+    const sent: SentCommand[] = [];
+    const { t } = yield* activate(sent);
+    const { press, controller } = yield* mount(t, ioState, {}, sent);
+    yield* Effect.promise(() => t.renderOnce());
+    for (const name of [":", ..."e Widget.tsx", "return"]) {
+      press(keystroke(name));
+    }
+    yield* waitForFrame(t, () => t.captureCharFrame().includes("hello"), "tsx buffer visible");
+    yield* Effect.promise(() =>
+      waitFor(() => controller()?.state().grammar !== null, "structure grammar loaded"),
+    );
+    for (const name of ["j", "w", "d", "i", "t"]) {
+      press(keystroke(name));
+    }
+    yield* Effect.promise(() =>
+      waitFor(() => {
+        const state = controller()?.state();
+        if (state === undefined) return false;
+        // dit over a multiline jsx_element collapses to one line (same as
+        // vim-core unit coverage for the inner range open-end → close-start).
+        return linesOf(state.buffer).join("\n") === "<div></div>";
+      }, "dit cleared tag inner"),
     );
   }),
 );

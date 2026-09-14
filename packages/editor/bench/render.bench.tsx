@@ -1,10 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 /** @effect-diagnostics *:skip-file -- this benchmark measures the Promise-based OpenTUI render boundary itself. */
 import { expect, test } from "bun:test";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import * as Path from "effect/Path";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { BoxRenderable, type CliRenderer, type KeyEvent } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { RendererContext, _render } from "@opentui/solid";
@@ -12,6 +13,7 @@ import type { PaneViewProps } from "@danielfgray/amux";
 import { createPluginContributions } from "@danielfgray/amux/plugin/contributions.ts";
 import { testPluginEnvironment } from "@danielfgray/amux/testing";
 import { optionalEnvVar } from "@danielfgray/amux/session.ts";
+import { TreeSitter, treeSitterLayer } from "@danielfgray/amux-highlight";
 import { EditorPane, type EditorController } from "../src/EditorPane.tsx";
 import { EditorIo, listEntriesWith, runShellCommand, type EditorIoService } from "../src/io.ts";
 
@@ -62,96 +64,111 @@ const percentile = (sorted: readonly number[], fraction: number): number =>
   sorted[Math.ceil(sorted.length * fraction) - 1]!;
 
 async function measure(file: string, lines: number, io: EditorIoService): Promise<Measurement> {
-  const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
-  const content = new BoxRenderable(t.renderer, {
-    id: "benchmark-content",
-    width: WIDTH,
-    height: HEIGHT,
-  });
-  t.renderer.root.add(content);
-  let controller: EditorController | null = null;
-  const press = (event: KeyEvent) => {
-    if (controller === null) {
-      throw new Error("EditorPane did not register its key handler");
-    }
-    controller.dispatch(event);
-  };
-  const renderer = t.renderer as CliRenderer;
-  const props: PaneViewProps = {
-    sessionId: "",
-    paneId: "benchmark-pane",
-    paneType: "amux.editor",
-    descriptor: { file },
-    width: () => WIDTH,
-    height: () => HEIGHT,
-    active: () => true,
-    copyText: () => {},
-    captureKeys: () => {},
-  };
-  const contributions = createPluginContributions();
-  const views = testPluginEnvironment(t.renderer, { contributions }).registries.sessionViews;
-  const owner = { id: "benchmark", generation: 1 };
-  views.register(owner, "amux.editor", (viewProps) => (
-    <EditorPane
-      {...viewProps}
-      run={() => {}}
-      spaceDir="/"
-      lineNumbers={() => true}
-      keyProfile={() => "vim"}
-      io={io}
-      registerController={(_paneId, next) => {
-        controller = next;
-        return () => {
-          controller = null;
-        };
-      }}
-    />
-  ));
-  contributions.commit(owner);
-  const dispose = _render(
-    () => <RendererContext.Provider value={renderer}>{views.view(props)}</RendererContext.Provider>,
-    content,
+  // ManagedRuntime keeps the Parser alive for the whole measure; a short
+  // Effect.scoped(Layer.build) would finalize before keystrokes run.
+  const treeSitterRuntime = ManagedRuntime.make(
+    treeSitterLayer.pipe(
+      Layer.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer)),
+    ),
   );
-
   try {
-    await t.renderOnce();
-    await waitUntil(() => t.captureCharFrame().includes("line 000000"));
-
-    press(key("i"));
-    await t.renderOnce();
-    await Bun.sleep(20);
-    press(key("x"));
-    await t.renderOnce();
-    await Bun.sleep(20);
-    expect(t.captureCharFrame()).toContain("xexport const line000000");
-    press(key("backspace"));
-    await t.renderOnce();
-    await Bun.sleep(20);
-    expect(t.captureCharFrame()).toContain("export const line000000");
-    expect(t.captureCharFrame()).not.toContain("xexport const line000000");
-    for (let index = 0; index < WARMUP_KEYSTROKES; index++) {
-      press(key(index % 2 === 0 ? "x" : "backspace"));
-      await t.renderOnce();
-    }
-
-    const samples: number[] = [];
-    for (let index = 0; index < MEASURED_KEYSTROKES; index++) {
-      const start = performance.now();
-      press(key(index % 2 === 0 ? "x" : "backspace"));
-      await t.renderOnce();
-      samples.push(performance.now() - start);
-    }
-    samples.sort((left, right) => left - right);
-
-    return {
-      lines,
-      median: percentile(samples, 0.5),
-      p95: percentile(samples, 0.95),
-      mean: samples.reduce((sum, sample) => sum + sample, 0) / samples.length,
+    const treeSitter = await treeSitterRuntime.runPromise(TreeSitter);
+    const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
+    const content = new BoxRenderable(t.renderer, {
+      id: "benchmark-content",
+      width: WIDTH,
+      height: HEIGHT,
+    });
+    t.renderer.root.add(content);
+    let controller: EditorController | null = null;
+    const press = (event: KeyEvent) => {
+      if (controller === null) {
+        throw new Error("EditorPane did not register its key handler");
+      }
+      controller.dispatch(event);
     };
+    const renderer = t.renderer as CliRenderer;
+    const props: PaneViewProps = {
+      sessionId: "",
+      paneId: "benchmark-pane",
+      paneType: "amux.editor",
+      descriptor: { file },
+      width: () => WIDTH,
+      height: () => HEIGHT,
+      active: () => true,
+      copyText: () => {},
+      captureKeys: () => {},
+    };
+    const contributions = createPluginContributions();
+    const views = testPluginEnvironment(t.renderer, { contributions }).registries.sessionViews;
+    const owner = { id: "benchmark", generation: 1 };
+    views.register(owner, "amux.editor", (viewProps) => (
+      <EditorPane
+        {...viewProps}
+        run={() => {}}
+        spaceDir="/"
+        lineNumbers={() => true}
+        keyProfile={() => "vim"}
+        io={io}
+        treeSitter={treeSitter}
+        registerController={(_paneId, next) => {
+          controller = next;
+          return () => {
+            controller = null;
+          };
+        }}
+      />
+    ));
+    contributions.commit(owner);
+    const dispose = _render(
+      () => (
+        <RendererContext.Provider value={renderer}>{views.view(props)}</RendererContext.Provider>
+      ),
+      content,
+    );
+
+    try {
+      await t.renderOnce();
+      await waitUntil(() => t.captureCharFrame().includes("line 000000"));
+
+      press(key("i"));
+      await t.renderOnce();
+      await Bun.sleep(20);
+      press(key("x"));
+      await t.renderOnce();
+      await Bun.sleep(20);
+      expect(t.captureCharFrame()).toContain("xexport const line000000");
+      press(key("backspace"));
+      await t.renderOnce();
+      await Bun.sleep(20);
+      expect(t.captureCharFrame()).toContain("export const line000000");
+      expect(t.captureCharFrame()).not.toContain("xexport const line000000");
+      for (let index = 0; index < WARMUP_KEYSTROKES; index++) {
+        press(key(index % 2 === 0 ? "x" : "backspace"));
+        await t.renderOnce();
+      }
+
+      const samples: number[] = [];
+      for (let index = 0; index < MEASURED_KEYSTROKES; index++) {
+        const start = performance.now();
+        press(key(index % 2 === 0 ? "x" : "backspace"));
+        await t.renderOnce();
+        samples.push(performance.now() - start);
+      }
+      samples.sort((left, right) => left - right);
+
+      return {
+        lines,
+        median: percentile(samples, 0.5),
+        p95: percentile(samples, 0.95),
+        mean: samples.reduce((sum, sample) => sum + sample, 0) / samples.length,
+      };
+    } finally {
+      dispose();
+      t.renderer.destroy();
+    }
   } finally {
-    dispose();
-    t.renderer.destroy();
+    await treeSitterRuntime.dispose();
   }
 }
 

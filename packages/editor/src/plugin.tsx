@@ -1,11 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal } from "solid-js";
-import { Effect, Layer, Option } from "effect";
+import { Context, Effect, Layer, Option } from "effect";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import type { KeyEvent } from "@opentui/core";
-import { definePlugin, type PluginDefinition } from "@danielfgray/amux";
+import { definePlugin, PluginActivateError, type PluginDefinition } from "@danielfgray/amux";
 import { openDocument, writeDocument } from "@danielfgray/amux/document-client.ts";
 import { optionalEnvVar } from "@danielfgray/amux/session.ts";
 import {
@@ -75,10 +75,12 @@ export function handleCommandPickerKey(
 }
 import {
   discoverCachedParsers,
-  ensureStructure,
   HighlightProvider,
   makeHighlightProvider,
+  TreeSitter,
+  treeSitterLayer,
 } from "@danielfgray/amux-highlight";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { builtInCatalog, DocumentService, LspService } from "@danielfgray/amux-plugin-lsp";
 import type { EditorLspServices } from "./lsp-bridge.ts";
 import { createEditor, Editor } from "./api.ts";
@@ -224,10 +226,24 @@ export const editorPlugin: PluginDefinition = definePlugin({
       );
       ctx.provide(HighlightProvider, highlight);
 
-      // Structural parse runtime only — grammars load on demand per filetype
-      // when a buffer opens (EditorPane → ensureGrammar). Soft-fail: tag ops
-      // degrade to "no surrounding tag" until a grammar is ready.
-      yield* Effect.promise(() => ensureStructure().catch(() => undefined));
+      // Structural parse: scoped Parser + on-demand grammars. Build into the
+      // plugin Scope (not a short Effect.provide) so the Parser finalizer
+      // runs on unload, not when this yield completes — cite daemon.ts
+      // Layer.build + Context.get. Runtime wasm is a declared dependency;
+      // failure is PluginActivateError (host emitError on activate).
+      const treeSitter = yield* Layer.build(
+        treeSitterLayer.pipe(
+          Layer.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer)),
+        ),
+      ).pipe(
+        Effect.map((services) => Context.get(services, TreeSitter)),
+        Effect.mapError(
+          (error) =>
+            new PluginActivateError({
+              message: `tree-sitter runtime unavailable (${error.path})`,
+            }),
+        ),
+      );
 
       // amux.lsp/amux.search are optional peers, not declared `inject`s (the
       // editor must load standalone without them) — so the loader gives no
@@ -987,6 +1003,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
             session={session}
             editor={editor}
             highlight={highlight}
+            treeSitter={treeSitter}
             lsp={getLsp}
             lspUi={lspUi}
             search={getSearch}

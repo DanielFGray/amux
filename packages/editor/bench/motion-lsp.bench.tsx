@@ -6,10 +6,11 @@
  */
 /** @effect-diagnostics *:skip-file -- Promise OpenTUI render boundary. */
 import { expect, test } from "bun:test";
-import { Effect, Fiber, Layer, Option, Stream } from "effect";
+import { Context, Effect, Fiber, Layer, Option, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import * as Path from "effect/Path";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { BoxRenderable, type CliRenderer, type KeyEvent } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { RendererContext, _render } from "@opentui/solid";
@@ -17,6 +18,7 @@ import type { PaneViewProps } from "@danielfgray/amux";
 import { createPluginContributions } from "@danielfgray/amux/plugin/contributions.ts";
 import { testPluginEnvironment } from "@danielfgray/amux/testing";
 import { optionalEnvVar } from "@danielfgray/amux/session.ts";
+import { TreeSitter, treeSitterLayer } from "@danielfgray/amux-highlight";
 import {
   builtInCatalog,
   type DocumentServiceApi,
@@ -211,6 +213,13 @@ test("hold motions publish zero LSP changes; edit still publishes", () =>
         yield* fs.writeFileString(file, `${source}\n`);
 
         const counting = makeCountingLsp();
+        const treeSitter = yield* Layer.build(
+          treeSitterLayer.pipe(
+            Layer.provide(
+              Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer),
+            ),
+          ),
+        ).pipe(Effect.map((services) => Context.get(services, TreeSitter)));
         const t = yield* Effect.promise(() => createTestRenderer({ width: WIDTH, height: HEIGHT }));
         const content = new BoxRenderable(t.renderer, {
           id: "motion-lsp-content",
@@ -246,6 +255,7 @@ test("hold motions publish zero LSP changes; edit still publishes", () =>
             lineNumbers={() => true}
             keyProfile={() => "vim"}
             io={io}
+            treeSitter={treeSitter}
             lsp={() => counting.services}
             registerController={(_paneId, next) => {
               controller = next;

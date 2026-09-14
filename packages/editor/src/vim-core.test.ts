@@ -1,7 +1,10 @@
 /** @jsxImportSource @opentui/solid */
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
-import { ensureGrammar } from "@danielfgray/amux-highlight";
+import { Effect, Layer, ManagedRuntime } from "effect";
+import { BunFileSystem, BunPath } from "@effect/platform-bun";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import { TreeSitter, treeSitterLayer, type Grammar } from "@danielfgray/amux-highlight";
 import {
   applySurround,
   beginSearch,
@@ -18,6 +21,23 @@ import type { EditorState } from "./schema.ts";
 import { bufferFromLines, linesOf } from "./buffer-state.ts";
 import { seedBuffer } from "./history.ts";
 import { isMapPrefixStroke, pushBuiltinMap, strokeFromKey } from "./maps.ts";
+
+const treeSitterLive = treeSitterLayer.pipe(
+  Layer.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer)),
+);
+const treeSitterRuntime = ManagedRuntime.make(treeSitterLive);
+let tsxGrammar: Grammar;
+
+beforeAll(() =>
+  treeSitterRuntime.runPromise(
+    Effect.gen(function* () {
+      const ts = yield* TreeSitter;
+      tsxGrammar = yield* ts.grammar("typescriptreact");
+    }),
+  ),
+);
+
+afterAll(() => treeSitterRuntime.dispose());
 
 function key(name: string, extra: Partial<KeyEvent> = {}): KeyEvent {
   return {
@@ -1107,12 +1127,11 @@ test("undo tree keeps a branch after undo-then-edit; g- reaches the abandoned ti
   expect(text(redone)).toBe("baseB");
 });
 
-beforeAll(() => ensureGrammar("typescriptreact"));
-
 test("dst deletes surrounding JSX tags", () => {
   const start: EditorState = {
     ...initialEditor(),
     file: "Widget.tsx",
+    grammar: tsxGrammar,
     buffer: bufferFromLines(["<div>", "  hi", "</div>"]),
     cursor: { row: 1, col: 2 },
   };
@@ -1125,6 +1144,7 @@ test("cstdiv> changes surrounding JSX tag name", () => {
   const start: EditorState = {
     ...initialEditor(),
     file: "Widget.tsx",
+    grammar: tsxGrammar,
     buffer: bufferFromLines(["<span>hi</span>"]),
     cursor: { row: 0, col: 6 },
   };
@@ -1136,6 +1156,7 @@ test("ysiwtspan> wraps the inner word in a tag", () => {
   const start: EditorState = {
     ...initialEditor(),
     file: "Widget.tsx",
+    grammar: tsxGrammar,
     buffer: bufferFromLines(["hello world"]),
     cursor: { row: 0, col: 0 },
   };
@@ -1147,6 +1168,7 @@ test("dit deletes inner tag contents; dat deletes the whole element", () => {
   const start: EditorState = {
     ...initialEditor(),
     file: "Widget.tsx",
+    grammar: tsxGrammar,
     buffer: bufferFromLines(["<div>hello</div>"]),
     cursor: { row: 0, col: 6 },
   };
@@ -1156,6 +1178,7 @@ test("dit deletes inner tag contents; dat deletes the whole element", () => {
   const outerStart: EditorState = {
     ...initialEditor(),
     file: "Widget.tsx",
+    grammar: tsxGrammar,
     buffer: bufferFromLines(["<div>hello</div>"]),
     cursor: { row: 0, col: 6 },
   };

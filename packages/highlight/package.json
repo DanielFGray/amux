@@ -18,7 +18,8 @@
     "web-tree-sitter": "0.25.10"
   },
   "devDependencies": {
-    "@danielfgray/amux": "workspace:*"
+    "@danielfgray/amux": "workspace:*",
+    "@effect/platform-bun": "catalog:"
   },
   "peerDependencies": {
     "@danielfgray/amux": "workspace:*"
