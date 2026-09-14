@@ -15,8 +15,8 @@
     "./daemon": "./src/daemon.ts"
   },
   "scripts": {
-    "bench:render": "bun test --cwd ../.. --timeout=30000 packages/editor/bench/render.bench.test.tsx",
-    "bench:motion-lsp": "bun test --cwd ../.. --timeout=60000 packages/editor/bench/motion-lsp.bench.test.tsx"
+    "bench:render": "bun test --cwd ../.. --timeout=30000 ./packages/editor/bench/render.bench.tsx",
+    "bench:motion-lsp": "bun test --cwd ../.. --timeout=60000 ./packages/editor/bench/motion-lsp.bench.tsx"
   },
   "dependencies": {
     "@danielfgray/amux-highlight": "workspace:*",

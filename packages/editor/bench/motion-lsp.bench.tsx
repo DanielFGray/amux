@@ -91,11 +91,7 @@ const stubClient: LspDocumentClient = {
   diagnostics: Stream.empty,
 };
 
-const makeCountingLsp = (): {
-  readonly services: EditorLspServices;
-  readonly publishes: () => number;
-  readonly interrupt: () => void;
-} => {
+const makeCountingLsp = () => {
   const live = new Map<string, LiveDocument>();
   let publishes = 0;
   const fibers: Fiber.Fiber<void, unknown>[] = [];
@@ -138,7 +134,7 @@ const makeCountingLsp = (): {
   };
 
   return {
-    services: { documents, lsp, catalog: builtInCatalog },
+    services: { documents, lsp, catalog: builtInCatalog } satisfies EditorLspServices,
     publishes: () => publishes,
     interrupt: () => {
       for (const fiber of fibers) Effect.runFork(Fiber.interrupt(fiber));
