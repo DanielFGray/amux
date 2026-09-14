@@ -26,6 +26,9 @@ const exitDuringLoadHandlers: PluginHostHandlerFactory = (stopped) =>
       Publish: () =>
         Effect.fail(new PluginHostError({ message: "exit-during-load fixture never publishes" })),
       Discard: () => Effect.void,
+      Eval: () => Effect.succeed({ plugin: "x", path: "/tmp/x.ts" }),
+      Promote: () => Effect.succeed({ plugin: "x", path: "plugins/x.ts" }),
+      SetEnabled: () => Effect.void,
       Reduce: () =>
         Effect.fail(
           new PluginReducerError({ message: "exit-during-load fixture has no reducers" }),

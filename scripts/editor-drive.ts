@@ -11,10 +11,10 @@ const REPO = join(import.meta.dir, "..");
 const plugins = [
   ...defaultE2ePlugins(),
   { path: join(REPO, "packages/editor"), enabled: true },
-  { path: join(REPO, "packages/plugin-search/src/index.ts"), enabled: true },
-  { path: join(REPO, "packages/plugin-modal/src/index.ts"), enabled: true },
-  { path: join(REPO, "packages/plugin-completion/src/index.ts"), enabled: true },
-  { path: join(REPO, "packages/plugin-lsp/src/index.ts"), enabled: true },
+  { path: join(REPO, "packages/plugin-search"), enabled: true },
+  { path: join(REPO, "packages/plugin-modal"), enabled: true },
+  { path: join(REPO, "packages/plugin-completion"), enabled: true },
+  { path: join(REPO, "packages/plugin-lsp"), enabled: true },
 ];
 
 const results: { name: string; ok: boolean; detail: string }[] = [];
@@ -44,7 +44,12 @@ function statusLine(screen: string): string {
       return line.trim();
     }
   }
-  return lines.filter((l) => l.trim()).at(-1)?.trim() ?? "";
+  return (
+    lines
+      .filter((l) => l.trim())
+      .at(-1)
+      ?.trim() ?? ""
+  );
 }
 
 /** Land on createEditor in api.ts via search (more reliable than :N after overlays). */
@@ -88,9 +93,7 @@ async function main() {
   });
 
   try {
-    await app.send(
-      "bun packages/amux/src/cli.ts editor.open --file=packages/editor/src/api.ts\n",
-    );
+    await app.send("bun packages/amux/src/cli.ts editor.open --file=packages/editor/src/api.ts\n");
     try {
       await waitScreen(
         app,
@@ -120,9 +123,8 @@ async function main() {
     await app.press(" ");
     await Bun.sleep(1200);
     screen = app.screen();
-    const whichKey = /find file|find sibling|open an editor|editor\.|\b\/\b.*find|\.\s.*sibling/i.test(
-      screen,
-    );
+    const whichKey =
+      /find file|find sibling|open an editor|editor\.|\b\/\b.*find|\.\s.*sibling/i.test(screen);
     check("leader which-key popup", whichKey, whichKey ? "hints after space" : dump(screen));
     await app.press("\x1b");
     await Bun.sleep(200);

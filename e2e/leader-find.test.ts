@@ -29,8 +29,8 @@ test(
         plugins: [
           ...defaultE2ePlugins(),
           { path: join(REPO, "packages/editor"), enabled: true },
-          { path: join(REPO, "packages/plugin-search/src/index.ts"), enabled: true },
-          { path: join(REPO, "packages/plugin-completion/src/index.ts"), enabled: true },
+          { path: join(REPO, "packages/plugin-search"), enabled: true },
+          { path: join(REPO, "packages/plugin-completion"), enabled: true },
         ],
       },
     });
@@ -72,7 +72,7 @@ test(
         plugins: [
           ...defaultE2ePlugins(),
           { path: join(REPO, "packages/editor"), enabled: true },
-          { path: join(REPO, "packages/plugin-completion/src/index.ts"), enabled: true },
+          { path: join(REPO, "packages/plugin-completion"), enabled: true },
         ],
       },
     });

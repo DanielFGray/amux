@@ -14,8 +14,6 @@ const Notification = S.TaggedStruct("notification", {
 const EventsReady = S.TaggedStruct("events.ready", {});
 const CredentialChanged = S.TaggedStruct("credential.changed", { integration: S.String });
 const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
-/** A daemon-side plugin reconciliation the daemon just ran; each client reloads its own. */
-const PluginsReloaded = S.TaggedStruct("plugins.reload", { plugin: S.optionalKey(S.String) });
 
 /**
  * Facts a client cannot learn from anything it already receives.
@@ -25,6 +23,8 @@ const PluginsReloaded = S.TaggedStruct("plugins.reload", { plugin: S.optionalKey
  * either one here would be the same fact on two channels. What is left is
  * out-of-band: agent liveness, a notification an agent chose to send, and
  * configuration that changes underneath a client that never asked for it.
+ * Plugin publication is a dedicated control stream (SubscriptionRef.changes),
+ * not an EventBus event — late joiners must see the current revision first.
  */
 const EventPayload = S.Union([
   SessionStateChanged,
@@ -32,7 +32,6 @@ const EventPayload = S.Union([
   EventsReady,
   CredentialChanged,
   ModelsRefreshed,
-  PluginsReloaded,
 ]);
 export const DaemonEvent = S.Struct({
   sequence: S.Int.check(S.isGreaterThanOrEqualTo(0)),

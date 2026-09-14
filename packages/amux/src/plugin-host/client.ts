@@ -19,6 +19,7 @@ import type {
   PluginPublicationRevision,
 } from "../plugin-behaviour.ts";
 import type { DaemonSessionCommandContext } from "../plugin/services.ts";
+import type { PluginUiHalf } from "../plugin/ui-announcement.ts";
 import type { TilingAlgorithmError } from "../tiling-algorithm.ts";
 import type { TilingAnswer, TilingOperation } from "../tiling-operation.ts";
 import type {
@@ -94,6 +95,23 @@ export type PluginHostBehaviourCalls = {
   ) => Effect.Effect<PluginHostPrepareResult, PluginHostError | RpcClientError>;
   readonly Publish: () => Effect.Effect<PluginHostPublishResult, PluginHostError | RpcClientError>;
   readonly Discard: () => Effect.Effect<void, PluginHostError | RpcClientError>;
+  readonly Eval: (payload: {
+    readonly id: string;
+    readonly source: string;
+  }) => Effect.Effect<
+    { readonly plugin: string; readonly path: string },
+    PluginHostError | RpcClientError
+  >;
+  readonly Promote: (payload: {
+    readonly id: string;
+  }) => Effect.Effect<
+    { readonly plugin: string; readonly path: string },
+    PluginHostError | RpcClientError
+  >;
+  readonly SetEnabled: (payload: {
+    readonly id: string;
+    readonly enabled: boolean;
+  }) => Effect.Effect<void, PluginHostError | RpcClientError>;
   readonly Stop: () => Effect.Effect<void, PluginHostError | RpcClientError>;
 };
 
@@ -105,4 +123,5 @@ export type PluginPublication<Client extends PluginHostBehaviourCalls = PluginHo
   readonly client: Client;
   readonly revision: PluginPublicationRevision;
   readonly declarations: PluginDeclarations;
+  readonly plugins: readonly PluginUiHalf[];
 };

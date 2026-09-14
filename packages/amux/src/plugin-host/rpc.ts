@@ -26,6 +26,7 @@ import {
   QueuedPluginActionSchema,
 } from "../plugin-behaviour.ts";
 import { DaemonSessionCommandContextSchema } from "../plugin/services.ts";
+import { PluginUiHalfSchema } from "../plugin/ui-announcement.ts";
 import { TilingAlgorithmError } from "../tiling-algorithm.ts";
 import { TilingAnswerSchema, TilingOperationSchema } from "../tiling-operation.ts";
 import {
@@ -63,8 +64,22 @@ export const PluginHostPublishResultSchema = S.Struct({
   declarations: PluginDeclarationsSchema,
   /** Host-assigned publication id; increases on each successful Publish in that process. */
   revision: PluginPublicationRevisionSchema,
+  /** UI halves clients should load for this revision. */
+  plugins: S.Array(PluginUiHalfSchema),
 });
 export type PluginHostPublishResult = typeof PluginHostPublishResultSchema.Type;
+
+export const PluginHostEvalResultSchema = S.Struct({
+  plugin: S.String,
+  path: S.String,
+});
+export type PluginHostEvalResult = typeof PluginHostEvalResultSchema.Type;
+
+export const PluginHostPromoteResultSchema = S.Struct({
+  plugin: S.String,
+  path: S.String,
+});
+export type PluginHostPromoteResult = typeof PluginHostPromoteResultSchema.Type;
 
 export class PluginHostRpcs extends RpcGroup.make(
   Rpc.make("Ping", { success: S.Void, error: PluginHostError }),
@@ -79,6 +94,30 @@ export class PluginHostRpcs extends RpcGroup.make(
     error: PluginHostError,
   }),
   Rpc.make("Discard", {
+    success: S.Void,
+    error: PluginHostError,
+  }),
+  /** Materialize scratch source only; daemon runs Prepare/Publish afterward. */
+  Rpc.make("Eval", {
+    payload: {
+      id: S.String.pipe(S.check(S.isMinLength(1))),
+      source: S.String.pipe(S.check(S.isMinLength(1))),
+    },
+    success: PluginHostEvalResultSchema,
+    error: PluginHostError,
+  }),
+  /** Write managed file + config, drop scratch; daemon Prepare/Publish afterward. */
+  Rpc.make("Promote", {
+    payload: { id: S.String.pipe(S.check(S.isMinLength(1))) },
+    success: PluginHostPromoteResultSchema,
+    error: PluginHostError,
+  }),
+  /** Upsert config enabled; daemon Prepare/Publish afterward. */
+  Rpc.make("SetEnabled", {
+    payload: {
+      id: S.String.pipe(S.check(S.isMinLength(1))),
+      enabled: S.Boolean,
+    },
     success: S.Void,
     error: PluginHostError,
   }),

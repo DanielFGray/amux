@@ -62,7 +62,7 @@ test(
         plugins: [
           ...defaultE2ePlugins(),
           { path: join(REPO, "packages/editor"), enabled: true },
-          { path: join(REPO, "packages/plugin-modal/src/index.ts"), enabled: true },
+          { path: join(REPO, "packages/plugin-modal"), enabled: true },
         ],
       },
     });

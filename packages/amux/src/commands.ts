@@ -993,29 +993,26 @@ const ConfigReset = define(
 );
 
 /**
- * Plugins run in the client, not the daemon, so this is an announcement rather
- * than a mutation: the daemon carries it to everyone attached and each client
- * reloads its own. It targets the server because it names no session — the
- * agent that just edited a plugin runs `amux plugin.reload` and means all of
- * them — and it is not a view command because a view command never leaves the
- * client it was typed into, which is the one place the agent is not.
+ * Plugins are prepared and published by the supervised plugin host. This
+ * command asks the daemon to reload the full set from disk/scratch and
+ * announce the new revision on the plugin-publications control stream so every
+ * attached client's UI half follows.
  */
 const PluginReload = define(
   "plugin.reload",
-  { plugin: S.optionalKey(S.String), disk: S.optionalKey(S.Boolean) },
+  {},
   {
-    desc: "load plugin source again; pass disk to retry a quarantined edit",
+    desc: "load plugin source again from disk and scratch",
     group: "plugins",
     target: "server",
     exposure: "agent",
   },
-  (args) => resourcesOf(args.plugin),
+  noResources,
   S.Array(S.Struct({ spec: S.String, reason: S.String })),
 );
 /**
- * In-session authorship: materialize `source` into the scratch plugin dir and
- * adopt/reload it on the attached client. Client-targeted because plugins run
- * in clients, not the daemon — same forwarding path as pane.send-keys.
+ * Materialize `source` into the scratch plugin dir on the host, then Prepare
+ * and Publish so every attached client receives the UI half.
  */
 const PluginEval = define(
   "plugin.eval",
@@ -1024,9 +1021,9 @@ const PluginEval = define(
     source: S.String.pipe(S.check(S.isMinLength(1))),
   },
   {
-    desc: "eval plugin source in-session (scratch adopt/reload)",
+    desc: "eval plugin source in-session (scratch materialize + publish)",
     group: "plugins",
-    target: "client",
+    target: "server",
     exposure: "agent",
   },
   (args) => resourcesOf(args.plugin),
@@ -1042,7 +1039,7 @@ const PluginPromote = define(
   {
     desc: "promote a scratch plugin into config plugins",
     group: "plugins",
-    target: "client",
+    target: "server",
     exposure: "agent",
   },
   (args) => resourcesOf(args.plugin),
@@ -1115,9 +1112,9 @@ const PluginEnable = define(
   "plugin.enable",
   { plugin: S.String },
   {
-    desc: "enable a plugin in this client",
+    desc: "enable a plugin in config and republish",
     group: "plugins",
-    target: "view",
+    target: "server",
     exposure: "human",
   },
   (args) => resourcesOf(args.plugin),
@@ -1126,9 +1123,9 @@ const PluginDisable = define(
   "plugin.disable",
   { plugin: S.String },
   {
-    desc: "disable a plugin in this client",
+    desc: "disable a plugin in config and republish",
     group: "plugins",
-    target: "view",
+    target: "server",
     exposure: "human",
   },
   (args) => resourcesOf(args.plugin),

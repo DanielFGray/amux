@@ -146,9 +146,9 @@ const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = [];
  * Daemon → plugin-host Load payload: the plugin specs and the directory
  * relative paths resolve against. Owner: config.ts.
  */
+/** Per-Prepare load set. Host directories are fixed at host spawn (env → Effect Config). */
 export const PluginHostLoadInputSchema = S.Struct({
   plugins: S.Array(PluginSpecSchema),
-  configDirectory: S.String,
 });
 export type PluginHostLoadInput = typeof PluginHostLoadInputSchema.Type;
 

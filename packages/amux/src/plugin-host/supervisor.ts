@@ -61,6 +61,10 @@ export interface PluginHostSupervisorOptions {
   readonly socketPath: string;
   /** Capability socket path passed to the child as AMUX_PLUGIN_CAPABILITIES_SOCKET. */
   readonly capabilitiesSocketPath: string;
+  /** Config directory for this host generation (AMUX_PLUGIN_CONFIG_DIRECTORY). */
+  readonly configDirectory: string;
+  /** Scratch directory for this host generation (AMUX_PLUGIN_SCRATCH_DIRECTORY). */
+  readonly scratchDirectory: string;
   readonly status: SubscriptionRef.SubscriptionRef<PluginHostStatus>;
   /** Slot for the live publication; cleared by the generation release. */
   readonly generation: SubscriptionRef.SubscriptionRef<
@@ -120,6 +124,8 @@ const spawnHost = (
   argv: readonly string[],
   socketPath: string,
   capabilitiesSocketPath: string,
+  configDirectory: string,
+  scratchDirectory: string,
 ): Effect.Effect<HostChild, string, Scope.Scope> =>
   Effect.gen(function* () {
     const child = yield* Effect.try({
@@ -129,6 +135,8 @@ const spawnHost = (
             ...process.env,
             AMUX_PLUGIN_HOST_SOCKET: socketPath,
             AMUX_PLUGIN_CAPABILITIES_SOCKET: capabilitiesSocketPath,
+            AMUX_PLUGIN_CONFIG_DIRECTORY: configDirectory,
+            AMUX_PLUGIN_SCRATCH_DIRECTORY: scratchDirectory,
           },
           stdin: "pipe",
           stdout: "ignore",
@@ -289,6 +297,8 @@ const runGeneration = (
       argv,
       options.socketPath,
       options.capabilitiesSocketPath,
+      options.configDirectory,
+      options.scratchDirectory,
     ).pipe(Effect.result);
     if (childResult._tag === "Failure") {
       yield* setStatus(options.status, {
@@ -420,6 +430,7 @@ const runGeneration = (
             client,
             revision: loaded.success.revision,
             declarations: loaded.success.declarations,
+            plugins: loaded.success.plugins,
           }),
         );
         yield* setStatus(options.status, { state: "ready", restarts, pid: child.pid });

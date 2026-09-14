@@ -20,7 +20,8 @@ import { WireCommand } from "./commands.ts";
 import { DaemonEvent } from "./effect/EventBus.ts";
 import { AgentEvent } from "./effect/AttachProtocol.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
-import { PluginDeclarationsSchema } from "./plugin-behaviour.ts";
+import { PluginDeclarationsSchema, PluginPublicationRevisionSchema } from "./plugin-behaviour.ts";
+import { PluginPublicationAnnouncementSchema } from "./plugin/ui-announcement.ts";
 import { PluginHostStatusSchema } from "./plugin-host/rpc.ts";
 import { SessionStateSchema } from "./session.ts";
 import { WorkspaceCommandContextSchema } from "./workspace.ts";
@@ -68,10 +69,45 @@ const StatusSchema = S.Struct({
   agents: S.Array(S.String),
   /** Supervised plugin-host child: state, restart count, last error. */
   pluginHost: PluginHostStatusSchema,
+  /** Current host publication revision for humans / status CLI — not the load path. */
+  pluginPublicationRevision: S.optional(PluginPublicationRevisionSchema),
+  /**
+   * Per control-connection UI readiness, keyed by Rpc.ServerClient.id.
+   * One client attaches many sessions; readiness is not per SessionAttachment.
+   */
+  pluginUiByClient: S.optional(
+    S.Record(
+      S.String,
+      S.Struct({
+        revision: PluginPublicationRevisionSchema,
+        plugins: S.Array(
+          S.Struct({
+            key: S.String,
+            digest: S.String,
+            ready: S.Boolean,
+            error: S.optional(S.String),
+          }),
+        ),
+      }),
+    ),
+  ),
   /** Set when the daemon is degraded but still serving: heartbeat or an
    *  outstanding durable obligation. Not a request failure. */
   degraded: S.optional(S.String),
 });
+
+export const PluginUiReadyReportSchema = S.Struct({
+  revision: PluginPublicationRevisionSchema,
+  plugins: S.Array(
+    S.Struct({
+      key: S.String,
+      digest: S.String,
+      ready: S.Boolean,
+      error: S.optional(S.String),
+    }),
+  ),
+});
+export type PluginUiReadyReport = typeof PluginUiReadyReportSchema.Type;
 
 /**
  * A command's result is defined by the command itself (`COMMAND_META[tag].result`),
@@ -193,6 +229,20 @@ export class ControlRpcs extends RpcGroup.make(
     stream: true,
   }),
   Rpc.make("Events", { success: DaemonEvent, stream: true }),
+  /**
+   * Host publication announcements. Built from SubscriptionRef.changes so the
+   * current value arrives first — late clients need no Status read for loading.
+   */
+  Rpc.make("PluginPublications", {
+    success: PluginPublicationAnnouncementSchema,
+    stream: true,
+  }),
+  /** Report this control connection's UI half readiness (keyed by ServerClient.id). */
+  Rpc.make("ReportPluginUiReady", {
+    payload: PluginUiReadyReportSchema,
+    success: S.Void,
+    error: ControlError,
+  }),
   Rpc.make("AgentCursor", {
     payload: { session: S.String },
     success: S.Int,

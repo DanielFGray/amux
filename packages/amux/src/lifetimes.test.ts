@@ -415,6 +415,8 @@ function lifecycleSession(
     workspace: () => structuredClone(workspace),
     models: Stream.never,
     events: Stream.never,
+    pluginPublications: Stream.never,
+    reportPluginUiReady: () => Effect.void,
     commandRequests: Stream.never,
     respondCommand: () => {},
     backend: () => spawn,

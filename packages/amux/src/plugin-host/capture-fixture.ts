@@ -84,8 +84,12 @@ const captureHandlers: PluginHostHandlerFactory = (stopped) =>
           }),
         Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
         Prepare: () => Effect.succeed({ failures: [] }),
-        Publish: () => Effect.succeed({ declarations: emptyPluginDeclarations, revision: 1 }),
+        Publish: () =>
+          Effect.succeed({ declarations: emptyPluginDeclarations, revision: 1, plugins: [] }),
         Discard: () => Effect.void,
+        Eval: () => Effect.succeed({ plugin: "x", path: "/tmp/x.ts" }),
+        Promote: () => Effect.succeed({ plugin: "x", path: "plugins/x.ts" }),
+        SetEnabled: () => Effect.void,
         Reduce: () =>
           Effect.fail(new PluginReducerError({ message: "capture fixture has no reducers" })),
         CheckDescriptor: () =>

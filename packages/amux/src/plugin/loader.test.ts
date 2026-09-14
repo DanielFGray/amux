@@ -173,7 +173,7 @@ testEffect("loads a valid plugin", () =>
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
-testEffect("a quarantined last-good archive is loaded instead of a broken disk edit", () =>
+testEffect("archived last-good source is loaded when disk import fails with no previous", () =>
   Effect.gen(function* () {
     const dir = yield* tempDir;
     const entry = yield* writePluginFile(dir, "saved.ts", "this is broken disk source");
@@ -183,10 +183,10 @@ testEffect("a quarantined last-good archive is loaded instead of a broken disk e
       version: 1,
       entries: [source.href],
       modules: [{ url: source.href, text: mkPluginSrc("saved") }],
-      quarantined: true,
     });
     const { host } = yield* makeHost();
 
+    // No in-memory previous: disk is broken, so archived source must load.
     const loaded = yield* loadPlugins(baseConfig({ plugins: [spec(entry)] }), host, dir);
 
     expect(loaded.recovered).toBe(true);
@@ -209,8 +209,10 @@ testEffect("loads the editor package through its configured package entrypoint",
 testEffect("loads a path plugin's daemon entrypoint", () =>
   Effect.gen(function* () {
     const dir = yield* tempDir;
+    const fs = yield* FileSystem.FileSystem;
     yield* writePluginFile(dir, "index.ts", mkPluginSrc("client-plugin"));
-    yield* writePluginFile(dir, "daemon.ts", mkPluginSrc("daemon-plugin"));
+    yield* fs.makeDirectory(join(dir, "index"), { recursive: true });
+    yield* writePluginFile(dir, "index/daemon.ts", mkPluginSrc("daemon-plugin"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "index.ts"))] });
     const { host } = yield* makeHost();

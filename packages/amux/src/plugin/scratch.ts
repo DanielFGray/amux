@@ -2,13 +2,10 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Config as EffectConfig, Effect } from "effect";
+import { Config as EffectConfig, Effect, Option } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { command, CommandError, CurrentInvocation, type Commands } from "../commands.ts";
-import { saveConfig, upsertPluginSpec, type Config } from "../config.ts";
-import { hotImport } from "./hot.ts";
-import type { PluginEntry } from "./loader.ts";
-import type { PluginReloader } from "./reloader.ts";
+import { saveConfig, upsertPluginSpec, type Config, type PluginSpec } from "../config.ts";
 import { processPluginPathComponent } from "../process-plugin/paths.ts";
 
 /**
@@ -22,9 +19,8 @@ import { processPluginPathComponent } from "../process-plugin/paths.ts";
  *   $XDG_STATE_HOME/amux/scratch/<stem>.ts
  *   $XDG_STATE_HOME/amux/scratch/<stem>/…
  *
- * Paths are Effects, not module-level constants: reading XDG at import time
- * was an Effect.runSync side effect. Callers that need the default scratch
- * root yield it.
+ * The scratch directory is the list: every `<stem>.ts` is an active scratch
+ * plugin. No separate manifest — that would store what the directory already holds.
  */
 const xdgStateHome = EffectConfig.string("XDG_STATE_HOME").pipe(
   EffectConfig.orElse(() =>
@@ -40,26 +36,84 @@ export const pluginScratchDir: Effect.Effect<string> = Effect.map(xdgStateHome, 
 /** Filesystem stem for a scratch plugin id (same encoding as process plugins). */
 export const scratchStem = (id: string): string => processPluginPathComponent(id);
 
+/** Reverse {@link scratchStem} for stems that only used the safe charset + %XX. */
+export const scratchIdFromStem = (stem: string): string => {
+  let out = "";
+  for (let i = 0; i < stem.length;) {
+    if (stem[i] === "%" && i + 2 < stem.length) {
+      const code = Number.parseInt(stem.slice(i + 1, i + 3), 16);
+      if (!Number.isNaN(code)) {
+        out += String.fromCharCode(code);
+        i += 3;
+        continue;
+      }
+    }
+    const ch = stem[i];
+    if (ch === undefined) break;
+    out += ch;
+    i += 1;
+  }
+  return out;
+};
+
 export const scratchEntryPath = (id: string, scratchDir: string): string =>
   join(scratchDir, `${scratchStem(id)}.ts`);
+
+export const scratchCompanionDir = (id: string, scratchDir: string): string =>
+  join(scratchDir, scratchStem(id));
 
 /** Write source to the scratch entry. Does not import or activate. */
 export const materializeScratch = (
   id: string,
   source: string,
-  scratchDir?: string,
+  scratchDir: string,
 ): Effect.Effect<URL, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const dir = scratchDir ?? (yield* pluginScratchDir);
     const fs = yield* FileSystem.FileSystem;
     yield* fs
-      .makeDirectory(dir, { recursive: true })
+      .makeDirectory(scratchDir, { recursive: true })
       .pipe(Effect.mapError((error) => `cannot create scratch dir: ${String(error)}`));
-    const entry = scratchEntryPath(id, dir);
+    const entry = scratchEntryPath(id, scratchDir);
     yield* fs
       .writeFileString(entry, source)
       .pipe(Effect.mapError((error) => `cannot write scratch '${id}': ${String(error)}`));
     return pathToFileURL(entry);
+  });
+
+/** Every active scratch plugin as a path spec (enabled). The directory is the list. */
+export const listScratchSpecs = (
+  scratchDir: string,
+): Effect.Effect<readonly PluginSpec[], never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const names = yield* fs
+      .readDirectory(scratchDir)
+      .pipe(Effect.orElseSucceed(() => [] as string[]));
+    const specs: PluginSpec[] = [];
+    for (const name of names) {
+      if (!name.endsWith(".ts")) continue;
+      const full = join(scratchDir, name);
+      const info = yield* fs.stat(full).pipe(
+        Effect.map(Option.some),
+        Effect.orElseSucceed(() => Option.none()),
+      );
+      if (Option.isNone(info) || info.value.type !== "File") continue;
+      specs.push({ path: full, enabled: true });
+    }
+    return specs;
+  });
+
+/** Remove a scratch entry and its companion directory after promote. */
+export const removeScratch = (
+  id: string,
+  scratchDir: string,
+): Effect.Effect<void, string, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const entry = scratchEntryPath(id, scratchDir);
+    yield* fs.remove(entry).pipe(Effect.orElseSucceed(() => undefined));
+    const companions = scratchCompanionDir(id, scratchDir);
+    yield* fs.remove(companions, { recursive: true }).pipe(Effect.orElseSucceed(() => undefined));
   });
 
 /**
@@ -111,49 +165,8 @@ export default definePlugin({
 `;
 };
 
-/**
- * Materialize source and bring it into the running reloader.
- *
- * First eval adopts (host.add + reloader tracking). Later evals overwrite the
- * same entry path and reload — the existing commit-or-rollback transaction.
- * The `definePlugin` id inside the source must equal `id`.
- */
-export const evalScratch = (
-  reloader: PluginReloader,
-  id: string,
-  source: string,
-  scratchDir?: string,
-): Effect.Effect<PluginEntry, string, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
-    const dir = scratchDir ?? (yield* pluginScratchDir);
-    const entryUrl = yield* materializeScratch(id, source, dir);
-    if (reloader.reloadable().includes(id)) {
-      yield* reloader
-        .reload(id, { disk: true })
-        .pipe(
-          Effect.mapError((error) => `${error} (last good generation of '${id}' kept running)`),
-        );
-      const current = reloader.get(id);
-      if (!current) return yield* Effect.fail(`plugin '${id}' vanished after reload`);
-      return current;
-    }
-    const definition = yield* hotImport(entryUrl).pipe(
-      Effect.mapError((error) => `scratch '${id}' did not import: ${error}`),
-    );
-    if (definition.id !== id) {
-      return yield* Effect.fail(
-        `scratch id '${id}' does not match definePlugin id '${definition.id}'`,
-      );
-    }
-    const entry: PluginEntry = { id, source: entryUrl, definition };
-    yield* reloader
-      .adopt(entry)
-      .pipe(Effect.mapError((error) => `scratch '${id}' did not activate: ${error}`));
-    return entry;
-  });
-
 /** Path string for command results / agent-facing responses. */
-export const scratchEntryFilePath = (entry: PluginEntry): string => fileURLToPath(entry.source);
+export const scratchEntryFilePath = (entryUrl: URL): string => fileURLToPath(entryUrl);
 
 /**
  * Relative config path for a promoted plugin (`plugins/<stem>.ts`).
@@ -171,35 +184,33 @@ export interface PromoteScratchResult {
   readonly config: Config;
 }
 
+/** Managed companion directory for a promoted plugin (`plugins/<stem>/`). */
+export const managedPluginCompanionDir = (id: string, configDir: string): string =>
+  join(configDir, "plugins", scratchStem(id));
+
 /**
- * Persist a live scratch experiment into the managed plugin location and
- * config `plugins` array so a fresh start loads it through the ordinary
- * path loader — no special-cased scratch load on restart.
- *
- * Source comes from the reloader's tracked entry (or an explicit override).
- * Writes via {@link saveConfig} / {@link upsertPluginSpec} — same writer as
- * settings and `amux plugin add`.
+ * Persist a scratch experiment into the managed plugin location and config
+ * `plugins` array, then delete the scratch entry. Moves `<stem>/` companions
+ * beside the managed entry so both halves stay under the file-spec rule.
+ * Host Prepare loads it through the ordinary path loader afterward.
  */
 export const promoteScratch = (
-  reloader: PluginReloader,
   id: string,
   options: {
     readonly config: Config;
     readonly configDir: string;
     readonly configPath: string;
+    readonly scratchDir: string;
     readonly source?: string;
   },
 ): Effect.Effect<PromoteScratchResult, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const entry = reloader.get(id);
-    if (!entry && options.source === undefined) {
-      return yield* Effect.fail(`plugin '${id}' is not a live scratch entry to promote`);
-    }
+    const scratchPath = scratchEntryPath(id, options.scratchDir);
     const source =
       options.source ??
       (yield* fs
-        .readFileString(fileURLToPath(entry!.source))
+        .readFileString(scratchPath)
         .pipe(Effect.mapError((error) => `cannot read scratch '${id}': ${String(error)}`)));
     const pluginsDir = join(options.configDir, "plugins");
     yield* fs
@@ -210,13 +221,59 @@ export const promoteScratch = (
     yield* fs
       .writeFileString(absolute, source)
       .pipe(Effect.mapError((error) => `cannot write managed plugin '${id}': ${String(error)}`));
+    const scratchCompanions = scratchCompanionDir(id, options.scratchDir);
+    const managedCompanions = managedPluginCompanionDir(id, options.configDir);
+    const hasCompanions = yield* fs
+      .exists(scratchCompanions)
+      .pipe(Effect.orElseSucceed(() => false));
+    if (hasCompanions) {
+      yield* fs
+        .remove(managedCompanions, { recursive: true })
+        .pipe(Effect.orElseSucceed(() => undefined));
+      yield* fs
+        .rename(scratchCompanions, managedCompanions)
+        .pipe(
+          Effect.mapError(
+            (error) => `cannot move scratch companions for '${id}': ${String(error)}`,
+          ),
+        );
+    }
     const next = upsertPluginSpec(options.config, { path: relative, enabled: true });
     yield* saveConfig(next, options.configPath).pipe(
       Effect.mapError((error) => `cannot save config: ${String(error)}`),
     );
-    // Same bytes, new authority: subsequent reload/checkpoint follow config.
-    if (reloader.get(id) !== undefined) {
-      yield* reloader.retarget(id, pathToFileURL(absolute));
-    }
+    yield* removeScratch(id, options.scratchDir);
     return { plugin: id, path: relative, config: next };
+  });
+
+/**
+ * Upsert `enabled` on a config plugin spec by path or package key and save.
+ * Scratch-only plugins with no config row fail — no `.disabled` dir or config special case.
+ */
+export const setPluginEnabledInConfig = (
+  idOrKey: string,
+  enabled: boolean,
+  options: {
+    readonly config: Config;
+    readonly configPath: string;
+  },
+): Effect.Effect<Config, string, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const current = options.config.plugins.find((entry) => {
+      if ("package" in entry) return entry.package === idOrKey;
+      return entry.path === idOrKey || entry.path.endsWith(`/${idOrKey}`);
+    });
+    if (current === undefined) {
+      return yield* Effect.fail(`plugin '${idOrKey}' has no config entry`);
+    }
+    const nextSpec = { ...current, enabled };
+    const key = "package" in current ? current.package : current.path;
+    const plugins = options.config.plugins.map((entry) =>
+      ("package" in entry ? entry.package : entry.path) === key ? nextSpec : entry,
+    );
+    const next = { ...options.config, plugins };
+    yield* saveConfig(next, options.configPath).pipe(
+      Effect.mapError((error) => `cannot save config: ${String(error)}`),
+    );
+    return next;
   });

@@ -30,12 +30,18 @@ import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer
 import { admits, admitsHostChild } from "./peer-credentials.ts";
 import { peerCheckedSocketServer } from "./peer-checked-socket-server.ts";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
-import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
+import {
+  ControlError,
+  ControlRpcs,
+  ControlSerialization,
+  type PluginUiReadyReport,
+} from "./control.ts";
 import type { PluginHostStatus } from "./plugin-host/rpc.ts";
 import { serveDaemonSessions } from "./plugin-host/capabilities-server.ts";
 import { awaitFirstPluginHostOutcome, supervisePluginHost } from "./plugin-host/supervisor.ts";
 import type { PluginHostBehaviourCalls, PluginPublication } from "./plugin-host/client.ts";
 import { PluginHostError } from "./plugin-host/rpc.ts";
+import { pluginScratchDir } from "./plugin/scratch.ts";
 import { removeStaleSocket } from "./remove-stale-socket.ts";
 import { type AttachHostService } from "./effect/AttachHost.ts";
 import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
@@ -445,7 +451,10 @@ export const makeDaemonService = Effect.fnUntraced(
     const pluginHostPublication = yield* SubscriptionRef.make(
       Option.none<PluginPublication<PluginHostBehaviourCalls>>(),
     );
+    /** UI readiness reports keyed by control Rpc.ServerClient.id (not SessionAttachment). */
+    const pluginUiByClient = yield* Ref.make(new Map<string, PluginUiReadyReport>());
     const configDirectory = dirname(yield* configPath);
+    const scratchDirectory = yield* pluginScratchDir;
     const readPluginConfig = (): Effect.Effect<Config> =>
       options.pluginConfig !== undefined
         ? Effect.succeed(options.pluginConfig)
@@ -457,6 +466,63 @@ export const makeDaemonService = Effect.fnUntraced(
       use: (behaviour: PluginBehaviourService) => Effect.Effect<A, E, R>,
     ): Effect.Effect<A, E, R> =>
       publicationGate.admit(bindPluginBehaviour(pluginHostPublication).pipe(Effect.flatMap(use)));
+
+    const republishPlugins = (): Effect.Effect<
+      {
+        readonly published: {
+          readonly declarations: PluginPublication<PluginHostBehaviourCalls>["declarations"];
+          readonly revision: number;
+          readonly plugins: PluginPublication<PluginHostBehaviourCalls>["plugins"];
+        };
+        readonly failures: readonly { readonly spec: string; readonly reason: string }[];
+      },
+      ControlError
+    > =>
+      Effect.gen(function* () {
+        const live = yield* SubscriptionRef.get(pluginHostPublication);
+        if (Option.isNone(live)) {
+          return yield* new ControlError({ message: "plugin host not ready" });
+        }
+        const client = live.value.client;
+        const config = yield* readPluginConfig();
+        const outcome = yield* publicationGate
+          .withPublish(
+            client
+              .Prepare({
+                plugins: config.plugins,
+              })
+              .pipe(Effect.mapError((error) => new ControlError({ message: error.message }))),
+            (prepared) =>
+              client.Publish().pipe(
+                Effect.mapError((error) => new ControlError({ message: error.message })),
+                Effect.map((published) => ({
+                  published,
+                  failures: prepared.failures,
+                })),
+              ),
+            client.Discard().pipe(Effect.ignore),
+          )
+          .pipe(
+            Effect.catchTag("PluginPublishTimedOut", (error) =>
+              Effect.fail(new ControlError({ message: error.message })),
+            ),
+          );
+        yield* SubscriptionRef.update(pluginHostPublication, (current) =>
+          Option.match(current, {
+            onNone: () => Option.none(),
+            onSome: (publication) =>
+              publication.client === client
+                ? Option.some({
+                    client,
+                    revision: outcome.published.revision,
+                    declarations: outcome.published.declarations,
+                    plugins: outcome.published.plugins,
+                  })
+                : current,
+          }),
+        );
+        return outcome;
+      });
 
     const activeSaveRef = {
       current: null as Fiber.Fiber<void, WorkspaceTransactionError> | null,
@@ -724,33 +790,35 @@ export const makeDaemonService = Effect.fnUntraced(
           supervisePluginHost({
             socketPath: paths.pluginHost,
             capabilitiesSocketPath: paths.pluginCapabilities,
+            configDirectory,
+            scratchDirectory,
             status: pluginHostStatus,
             generation: pluginHostPublication,
             loadGeneration: (client) =>
-              readPluginConfig().pipe(
-                Effect.flatMap((pluginConfig) =>
-                  publicationGate.withPublish(
-                    client.Prepare({
-                      plugins: pluginConfig.plugins,
-                      configDirectory,
-                    }),
-                    (prepared) =>
-                      client.Publish().pipe(
-                        Effect.tap(() =>
-                          Effect.forEach(prepared.failures, (failure) =>
-                            Effect.logWarning(
-                              `Could not load plugin '${failure.spec}': ${failure.reason}`,
-                            ),
+              Effect.gen(function* () {
+                const pluginConfig = yield* readPluginConfig();
+                return yield* publicationGate.withPublish(
+                  client.Prepare({
+                    plugins: pluginConfig.plugins,
+                  }),
+                  (prepared) =>
+                    client.Publish().pipe(
+                      Effect.tap(() =>
+                        Effect.forEach(prepared.failures, (failure) =>
+                          Effect.logWarning(
+                            `Could not load plugin '${failure.spec}': ${failure.reason}`,
                           ),
                         ),
-                        Effect.map((published) => ({
-                          declarations: published.declarations,
-                          revision: published.revision,
-                        })),
                       ),
-                    client.Discard().pipe(Effect.ignore),
-                  ),
-                ),
+                      Effect.map((published) => ({
+                        declarations: published.declarations,
+                        revision: published.revision,
+                        plugins: published.plugins,
+                      })),
+                    ),
+                  client.Discard().pipe(Effect.ignore),
+                );
+              }).pipe(
                 Effect.mapError(
                   (error) =>
                     new PluginHostError({
@@ -768,6 +836,35 @@ export const makeDaemonService = Effect.fnUntraced(
         );
         // Wait for Load to publish a generation or fail — no config-shaped timeout.
         yield* awaitFirstPluginHostOutcome(pluginHostPublication, pluginHostStatus);
+
+        // Host watches scratch + config plugins dirs; a change republishes like plugin.reload.
+        yield* Effect.forkIn(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const scratch = yield* pluginScratchDir;
+            yield* fs.makeDirectory(scratch, { recursive: true }).pipe(Effect.ignore);
+            const pluginsRoot = `${configDirectory}/plugins`;
+            yield* fs.makeDirectory(pluginsRoot, { recursive: true }).pipe(Effect.ignore);
+            const watchRoot = (root: string) =>
+              fs.watch(root, { recursive: true }).pipe(
+                Stream.debounce("50 millis"),
+                Stream.runForEach(() =>
+                  republishPlugins().pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning(`plugin watch republish failed: ${errorMessage(error)}`),
+                    ),
+                  ),
+                ),
+                Effect.catch((error) =>
+                  Effect.logWarning(`plugin watch on '${root}' failed: ${errorMessage(error)}`),
+                ),
+              );
+            yield* Effect.all([watchRoot(scratch), watchRoot(pluginsRoot)], {
+              concurrency: "unbounded",
+            });
+          }).pipe(Effect.provide(BunServices.layer), Scope.provide(daemonScope)),
+          daemonScope,
+        );
 
         yield* Effect.gen(function* () {
           const cur = yield* model.get;
@@ -1736,50 +1833,69 @@ export const makeDaemonService = Effect.fnUntraced(
       }
       if (meta.target === "server") {
         return yield* Match.value(command).pipe(
-          Match.tag("plugin.reload", (command) =>
+          Match.tag("plugin.reload", () =>
+            Effect.gen(function* () {
+              const outcome = yield* republishPlugins();
+              return { result: outcome.failures };
+            }),
+          ),
+          Match.tag("plugin.eval", (command) =>
             Effect.gen(function* () {
               const live = yield* SubscriptionRef.get(pluginHostPublication);
               if (Option.isNone(live)) {
                 return yield* controlFail("plugin host not ready");
               }
-              const client = live.value.client;
-              const config = yield* readPluginConfig();
-              const outcome = yield* publicationGate
-                .withPublish(
-                  client
-                    .Prepare({
-                      plugins: config.plugins,
-                      configDirectory,
-                    })
-                    .pipe(Effect.mapError((error) => new ControlError({ message: error.message }))),
-                  (prepared) =>
-                    client.Publish().pipe(
-                      Effect.mapError((error) => new ControlError({ message: error.message })),
-                      Effect.map((published) => ({
-                        published,
-                        failures: prepared.failures,
-                      })),
-                    ),
-                  client.Discard().pipe(Effect.ignore),
-                )
+              const evaluated = yield* live.value.client
+                .Eval({ id: command.plugin, source: command.source })
                 .pipe(
-                  Effect.catchTag("PluginPublishTimedOut", (error) => controlFail(error.message)),
+                  Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
                 );
-              yield* SubscriptionRef.update(pluginHostPublication, (current) =>
-                Option.match(current, {
-                  onNone: () => Option.none(),
-                  onSome: (publication) =>
-                    publication.client === client
-                      ? Option.some({
-                          client,
-                          revision: outcome.published.revision,
-                          declarations: outcome.published.declarations,
-                        })
-                      : current,
-                }),
-              );
-              if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
-              else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
+              yield* republishPlugins();
+              return { result: evaluated };
+            }),
+          ),
+          Match.tag("plugin.promote", (command) =>
+            Effect.gen(function* () {
+              const live = yield* SubscriptionRef.get(pluginHostPublication);
+              if (Option.isNone(live)) {
+                return yield* controlFail("plugin host not ready");
+              }
+              const promoted = yield* live.value.client
+                .Promote({ id: command.plugin })
+                .pipe(
+                  Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
+                );
+              yield* republishPlugins();
+              return { result: promoted };
+            }),
+          ),
+          Match.tag("plugin.enable", (command) =>
+            Effect.gen(function* () {
+              const live = yield* SubscriptionRef.get(pluginHostPublication);
+              if (Option.isNone(live)) {
+                return yield* controlFail("plugin host not ready");
+              }
+              yield* live.value.client
+                .SetEnabled({ id: command.plugin, enabled: true })
+                .pipe(
+                  Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
+                );
+              const outcome = yield* republishPlugins();
+              return { result: outcome.failures };
+            }),
+          ),
+          Match.tag("plugin.disable", (command) =>
+            Effect.gen(function* () {
+              const live = yield* SubscriptionRef.get(pluginHostPublication);
+              if (Option.isNone(live)) {
+                return yield* controlFail("plugin host not ready");
+              }
+              yield* live.value.client
+                .SetEnabled({ id: command.plugin, enabled: false })
+                .pipe(
+                  Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
+                );
+              const outcome = yield* republishPlugins();
               return { result: outcome.failures };
             }),
           ),
@@ -1879,17 +1995,26 @@ export const makeDaemonService = Effect.fnUntraced(
             const degraded = obligation ?? cur.heartbeatError ?? undefined;
             const live = yield* liveSessions;
             const pluginHost = yield* SubscriptionRef.get(pluginHostStatus);
+            const publication = yield* SubscriptionRef.get(pluginHostPublication);
+            const uiReady = yield* Ref.get(pluginUiByClient);
             // Running PTYs plus parked resumes: every session the daemon owns
             // for client adoption. liveSessions stays PTYs only.
             const agents = new Set(live);
             for (const id of pendingResumes.sessionIds()) agents.add(id);
+            const pluginUiRecord: Record<string, PluginUiReadyReport> = {};
+            for (const [key, value] of uiReady) pluginUiRecord[key] = value;
+            const times = yield* attachTimes();
             const baseStatus = {
               attached: cur.state.attached,
-              ...(yield* attachTimes()),
+              ...times,
               session: structuredClone(cur.state),
               workspace: encodeJson(cur.workspace),
               agents: [...agents],
               pluginHost,
+              pluginPublicationRevision: Option.isSome(publication)
+                ? publication.value.revision
+                : undefined,
+              pluginUiByClient: uiReady.size > 0 ? pluginUiRecord : undefined,
             };
             return degraded === undefined ? baseStatus : { ...baseStatus, degraded };
           }),
@@ -2086,6 +2211,35 @@ export const makeDaemonService = Effect.fnUntraced(
             event: { _tag: "events.ready" },
           } as const),
           Stream.unwrap(eventBus.subscribe),
+        ),
+
+      PluginPublications: (_request, { client }) =>
+        SubscriptionRef.changes(pluginHostPublication).pipe(
+          Stream.filterMap((slot) =>
+            Result.fromOption(
+              Option.map(slot, (publication) => ({
+                revision: publication.revision,
+                plugins: publication.plugins,
+              })),
+              () => undefined,
+            ),
+          ),
+          Stream.ensuring(
+            Ref.update(pluginUiByClient, (current) => {
+              const next = new Map(current);
+              next.delete(String(client.id));
+              return next;
+            }),
+          ),
+        ),
+
+      ReportPluginUiReady: (report, { client }) =>
+        guard(
+          Ref.update(pluginUiByClient, (current) => {
+            const next = new Map(current);
+            next.set(String(client.id), report);
+            return next;
+          }),
         ),
 
       AgentCursor: ({ session }) =>

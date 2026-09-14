@@ -22,7 +22,6 @@ testEffect("last-good generations survive an atomic store round trip", () =>
       version: 1 as const,
       entries: ["file:///plugins/example.ts"],
       modules: [{ url: "file:///plugins/example.ts", text: "export default {}" }],
-      quarantined: true,
     };
     yield* store.write(generation);
     expect(Option.getOrThrow(yield* store.read)).toEqual(generation);

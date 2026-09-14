@@ -23,6 +23,8 @@ import {
 } from "./session.ts";
 import type { DaemonEventPayload } from "./effect/EventBus.ts";
 import { ControlError } from "./control.ts";
+import type { PluginPublicationAnnouncement } from "./plugin/ui-announcement.ts";
+import type { PluginUiReadyReport } from "./control.ts";
 import { errorMessage } from "./error-message.ts";
 
 const START_TIMEOUT_MS = 10_000;
@@ -57,6 +59,14 @@ export interface SessionClientContract extends DaemonSession {
   readonly workspace: () => WorkspaceSnapshot;
   readonly models: Stream.Stream<WorkspaceSnapshot, never, never>;
   readonly events: Stream.Stream<DaemonEventPayload, ControlError, never>;
+  /**
+   * Host publication announcements (SubscriptionRef.changes). Emits the current
+   * revision first so late joiners need no Status read before loading UI halves.
+   */
+  readonly pluginPublications: Stream.Stream<PluginPublicationAnnouncement, ControlError, never>;
+  readonly reportPluginUiReady: (
+    report: PluginUiReadyReport,
+  ) => Effect.Effect<void, ControlError, never>;
   /** A plugin verb the daemon forwarded here because it has no plugin runtime
    *  of its own; each one wants a matching {@link respondCommand}. */
   readonly commandRequests: Stream.Stream<
@@ -280,6 +290,9 @@ const make = (
         Stream.map(({ event }) => event),
         Stream.mapError(toControlError),
       ),
+      pluginPublications: control.PluginPublications().pipe(Stream.mapError(toControlError)),
+      reportPluginUiReady: (report) =>
+        control.ReportPluginUiReady(report).pipe(Effect.mapError(toControlError)),
       commandRequests: attach.commandRequests,
       respondCommand: (id, result, error) => attach.respondCommand(id, result, error),
       runWorkspace: (command, context) =>

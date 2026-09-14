@@ -10,22 +10,10 @@ import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { ValidComponent } from "solid-js";
-import {
-  Context,
-  Duration,
-  Effect,
-  Exit,
-  FiberMap,
-  Layer,
-  Option,
-  Path,
-  Result,
-  Scope,
-  Stream,
-} from "effect";
+import { Context, Duration, Effect, Exit, FiberMap, Option, Result, Scope, Stream } from "effect";
 import { theme, setTheme } from "./ui/theme.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- path access is part of the plain render-tree boundary.
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- file output is part of the plain render-tree boundary.
 import { writeFile } from "node:fs/promises";
 import { ProcessState } from "./process-state.ts";
@@ -70,13 +58,7 @@ import {
   type CommandResult,
   type RuntimeCommand,
 } from "./commands.ts";
-import { BunFileSystem } from "@effect/platform-bun";
-import {
-  configPath,
-  pluginSpecKey,
-  saveConfig as saveConfigEffect,
-  type Config,
-} from "./config.ts";
+import { saveConfig as saveConfigEffect, type Config } from "./config.ts";
 import {
   adjustedValue,
   applyOptions,
@@ -102,7 +84,7 @@ import {
 } from "./plugin/contributions.ts";
 
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
-import { loadPlugins, type PluginEntry } from "./plugin/loader.ts";
+import { type PluginEntry } from "./plugin/loader.ts";
 import { makeOverlay, OverlayTag, type OverlayKind } from "./plugin/overlay.ts";
 import {
   CommandsChromeTag,
@@ -151,11 +133,9 @@ import {
   type ContextSpec,
 } from "./key-context.ts";
 import { makeSessionFacts } from "./session-facts.ts";
-import { createReloader } from "./plugin/reloader.ts";
-import type { PluginReloader } from "./plugin/reloader.ts";
-import { evalScratch, promoteScratch, scratchEntryFilePath } from "./plugin/scratch.ts";
 import { formatInspectResult, inspect, type InspectCatalog } from "./plugin/inspect.ts";
-import { lastGoodStoreLayer, LastGoodStoreTag } from "./plugin/last-good.ts";
+import { hotImport } from "./plugin/hot.ts";
+import type { PluginPublicationAnnouncement } from "./plugin/ui-announcement.ts";
 import {
   defineConsumer,
   definePlugin,
@@ -215,8 +195,9 @@ export interface AppOptions {
 }
 
 export interface PluginRuntime {
-  reloader?: PluginReloader;
   host?: PluginHost;
+  /** Announced UI entry URLs by plugin id — inspect / remount provenance. */
+  uiSource?: (id: string) => URL | undefined;
   pathFor?: (id: string) => string | undefined;
   resumePending?: (workspace: WorkspaceSnapshot) => Effect.Effect<void>;
   /**
@@ -226,14 +207,6 @@ export interface PluginRuntime {
    * daemon revision, the fallback flex box would stick forever.
    */
   remountLayouts?: () => Promise<void>;
-}
-
-function setPluginEnabled(config: Config, key: string, enabled: boolean): Config {
-  const index = config.plugins.findIndex((entry) => pluginSpecKey(entry) === key);
-  if (index < 0) return { ...config, plugins: [...config.plugins, { path: key, enabled }] };
-  const plugins = [...config.plugins];
-  plugins[index] = { ...plugins[index]!, enabled };
-  return { ...config, plugins };
 }
 
 export interface AppHandle {
@@ -457,8 +430,11 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         Effect.sync(() => app.updateRegistry(pluginHost, key)),
       ),
     );
-    let reloader: PluginReloader | undefined;
-    let pluginEntries: readonly PluginEntry[] = [];
+    const uiByKey = new Map<
+      string,
+      { readonly digest: string; readonly definition: PluginDefinition; readonly source: URL }
+    >();
+    let pluginEntries: readonly PluginEntry[] = [...app.pluginEntries];
     const resumedPending = new Set<string>();
     const resumePending = (workspace: WorkspaceSnapshot) =>
       Effect.forEach(
@@ -491,66 +467,116 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         { discard: true },
       );
     pluginRuntime.resumePending = resumePending;
-    runFiber(
-      "plugin-load",
+    pluginRuntime.uiSource = (id) => {
+      for (const value of uiByKey.values()) {
+        if (value.definition.id === id) return value.source;
+      }
+      return undefined;
+    };
+    pluginRuntime.pathFor = (id) => pluginEntries.find((plugin) => plugin.id === id)?.path;
+
+    const applyPublication = (announcement: PluginPublicationAnnouncement) =>
       Effect.gen(function* () {
-        const loadedResult = yield* loadPlugins(
-          options.config.plugins,
-          pluginHost,
-          options.configDir ?? dirname(yield* configPath),
-          [...app.registryEntries, ...app.coreEntries],
-        ).pipe(Effect.result);
-        if (Result.isFailure(loadedResult)) {
-          app.panel.reportError(errorMessage(loadedResult.failure));
+        const nextDefs: PluginDefinition[] = [...app.registryEntries, ...app.coreEntries];
+        const reportPlugins: {
+          readonly key: string;
+          readonly digest: string;
+          readonly ready: boolean;
+          readonly error?: string;
+        }[] = [];
+        for (const half of announcement.plugins) {
+          if (half.uiEntry === undefined) {
+            const prior = uiByKey.get(half.key);
+            if (prior !== undefined) nextDefs.push(prior.definition);
+            reportPlugins.push({
+              key: half.key,
+              digest: half.digest,
+              ready: prior !== undefined,
+            });
+            continue;
+          }
+          const prior = uiByKey.get(half.key);
+          if (prior !== undefined && prior.digest === half.digest) {
+            nextDefs.push(prior.definition);
+            reportPlugins.push({ key: half.key, digest: half.digest, ready: true });
+            continue;
+          }
+          const imported = yield* hotImport(new URL(half.uiEntry)).pipe(Effect.result);
+          if (Result.isFailure(imported)) {
+            if (prior !== undefined) nextDefs.push(prior.definition);
+            reportPlugins.push({
+              key: half.key,
+              digest: half.digest,
+              ready: false,
+              error: imported.failure,
+            });
+            app.panel.reportError(`${half.key}: ${imported.failure}`);
+            continue;
+          }
+          nextDefs.push(imported.success);
+          uiByKey.set(half.key, {
+            digest: half.digest,
+            definition: imported.success,
+            source: new URL(half.uiEntry),
+          });
+          reportPlugins.push({ key: half.key, digest: half.digest, ready: true });
+        }
+        const prepared = yield* pluginHost.prepare(nextDefs).pipe(Effect.result);
+        if (Result.isFailure(prepared)) {
+          app.panel.reportError(errorMessage(prepared.failure));
+          yield* options.session.reportPluginUiReady({
+            revision: announcement.revision,
+            plugins: reportPlugins.map((plugin) => ({ ...plugin, ready: false })),
+          });
           return;
         }
-        const loaded = loadedResult.success;
-        for (const failure of loaded.failures) {
-          app.panel.reportError(`${failure.spec}: ${failure.reason}`);
-        }
-        pluginEntries = [...app.pluginEntries, ...loaded.entries];
+        yield* pluginHost.publish.pipe(
+          Effect.catch((error) => Effect.sync(() => app.panel.reportError(errorMessage(error)))),
+        );
+        pluginEntries = [
+          ...app.pluginEntries,
+          ...[...uiByKey.entries()].map(([key, value]) => ({
+            id: value.definition.id,
+            path: key,
+            source: value.source,
+            definition: value.definition,
+          })),
+        ];
         yield* resumePending(options.session.workspace());
-        // Initial project ran before this fiber finished; containers whose
-        // kind renderer landed here would still be the Yoga-column fallback
-        // (niri columns look like rows). Remount once plugins are live.
         if (pluginRuntime.remountLayouts) {
           yield* Effect.promise(() => pluginRuntime.remountLayouts!());
         }
-        const configDir = options.configDir ?? dirname(yield* configPath);
-        const lastGood = yield* LastGoodStoreTag.pipe(
-          Effect.provide(
-            lastGoodStoreLayer(join(configDir, ".amux", "plugin-last-good.json")).pipe(
-              Layer.provide(Layer.merge(BunFileSystem.layer, Path.layer)),
-            ),
+        yield* options.session.reportPluginUiReady({
+          revision: announcement.revision,
+          plugins: reportPlugins,
+        });
+      });
+
+    // Core/registry entries only; user UI halves follow PluginPublications.
+    runFiber(
+      "plugin-load",
+      Effect.gen(function* () {
+        const prepared = yield* pluginHost
+          .prepare([...app.registryEntries, ...app.coreEntries])
+          .pipe(Effect.result);
+        if (Result.isFailure(prepared)) {
+          app.panel.reportError(errorMessage(prepared.failure));
+          return;
+        }
+        yield* pluginHost.publish.pipe(
+          Effect.catch((error) => Effect.sync(() => app.panel.reportError(errorMessage(error)))),
+        );
+        yield* Stream.runForEach(options.session.pluginPublications, (announcement) =>
+          applyPublication(announcement).pipe(
+            Effect.catch((error) => Effect.sync(() => app.panel.reportError(errorMessage(error)))),
           ),
         );
-        reloader = createReloader(pluginHost, pluginEntries, Option.fromUndefinedOr(lastGood));
-        if (!loaded.recovered)
-          runFiber(
-            "plugin-last-good-checkpoint",
-            Effect.sleep("5 seconds").pipe(
-              Effect.andThen(reloader.checkpoint),
-              Effect.catch((error) => Effect.logWarning(`Could not checkpoint plugins: ${error}`)),
-            ),
-          );
-        pluginRuntime.reloader = reloader;
-        pluginRuntime.pathFor = (id) => pluginEntries.find((plugin) => plugin.id === id)?.path;
       }),
     );
-    // A last-good archive is crash-safe once it lands, but creating it must
-    // never contend with the initial renderer/session handoff. A detached
-    // fiber starts immediately, before Solid mounts; give the first frame and
-    // shell a small idle window before its file and directory syncs. The prior
-    // archive remains the recovery floor until this baseline completes.
-    // A plugin that dies on activation used to be silent outside the tests.
     runFiber(
       "plugin-errors",
       Stream.runForEach(pluginHost.onError, (event) =>
-        (reloader?.observeError(event) ?? Effect.void).pipe(
-          Effect.andThen(
-            Effect.sync(() => app.panel.reportError(`${event.pluginId}: ${event.error.message}`)),
-          ),
-        ),
+        Effect.sync(() => app.panel.reportError(`${event.pluginId}: ${event.error.message}`)),
       ),
     );
     // A CLI invocation of a plugin command has no registry of its own to run
@@ -563,30 +589,6 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         options.session.commandRequests,
         ({ id, command: raw, source, pane, agent }) => {
           const tag = (raw as RuntimeCommand)._tag;
-          if (tag === "plugin.reload") {
-            const command = raw as {
-              readonly _tag: "plugin.reload";
-              readonly plugin?: string;
-              readonly disk?: boolean;
-            };
-            if (!reloader)
-              return Effect.sync(() =>
-                options.session.respondCommand(id, undefined, "plugin runtime is still starting"),
-              );
-            const ids = command.plugin === undefined ? reloader.reloadable() : [command.plugin];
-            return Effect.forEach(ids, (plugin) =>
-              reloader!.reload(plugin, { disk: command.disk }),
-            ).pipe(
-              Effect.map(() => options.session.respondCommand(id, { reloaded: [...ids] })),
-              Effect.catch((error) =>
-                Effect.sync(() => {
-                  const message = errorMessage(error);
-                  app.panel.reportError(message);
-                  options.session.respondCommand(id, undefined, message);
-                }),
-              ),
-            );
-          }
           // The daemon cannot know a plugin verb's `target` — it holds no
           // registry of its own — so a request reaching a client is where
           // "view commands never run remotely" actually gets enforced, using
@@ -1982,61 +1984,11 @@ function buildApp(
         if (!strokes) return;
         sendKeys(sendKeysTarget()!, "<prefix>", () => strokes);
       }),
-    // Through the daemon and back, so that every client attached to this
-    // workspace reloads — including the one the agent is not looking at.
+    // Through the daemon: host materializes / prepares / publishes; every
+    // attached client's UI half follows PluginPublications.
     "plugin.reload": runCommand,
-    // Client-local: scratch materialize + adopt/reload. Arrives here both from
-    // a local invoke and from the daemon's runOnClient forward (CLI/agent).
-    "plugin.eval": ({ plugin, source }) =>
-      Effect.suspend(() => {
-        const reloader = pluginRuntime.reloader;
-        if (!reloader)
-          return Effect.fail(new CommandError({ message: "plugin runtime is unavailable" }));
-        return evalScratch(reloader, plugin, source).pipe(
-          Effect.provide(BunFileSystem.layer),
-          Effect.map((entry) => ({ plugin: entry.id, path: scratchEntryFilePath(entry) })),
-          Effect.tapError((error) =>
-            Effect.sync(() =>
-              showCommandError(typeof error === "string" ? error : errorMessage(error)),
-            ),
-          ),
-          Effect.mapError(
-            (error) =>
-              new CommandError({
-                message: typeof error === "string" ? error : errorMessage(error),
-              }),
-          ),
-        );
-      }),
-    "plugin.promote": ({ plugin }) =>
-      Effect.suspend(() => {
-        const reloader = pluginRuntime.reloader;
-        if (!reloader)
-          return Effect.fail(new CommandError({ message: "plugin runtime is unavailable" }));
-        return Effect.gen(function* () {
-          const configDir = appOptions.configDir ?? dirname(yield* configPath);
-          return yield* promoteScratch(reloader, plugin, {
-            config: configState(),
-            configDir,
-            configPath: join(configDir, "config.json"),
-          });
-        }).pipe(
-          Effect.provide(BunFileSystem.layer),
-          Effect.tap((result) => Effect.sync(() => setConfigState(result.config))),
-          Effect.map((result) => ({ plugin: result.plugin, path: result.path })),
-          Effect.tapError((error) =>
-            Effect.sync(() =>
-              showCommandError(typeof error === "string" ? error : errorMessage(error)),
-            ),
-          ),
-          Effect.mapError(
-            (error) =>
-              new CommandError({
-                message: typeof error === "string" ? error : errorMessage(error),
-              }),
-          ),
-        );
-      }),
+    "plugin.eval": runCommand,
+    "plugin.promote": runCommand,
     "plugin.inspect": (query) =>
       Effect.suspend(() => {
         if (!inspectCatalog)
@@ -2076,36 +2028,8 @@ function buildApp(
         setCommandError(null);
         setInspectLines(formatInspectResult(result));
       }),
-    "plugin.enable": ({ plugin }) =>
-      Effect.suspend(
-        () =>
-          pluginRuntime.reloader?.enable(plugin) ?? Effect.fail("plugin runtime is unavailable"),
-      ).pipe(
-        Effect.tap(() =>
-          Effect.gen(function* () {
-            const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
-            const next = setPluginEnabled(configState(), path, true);
-            setConfigState(next);
-            yield* saveConfigEffect(next).pipe(Effect.provideContext(rootRuntime));
-          }),
-        ),
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-      ),
-    "plugin.disable": ({ plugin }) =>
-      Effect.suspend(
-        () =>
-          pluginRuntime.reloader?.disable(plugin) ?? Effect.fail("plugin runtime is unavailable"),
-      ).pipe(
-        Effect.tap(() =>
-          Effect.gen(function* () {
-            const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
-            const next = setPluginEnabled(configState(), path, false);
-            setConfigState(next);
-            yield* saveConfigEffect(next).pipe(Effect.provideContext(rootRuntime));
-          }),
-        ),
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-      ),
+    "plugin.enable": runCommand,
+    "plugin.disable": runCommand,
     "app.quit": () => Effect.sync(shutdown),
   };
 
@@ -2596,7 +2520,7 @@ function buildApp(
     },
     pluginStatus: (id) => pluginRuntime.host?.status().find((status) => status.id === id),
     pluginGeneration: (id) => pluginRuntime.host?.generation(id),
-    pluginSource: (id) => pluginRuntime.reloader?.get(id)?.source,
+    pluginSource: (id) => pluginRuntime.uiSource?.(id),
     paneContent: (paneId) => {
       for (const space of session.workspace().spaces) {
         for (const window of space.windows) {

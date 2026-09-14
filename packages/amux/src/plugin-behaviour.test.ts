@@ -523,8 +523,12 @@ testEffect("bindPluginBehaviour fixes client and revision across slot changes", 
         Effect.succeed({
           declarations: emptyPluginDeclarations,
           revision: 1,
+          plugins: [],
         }),
       Discard: () => Effect.void,
+      Eval: () => Effect.succeed({ plugin: "x", path: "/tmp/x.ts" }),
+      Promote: () => Effect.succeed({ plugin: "x", path: "plugins/x.ts" }),
+      SetEnabled: () => Effect.void,
       Stop: () => Effect.void,
     });
 
@@ -532,11 +536,13 @@ testEffect("bindPluginBehaviour fixes client and revision across slot changes", 
       client: makeClient("first"),
       revision: 3,
       declarations: emptyPluginDeclarations,
+      plugins: [],
     };
     const second: PluginPublication<PluginHostBehaviourCalls> = {
       client: makeClient("second"),
       revision: 4,
       declarations: emptyPluginDeclarations,
+      plugins: [],
     };
     const workspace = yield* workspaceFromSession(baseState());
     const reads = buildWorkspaceReadPackage(workspace, context);

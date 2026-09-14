@@ -237,7 +237,6 @@ export {
 export { quoteSendKeysLiteral } from "./send.ts";
 
 export {
-  evalScratch,
   materializeScratch,
   promoteScratch,
   sendSelectionScratchSource,

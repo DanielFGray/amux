@@ -33,7 +33,7 @@ import type { ControlClient } from "../control-client.ts";
 
 registerCleanup();
 
-const harness = new URL("../../../plugin-agent-harness/src/index.tsx", import.meta.url).pathname;
+const harness = new URL("../../../plugin-agent-harness", import.meta.url).pathname;
 const continuity = new URL("../../../plugin-agent-continuity", import.meta.url).pathname;
 const editor = new URL("../../../editor", import.meta.url).pathname;
 const niri = new URL("../../../plugin-niri", import.meta.url).pathname;
@@ -225,7 +225,7 @@ test("host answers RunTiling for niri and PlanResume for continuity", async () =
 }, 60_000);
 
 test("behaviour RPC revision must match the host publication over the wire", async () => {
-  const { daemon, env, pluginConfig, configHome } = await started("hb-rev");
+  const { daemon, env, pluginConfig } = await started("hb-rev");
   try {
     await waitReady(daemon, env);
 
@@ -249,7 +249,6 @@ test("behaviour RPC revision must match the host publication over the wire", asy
             .pipe(Effect.exit);
           yield* client.Prepare({
             plugins: pluginConfig.plugins,
-            configDirectory: configHome,
           });
           const loaded = yield* client.Publish();
           const staleAfterReload = yield* client
@@ -443,7 +442,8 @@ export default definePlugin({ id: "probe", effect: () => Effect.void });
 
   const probePath = join(pluginDir, "probe.ts");
   await writeFile(probePath, clientSource);
-  await writeFile(join(pluginDir, "daemon.ts"), daemonSource);
+  await mkdir(join(pluginDir, "probe"), { recursive: true });
+  await writeFile(join(pluginDir, "probe", "daemon.ts"), daemonSource);
   await writeConfig(configHome, [{ path: probePath, enabled: true }]);
 
   const env = {
@@ -458,7 +458,7 @@ export default definePlugin({ id: "probe", effect: () => Effect.void });
     const before = await ctl(daemon.id, env, (c) => c.PluginDeclarations());
     expect(before.commands.some((entry) => entry.tag === "probe.ping")).toBe(true);
 
-    await writeFile(join(pluginDir, "daemon.ts"), `throw new Error("broken edit");\n`);
+    await writeFile(join(pluginDir, "probe", "daemon.ts"), `throw new Error("broken edit");\n`);
 
     const reloaded = await ctl(daemon.id, env, (c) =>
       c.Batch({

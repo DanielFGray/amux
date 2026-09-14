@@ -21,16 +21,19 @@ const program = Effect.gen(function* () {
     Option.none<PluginPublication<PluginHostBehaviourCalls>>(),
   );
   const configDirectory = yield* Config.string("HOME").pipe(Effect.orElseSucceed(() => "/tmp"));
+  const scratchDirectory = `${configDirectory}/amux-scratch`;
 
   yield* Effect.forkScoped(
     supervisePluginHost({
       socketPath,
       capabilitiesSocketPath,
+      configDirectory,
+      scratchDirectory,
       status,
       generation,
       loadGeneration: (client) =>
         Effect.gen(function* () {
-          yield* client.Prepare({ plugins: [], configDirectory });
+          yield* client.Prepare({ plugins: [] });
           return yield* client.Publish();
         }).pipe(Effect.mapError((error) => new PluginHostError({ message: error.message }))),
     }),

@@ -14,7 +14,6 @@ export interface LastGoodGeneration {
   readonly version: 1;
   readonly entries: readonly string[];
   readonly modules: readonly LastGoodModule[];
-  readonly quarantined: boolean;
 }
 
 export class LastGoodStoreError extends S.TaggedError<LastGoodStoreError>()("LastGoodStoreError", {
@@ -25,7 +24,6 @@ const GenerationSchema = S.Struct({
   version: S.Literal(1),
   entries: S.Array(S.String),
   modules: S.Array(S.Struct({ url: S.String, text: S.String })),
-  quarantined: S.Boolean,
 });
 
 export interface LastGoodStore {

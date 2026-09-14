@@ -6,15 +6,20 @@ import { pluginSpecKey, type PluginSpec } from "../config.ts";
 import type { PluginLoadFailure } from "../plugin-behaviour.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost, RefusedPlugin } from "./host.ts";
-import { hotImport, resolveExportsSubpath } from "./hot.ts";
+import { hotImport, hotModuleClosure, pluginRoot, resolveExportsSubpath } from "./hot.ts";
 import { checkPluginCompat } from "./compat.ts";
-import { pluginStoreDir, resolveInstalledEntry } from "./store.ts";
-import { lastGoodStoreLayer, LastGoodStoreTag, restoreLastGood } from "./last-good.ts";
+import { pluginDirFor, pluginStoreDir, resolveInstalledEntry } from "./store.ts";
+import {
+  lastGoodStoreLayer,
+  LastGoodStoreTag,
+  restoreLastGood,
+  type LastGoodGeneration,
+} from "./last-good.ts";
+import { digestAndAnnounce, type PluginUiHalf } from "./ui-announcement.ts";
 
 /**
  * A loader-owned plugin: Cordis entry with `url` (Def. 81). The host activates
- * `definition`; the reloader re-imports `source`. There is no separate "hot"
- * plugin kind — reloadability is having an entry.
+ * `definition`; clients re-import `source` from the published UI announcement.
  */
 export interface PluginEntry {
   readonly id: string;
@@ -31,12 +36,14 @@ export class PluginReconcileError extends S.TaggedError<PluginReconcileError>()(
 
 export interface LoadedPlugins {
   readonly entries: readonly PluginEntry[];
-  /** Startup imported archived source instead of the current disk files. */
+  /** Startup imported archived source for at least one plugin that failed on disk. */
   readonly recovered: boolean;
   /** Entries the host's configuration could not satisfy — see `RefusedPlugin`. */
   readonly refused: readonly RefusedPlugin[];
   /** Enabled specs that failed to import or pass compat; may still be in `entries`. */
   readonly failures: readonly PluginLoadFailure[];
+  /** Specs considered for this load (config + discovery + host-supplied scratch). */
+  readonly specs: readonly PluginSpec[];
 }
 
 /** Discover user entry files without making discovery a second loading path. */
@@ -72,6 +79,7 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
   const entries: PluginEntry[] = [];
   const enabled: PluginDefinition[] = [];
   const failures: PluginLoadFailure[] = [];
+  let recovered = false;
   const previousByKey = new Map<string, PluginEntry>();
   for (const entry of previous) {
     if (entry.path !== undefined) previousByKey.set(entry.path, entry);
@@ -81,35 +89,52 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
     Effect.provide(lastGoodStoreLayer(path.join(configDir, ".amux", "plugin-last-good.json"))),
   );
   const saved = yield* recovery.read.pipe(Effect.orElseSucceed(() => Option.none()));
-  const restored = yield* Option.match(saved, {
-    onNone: () => Effect.succeed(new Map<string, URL>()),
-    onSome: (archive) =>
-      archive.quarantined
-        ? restoreLastGood(archive, path.join(configDir, ".amux", "plugin-last-good")).pipe(
-            Effect.orElseSucceed(() => new Map<string, URL>()),
-          )
-        : Effect.succeed(new Map<string, URL>()),
-  });
-  if (restored.size > 0)
-    yield* Effect.logWarning(
-      "plugins are running the last-known-good archived source; run 'amux plugin.reload --disk' to retry files on disk",
-    );
+  const archiveDir = path.join(configDir, ".amux", "plugin-last-good");
 
   const configured = new Map(plugins.map((spec) => [pluginSpecKey(spec), spec]));
   const specs: readonly PluginSpec[] = [
     ...plugins,
     ...(yield* discoveredPlugins(configDir))
-      .filter((path) => !configured.has(path))
-      .map((path) => ({ path, enabled: true })),
+      .filter((discovered) => !configured.has(discovered))
+      .map((discovered) => ({ path: discovered, enabled: true })),
   ];
 
-  const keepPrevious = (key: string, reason: string) => {
-    failures.push({ spec: key, reason });
+  const keepPrevious = (key: string, reason: string): boolean => {
     const prior = previousByKey.get(key);
-    if (prior === undefined) return;
+    if (prior === undefined) return false;
+    failures.push({ spec: key, reason });
     enabled.push(prior.definition);
     entries.push(prior);
+    return true;
   };
+
+  const tryArchived = (
+    diskUrl: URL,
+  ): Effect.Effect<Option.Option<URL>, never, FileSystem.FileSystem | Path.Path> =>
+    Option.match(saved, {
+      onNone: () => Effect.succeed(Option.none()),
+      onSome: (archive) =>
+        archive.modules.some((module) => module.url === diskUrl.href)
+          ? restoreLastGood(archive, archiveDir).pipe(
+              Effect.map((map) => Option.fromUndefinedOr(map.get(diskUrl.href))),
+              Effect.orElseSucceed(() => Option.none()),
+            )
+          : Effect.succeed(Option.none()),
+    });
+
+  /** Import a candidate URL and check compat against the on-disk source URL. */
+  const importAndCompat = (importUrl: URL, diskUrl: URL) =>
+    Effect.gen(function* () {
+      const imported = yield* hotImport(importUrl).pipe(Effect.result);
+      if (Result.isFailure(imported)) {
+        return { _tag: "fail" as const, reason: imported.failure };
+      }
+      const compat = yield* checkPluginCompat(diskUrl, imported.success.id).pipe(Effect.result);
+      if (Result.isFailure(compat)) {
+        return { _tag: "fail" as const, reason: compat.failure };
+      }
+      return { _tag: "ok" as const, definition: imported.success };
+    });
 
   for (const spec of specs) {
     const key = pluginSpecKey(spec);
@@ -131,24 +156,40 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
       yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
     if (source._tag !== "found") continue;
 
-    const imported = restored.get(source.url.href) ?? source.url;
-    const importedResult = yield* hotImport(imported).pipe(Effect.result);
-    if (Result.isFailure(importedResult)) {
-      yield* Effect.logWarning(`Could not load plugin '${key}': ${importedResult.failure}`);
-      if (spec.enabled) keepPrevious(key, importedResult.failure);
-      continue;
-    }
-    const loaded = importedResult.success;
-
-    const compatResult = yield* checkPluginCompat(source.url, loaded.id).pipe(Effect.result);
-    if (Result.isFailure(compatResult)) {
-      yield* Effect.logWarning(compatResult.failure);
-      if (spec.enabled) keepPrevious(key, compatResult.failure);
+    const disk = yield* importAndCompat(source.url, source.url);
+    if (disk._tag === "ok") {
+      if (spec.enabled) enabled.push(disk.definition);
+      entries.push({
+        id: disk.definition.id,
+        path: key,
+        source: source.url,
+        definition: disk.definition,
+      });
       continue;
     }
 
-    if (spec.enabled) enabled.push(loaded);
-    entries.push({ id: loaded.id, path: key, source: source.url, definition: loaded });
+    yield* Effect.logWarning(`Could not load plugin '${key}': ${disk.reason}`);
+    if (!spec.enabled) continue;
+    if (keepPrevious(key, disk.reason)) continue;
+    const archived = yield* tryArchived(source.url);
+    if (Option.isNone(archived)) {
+      failures.push({ spec: key, reason: disk.reason });
+      continue;
+    }
+    const restored = yield* importAndCompat(archived.value, source.url);
+    if (restored._tag === "fail") {
+      failures.push({ spec: key, reason: disk.reason });
+      continue;
+    }
+    recovered = true;
+    yield* Effect.logWarning(`plugin '${key}' failed on disk; running archived last-good source`);
+    enabled.push(restored.definition);
+    entries.push({
+      id: restored.definition.id,
+      path: key,
+      source: source.url,
+      definition: restored.definition,
+    });
   }
 
   // One configuration, not a plugin at a time: whether an injected key has any
@@ -159,7 +200,7 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
     .prepare([...coreEntries, ...enabled])
     .pipe(Effect.mapError((message) => new PluginReconcileError({ message })));
 
-  return { entries, recovered: restored.size > 0, refused, failures } satisfies LoadedPlugins;
+  return { entries, recovered, refused, failures, specs } satisfies LoadedPlugins;
 });
 
 const publishLoaded = (host: PluginHost) =>
@@ -215,12 +256,12 @@ export const loadCliPlugins = (
  * relative path must stay inside the config directory, symlinks included —
  * that check is why this resolves rather than merely joins.
  */
-type SourceResolution =
+export type SourceResolution =
   | { readonly _tag: "found"; readonly url: URL }
   | { readonly _tag: "missing" }
   | { readonly _tag: "outside-config" };
 
-function sourceOf(
+export function sourceOf(
   specPath: string,
   configDir: string,
   entrypoint: string = ".",
@@ -295,18 +336,13 @@ const ManifestExports = S.Struct({
 });
 
 /**
- * Where a plugin's entrypoint file actually is. A directory names the
- * package itself, so its own package.json's `exports` map — the same
- * resolution an installed package gets from `resolveInstalledEntry` —
- * decides every variant, "." included. A file names the entry directly:
- * only "." can mean the file itself, and any other variant falls back to
- * the sibling-relative convention every in-repo plugin package already
- * follows (`./daemon` sits beside `index.ts` in the same `src/`
- * directory). Deliberately not resolved by walking up to some *enclosing*
- * package.json: a bare dev-file plugin dropped inside another package's own
- * source tree (as amux's own plugin loader tests do, and as a real
- * `$configDir/plugins/*.ts` file might) must not inherit that package's
- * unrelated exports map.
+ * Resolve a filesystem path to the file that implements `entrypoint`.
+ *
+ * A directory is a package: its `package.json` exports map decides every
+ * variant, "." included — the same resolution an installed package gets from
+ * `resolveInstalledEntry`. A file names the entry directly: "." is the file
+ * itself; any other variant resolves under `pluginRoot` (`<stem>/daemon.ts`).
+ * Package layouts that need sibling `src/daemon.ts` must be directory specs.
  */
 function resolvePathEntry(
   filePath: string,
@@ -318,9 +354,7 @@ function resolvePathEntry(
     const resolveFile = () =>
       entrypoint === "."
         ? Effect.succeed(Option.some(filePath))
-        : Effect.try(() =>
-            Bun.resolveSync(entrypoint, filePath.slice(0, filePath.lastIndexOf("/"))),
-          ).pipe(
+        : Effect.try(() => Bun.resolveSync(entrypoint, pluginRoot(pathToFileURL(filePath)))).pipe(
             Effect.map(Option.some),
             Effect.orElseSucceed(() => Option.none<string>()),
           );
@@ -362,3 +396,81 @@ function resolvePathEntry(
     });
   });
 }
+
+/**
+ * Resolve UI halves for the load set without importing them.
+ * Announced by pluginSpecKey; the client learns definePlugin id on import.
+ */
+export const collectUiHalves = (
+  specs: readonly PluginSpec[],
+  configDir: string,
+  storeDir?: string,
+): Effect.Effect<readonly PluginUiHalf[], never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const resolvedStore = storeDir ?? (yield* pluginStoreDir);
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const halves: PluginUiHalf[] = [];
+    const seen = new Set<string>();
+    for (const spec of specs) {
+      if (!spec.enabled) continue;
+      const key = pluginSpecKey(spec);
+      if (seen.has(key)) continue;
+      const ui =
+        "package" in spec
+          ? yield* resolveInstalledEntry(spec.package, resolvedStore, ".").pipe(
+              Effect.map((entry): SourceResolution => ({
+                _tag: "found",
+                url: pathToFileURL(entry),
+              })),
+              Effect.orElseSucceed((): SourceResolution => ({ _tag: "missing" })),
+            )
+          : yield* sourceOf(spec.path, configDir, ".");
+      if (ui._tag !== "found") continue;
+      seen.add(key);
+      const digestRoot =
+        "package" in spec
+          ? pluginDirFor(spec.package, resolvedStore)
+          : yield* Effect.gen(function* () {
+              const resolved = path.resolve(configDir, spec.path);
+              const info = yield* fs.stat(resolved).pipe(
+                Effect.map(Option.some),
+                Effect.orElseSucceed(() => Option.none()),
+              );
+              return Option.match(info, {
+                onNone: () => pluginRoot(ui.url),
+                onSome: (stat) =>
+                  stat.type === "Directory" ? resolved.replace(/\/$/, "") : pluginRoot(ui.url),
+              });
+            });
+      halves.push(yield* digestAndAnnounce(key, ui.url, digestRoot));
+    }
+    return halves;
+  });
+
+/** Checkpoint committed plugin sources after a successful Publish. */
+export const checkpointLastGood = (
+  configDir: string,
+  entries: readonly PluginEntry[],
+): Effect.Effect<void, string, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    if (entries.length === 0) return;
+    const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const store = yield* LastGoodStoreTag.pipe(
+      Effect.provide(lastGoodStoreLayer(path.join(configDir, ".amux", "plugin-last-good.json"))),
+    );
+    const sources = hotModuleClosure(entries.map((entry) => entry.source));
+    const modules = yield* Effect.forEach(sources, (source) =>
+      fs.readFileString(fileURLToPath(source)).pipe(
+        Effect.map((text) => ({ url: source.href, text })),
+        Effect.mapError((error) => `could not checkpoint '${source}': ${error.message}`),
+      ),
+    );
+    const generation: LastGoodGeneration = {
+      version: 1,
+      entries: entries.map((entry) => entry.source.href),
+      modules,
+    };
+    yield* store.write(generation).pipe(Effect.mapError((error) => error.message));
+  });

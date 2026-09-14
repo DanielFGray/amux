@@ -41,7 +41,7 @@ test(
         keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
         plugins: [
           ...defaultE2ePlugins(),
-          { path: join(process.cwd(), "packages/plugin-modal/src/index.ts"), enabled: true },
+          { path: join(process.cwd(), "packages/plugin-modal"), enabled: true },
         ],
       },
     });
