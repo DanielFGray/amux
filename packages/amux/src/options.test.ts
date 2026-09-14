@@ -95,7 +95,7 @@ test("a relative edit clamps, and a boolean flips whichever way it is pushed", (
 test("coerce refuses rather than inventing a value", () => {
   expect(coerceOption(OPTIONS["behaviour.scrollRows"], "3")).toBeUndefined();
   expect(coerceOption(OPTIONS["appearance.outerBorder"], 1)).toBeUndefined();
-  expect(coerceOption(OPTIONS["behaviour.shell"], null)).toBeUndefined();
+  expect(coerceOption(OPTIONS["behaviour.shell"], undefined)).toBeUndefined();
   expect(coerceOption(OPTIONS["behaviour.scrollRows"], 999)).toBe(
     OPTIONS["behaviour.scrollRows"].max,
   );

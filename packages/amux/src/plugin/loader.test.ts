@@ -822,22 +822,24 @@ testEffect("a reconcile failure fails the load", () =>
 // --- Decode config preserves plugins ---
 
 test("decodeConfig preserves valid plugin specs", () => {
-  const config = decodeConfig({
-    plugins: [
-      "./relative.ts",
-      "/absolute/path.ts",
-      { path: "/with/options.ts", enabled: true },
-      { path: "/disabled.ts", enabled: false },
-      { package: "example-plugin" },
-      { package: "@scope/example-plugin", version: "^1.2.0", enabled: false },
-      "",
-      null,
-      42,
-      { enabled: true },
-      { path: 123 },
-      { package: "" },
-    ],
-  });
+  const config = decodeConfig(
+    JSON.stringify({
+      plugins: [
+        "./relative.ts",
+        "/absolute/path.ts",
+        { path: "/with/options.ts", enabled: true },
+        { path: "/disabled.ts", enabled: false },
+        { package: "example-plugin" },
+        { package: "@scope/example-plugin", version: "^1.2.0", enabled: false },
+        "",
+        null,
+        42,
+        { enabled: true },
+        { path: 123 },
+        { package: "" },
+      ],
+    }),
+  );
 
   expect(config.plugins).toEqual([
     { path: "./relative.ts", enabled: true },

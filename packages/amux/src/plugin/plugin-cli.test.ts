@@ -4,8 +4,6 @@ import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { fileURLToPath } from "node:url";
 import { decodeConfig } from "../config.ts";
-import { JsonValueSchema } from "../effect/AttachProtocol.ts";
-import { Schema as S } from "effect";
 import { runPluginCli } from "./plugin-cli.ts";
 import { testEffect } from "../test-effect.ts";
 
@@ -27,8 +25,7 @@ const configuredPlugins = Effect.fnUntraced(function* (configPath: string) {
   const fs = yield* FileSystem.FileSystem;
   const text = yield* fs.readFileString(configPath).pipe(Effect.orElseSucceed(() => ""));
   if (!text) return [];
-  const parsed = yield* S.decodeEffect(S.fromJsonString(JsonValueSchema))(text);
-  return decodeConfig(parsed).plugins;
+  return decodeConfig(text).plugins;
 });
 
 const cli = (argv: readonly string[], configPath: string, storeDir: string) =>

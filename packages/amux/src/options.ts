@@ -1,5 +1,4 @@
 import { Option, Schema as S } from "effect";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
 
 /**
  * The options, as values.
@@ -56,6 +55,41 @@ interface EnumSpec {
 
 export type OptionSpec = NumberSpec | BooleanSpec | StringSpec | EnumSpec;
 export type OptionValue = number | boolean | string;
+
+/** What a delta may hold: every option kind's value, and nothing else (no
+ *  nested JSON). Wrong kinds for a known name still survive the file decode
+ *  and are judged on resolve — see {@link resolveOptions}. */
+export const OptionValueSchema = S.Union([S.Finite, S.Boolean, S.String]);
+
+/**
+ * The Schema that owns one option's value at the coerce/resolve boundary.
+ * Bounds and enum membership live here; the file keeps a looser
+ * {@link OptionValueSchema} so an out-of-range or wrong-kind delta is not
+ * dropped before a later build can read it.
+ */
+export function optionSchema(
+  spec: OptionSpec,
+  extraValues: readonly string[] = [],
+): S.Codec<OptionValue> {
+  switch (spec.kind) {
+    case "number":
+      return S.Finite;
+    case "boolean":
+      return S.Boolean;
+    case "string":
+      return S.String;
+    case "enum": {
+      const allowed = extraValues.length > 0 ? [...spec.values, ...extraValues] : spec.values;
+      return S.String.pipe(
+        S.check(
+          S.makeFilter((value: string) => allowed.includes(value), {
+            message: "not an allowed enum value",
+          }),
+        ),
+      );
+    }
+  }
+}
 
 export const OPTIONS = {
   "window.format": {
@@ -139,8 +173,14 @@ type ValueOf<S> = S extends NumberSpec ? number : S extends BooleanSpec ? boolea
 /** Every option resolved to a value — what the app reads. */
 export type Options = { readonly [K in OptionName]: ValueOf<(typeof OPTIONS)[K]> };
 
+export const optionNames = Object.keys(OPTIONS) as OptionName[];
+
 /**
  * What is written to disk: only the options a user has actually changed.
+ *
+ * Keyed by any name, not only the table's: plugin options and options from a
+ * newer release round-trip unchanged. Each value is judged against its option
+ * on read (resolveOptions).
  *
  * Deltas rather than a full table, for the same reason keys.bindings records
  * only rebound commands — a saved file that pins every default freezes them at
@@ -149,13 +189,12 @@ export type Options = { readonly [K in OptionName]: ValueOf<(typeof OPTIONS)[K]>
  * unrecognised name owns survive: they are kept verbatim and written back, so
  * turning a plugin off does not flatten its settings out of the file.
  */
-export type OptionDeltas = Readonly<Record<string, JsonValue>>;
+export const OptionDeltasSchema = S.Record(S.String, OptionValueSchema);
+export type OptionDeltas = typeof OptionDeltasSchema.Type;
 
 export function optionSpec(name: string): OptionSpec | undefined {
   return Object.hasOwn(OPTIONS, name) ? OPTIONS[name as OptionName] : undefined;
 }
-
-export const optionNames = Object.keys(OPTIONS) as OptionName[];
 
 /** The distinct name prefixes, in declaration order — the settings window's tabs. */
 export const optionSections = [...new Set(optionNames.map(sectionOf))];
@@ -201,9 +240,11 @@ export function resolveOptions(
  *  static declaration doesn't and shouldn't know about ahead of time. */
 export function coerceOption(
   spec: OptionSpec,
-  raw: JsonValue | undefined,
+  raw: OptionValue | undefined,
   extraValues: readonly string[] = [],
 ): OptionValue | undefined {
+  if (raw === undefined) return undefined;
+  // decodeUnknown*: raw is OptionValue (any kind); the option's Schema may refuse it.
   switch (spec.kind) {
     case "number":
       return Option.match(S.decodeUnknownOption(S.Finite)(raw), {
@@ -211,14 +252,9 @@ export function coerceOption(
         onSome: (value) => clamp(spec, Math.floor(value)),
       });
     case "boolean":
-      return Option.getOrUndefined(S.decodeUnknownOption(S.Boolean)(raw));
     case "string":
-      return Option.getOrUndefined(S.decodeUnknownOption(S.String)(raw));
-    case "enum": {
-      const value = Option.getOrUndefined(S.decodeUnknownOption(S.String)(raw));
-      const allowed = extraValues.length ? [...spec.values, ...extraValues] : spec.values;
-      return value !== undefined && allowed.includes(value) ? value : undefined;
-    }
+    case "enum":
+      return Option.getOrUndefined(S.decodeOption(optionSchema(spec, extraValues))(raw));
   }
 }
 

@@ -4,14 +4,17 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { dirname, join } from "node:path";
 import { DEFAULT_LEADER, DEFAULT_PREFIX, type Keys } from "./bindings.ts";
-import { type OptionDeltas } from "./options.ts";
-import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
-import { Config as EffectConfig, Effect, Option, Schema as S } from "effect";
+import {
+  OptionDeltasSchema,
+  type OptionDeltas,
+} from "./options.ts";
+import { Config as EffectConfig, Effect, Option, Schema as S, SchemaGetter } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
 import { LayoutRuleSchema, type LayoutRule } from "./layout-rules.ts";
 import { errorMessage } from "./error-message.ts";
+import { NonEmptyString } from "./schema-primitives.ts";
 
 /**
  * One entry in config's `plugins` array, naming a plugin and whether it is
@@ -120,14 +123,85 @@ export const configPath: Effect.Effect<string> = Effect.map(configDir, (dir) =>
   join(dir, "amux", "config.json"),
 );
 
-const KeysSchema = S.Struct({
+/**
+ * Decode an array item with its owner Schema; a failure becomes a skipped
+ * entry rather than failing the whole array (hand-edited config tolerance).
+ */
+function softArray<Item extends S.Top>(item: Item) {
+  const SoftItem = S.Union([item, S.Null]).pipe(
+    S.catchDecoding(() => Effect.succeed(Option.some(null))),
+  );
+  return S.Array(SoftItem).pipe(
+    S.decodeTo(S.mutable(S.Array(item)), {
+      decode: SchemaGetter.transform((items: ReadonlyArray<Item["Type"] | null>) =>
+        items.flatMap((entry) => (entry === null ? [] : [entry])),
+      ),
+      encode: SchemaGetter.transform((items: Item["Type"][]) => items),
+    }),
+  );
+}
+
+/** Accept any string; wrong types become empty so migration can apply defaults. */
+const LooseString = S.String.pipe(
+  S.catchDecoding(() => Effect.succeed(Option.some(""))),
+);
+
+const BindingSequenceSchema = softArray(NonEmptyString);
+
+const RawKeysSchema = S.Struct({
   // Optional so a pre-rename file ({ leader: mux-chord }) still decodes;
-  // {@link decodeConfig} migrates it into prefix + leader.
-  prefix: S.optional(JsonValueSchema),
-  leader: JsonValueSchema.pipe(S.withDecodingDefaultType(Effect.succeed(DEFAULT_LEADER))),
-  localleader: S.optional(JsonValueSchema),
-  bindings: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),
+  // KeysSchema migrates it into prefix + leader.
+  prefix: S.optionalKey(LooseString),
+  leader: LooseString.pipe(S.withDecodingDefaultType(Effect.succeed(""))),
+  localleader: S.optionalKey(LooseString),
+  bindings: S.Record(S.String, BindingSequenceSchema).pipe(
+    S.withDecodingDefaultType(Effect.succeed({})),
+  ),
 });
+
+type RawKeys = typeof RawKeysSchema.Type;
+
+function nonEmptyChord(value: string | undefined, fallback: string): string {
+  return value !== undefined && value.trim().length > 0 ? value : fallback;
+}
+
+const KeysDecodedSchema = S.Struct({
+  prefix: S.String,
+  leader: S.String,
+  bindings: S.Record(S.String, S.Array(S.String)),
+});
+
+const KeysSchema = RawKeysSchema.pipe(
+  S.decodeTo(KeysDecodedSchema, {
+    decode: SchemaGetter.transform((keys: RawKeys) => {
+      const legacy = keys.prefix === undefined;
+      const prefix = legacy
+        ? nonEmptyChord(keys.leader, DEFAULT_PREFIX)
+        : nonEmptyChord(keys.prefix, DEFAULT_PREFIX);
+      const leader = legacy
+        ? nonEmptyChord(keys.localleader, DEFAULT_LEADER)
+        : nonEmptyChord(keys.leader, DEFAULT_LEADER);
+      const rewriteToken = (key: string): string => {
+        if (!legacy) return key;
+        return key.replaceAll("<leader>", "<prefix>").replaceAll("<localleader>", "<leader>");
+      };
+      const bindings = Object.fromEntries(
+        Object.entries(keys.bindings).map(([name, sequence]) => [
+          name,
+          sequence.map(rewriteToken),
+        ]),
+      );
+      return { prefix, leader, bindings };
+    }),
+    encode: SchemaGetter.transform((keys: typeof KeysDecodedSchema.Type) => ({
+      prefix: keys.prefix,
+      leader: keys.leader,
+      bindings: Object.fromEntries(
+        Object.entries(keys.bindings).map(([name, sequence]) => [name, [...sequence]]),
+      ),
+    })),
+  }),
+);
 
 const PluginPathSpecSchema = S.Struct({
   path: S.String.pipe(S.check(S.isMinLength(1))),
@@ -138,9 +212,18 @@ const PluginPackageSpecSchema = S.Struct({
   version: S.optional(S.String.pipe(S.check(S.isMinLength(1)))),
   enabled: S.Boolean.pipe(S.withDecodingDefaultType(Effect.succeed(true))),
 });
-/** Typed plugin spec — Load / RPC payloads use this, not JsonValue. */
+/** Typed plugin spec — Load / RPC payloads use this. */
 export const PluginSpecSchema = S.Union([PluginPathSpecSchema, PluginPackageSpecSchema]);
-const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = [];
+
+/** Bare path string in the config file → path spec with enabled true. */
+const BarePluginPathSchema = NonEmptyString.pipe(
+  S.decodeTo(PluginPathSpecSchema, {
+    decode: SchemaGetter.transform((path: string) => ({ path, enabled: true })),
+    encode: SchemaGetter.transform((spec: typeof PluginPathSpecSchema.Encoded) => spec.path),
+  }),
+);
+
+const PluginConfigEntrySchema = S.Union([PluginSpecSchema, BarePluginPathSchema]);
 
 /**
  * Daemon → plugin-host Load payload: the plugin specs and the directory
@@ -153,7 +236,7 @@ export const PluginHostLoadInputSchema = S.Struct({
 export type PluginHostLoadInput = typeof PluginHostLoadInputSchema.Type;
 
 const ConfigSchema = S.Struct({
-  options: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),
+  options: OptionDeltasSchema.pipe(S.withDecodingDefaultType(Effect.succeed({}))),
   keys: KeysSchema.pipe(
     S.withDecodingDefaultType(
       Effect.succeed({
@@ -163,98 +246,43 @@ const ConfigSchema = S.Struct({
       }),
     ),
   ),
-  plugins: S.Array(JsonValueSchema).pipe(
-    S.withDecodingDefaultType(Effect.succeed(DEFAULT_PLUGINS_JSON)),
-  ),
-  permissions: S.Array(JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
-  layoutRules: S.Array(JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
+  plugins: softArray(PluginConfigEntrySchema).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
+  permissions: softArray(PermissionRuleSchema).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
+  layoutRules: softArray(LayoutRuleSchema).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
 });
 
+/** Config file ↔ {@link Config}: one Schema, decode on load and encode on save. */
+export const ConfigFileSchema = S.fromJsonString(ConfigSchema, { space: 2 });
+
 /**
- * Read a loaded file into a Config.
+ * Read a config file's JSON text into a Config.
  *
- * Option values are NOT validated here. They are stored as written and resolved
- * against the table on read (resolveOptions), which is what lets an entry
- * belonging to a name this build does not know survive a save instead of being
- * dropped by the decoder that failed to recognise it.
+ * Option values are NOT judged against their kind Schema here. They are stored
+ * as written and resolved against the table on read (resolveOptions), which is
+ * what lets an entry belonging to a name this build does not know survive a
+ * save instead of being dropped by the decoder that failed to recognise it.
  */
-export function decodeConfig(loaded: JsonValue): Config {
-  const decoded = Option.getOrElse(S.decodeUnknownOption(ConfigSchema)(loaded), () =>
-    S.decodeSync(ConfigSchema)({}),
+export function decodeConfig(contents: string): Config {
+  return Option.getOrElse(Option.map(S.decodeOption(ConfigFileSchema)(contents), toConfig), () =>
+    structuredClone(DEFAULT_CONFIG),
   );
-  const keys = decoded.keys;
-  const nonEmpty = S.String.pipe(S.check(S.makeFilter((value) => value.trim().length > 0)));
-  const readString = (value: JsonValue | undefined, fallback: string) =>
-    Option.getOrElse(
-      Option.flatMap(Option.fromNullishOr(value), (v) => S.decodeUnknownOption(nonEmpty)(v)),
-      () => fallback,
-    );
-
-  // Pre-rename configs stored the mux chord under `keys.leader` and (briefly)
-  // the editor chord under `keys.localleader`. New shape: `prefix` + `leader`.
-  const legacy = keys.prefix === undefined;
-  const prefix = legacy
-    ? readString(keys.leader, DEFAULT_PREFIX)
-    : readString(keys.prefix, DEFAULT_PREFIX);
-  const leader = legacy
-    ? readString(keys.localleader, DEFAULT_LEADER)
-    : readString(keys.leader, DEFAULT_LEADER);
-
-  const rewriteToken = (key: string): string => {
-    if (!legacy) return key;
-    return key.replaceAll("<leader>", "<prefix>").replaceAll("<localleader>", "<leader>");
-  };
-  const bindings = Object.fromEntries(
-    Object.entries(keys.bindings).flatMap(([name, value]) => {
-      const entries = S.decodeUnknownOption(S.Array(JsonValueSchema))(value);
-      if (Option.isNone(entries)) return [];
-      return [
-        [
-          name,
-          entries.value.flatMap((key) => {
-            const decoded = S.decodeUnknownOption(S.String.pipe(S.check(S.isMinLength(1))))(key);
-            return Option.isSome(decoded) ? [rewriteToken(decoded.value)] : [];
-          }),
-        ],
-      ];
-    }),
-  );
-  const plugins = decoded.plugins.flatMap((entry) => {
-    const plugin = decodePluginEntry(entry);
-    if (Option.isNone(plugin)) return [];
-    return [plugin.value];
-  });
-  const permissions = decoded.permissions.flatMap((entry) => {
-    const rule = decodePermissionRule(entry);
-    return Option.isSome(rule) ? [rule.value] : [];
-  });
-  const layoutRules = decoded.layoutRules.flatMap((entry) => {
-    const rule = decodeLayoutRule(entry);
-    return Option.isSome(rule) ? [rule.value] : [];
-  });
-  return {
-    options: { ...decoded.options },
-    keys: { prefix, leader, bindings },
-    plugins,
-    permissions,
-    layoutRules,
-  };
 }
 
-const decodePermissionRule = S.decodeUnknownOption(PermissionRuleSchema);
-const decodeLayoutRule = S.decodeUnknownOption(LayoutRuleSchema);
-
-const decodePluginEntry = (entry: JsonValue): Option.Option<PluginSpec> => {
-  const spec = S.decodeUnknownOption(PluginSpecSchema)(entry);
-  if (Option.isSome(spec)) return spec;
-  return Option.map(
-    S.decodeUnknownOption(S.String.pipe(S.check(S.isMinLength(1))))(entry),
-    (path) => ({
-      path,
-      enabled: true,
-    }),
-  );
-};
+function toConfig(decoded: typeof ConfigFileSchema.Type): Config {
+  return {
+    options: { ...decoded.options },
+    keys: {
+      prefix: decoded.keys.prefix,
+      leader: decoded.keys.leader,
+      bindings: Object.fromEntries(
+        Object.entries(decoded.keys.bindings).map(([name, sequence]) => [name, [...sequence]]),
+      ),
+    },
+    plugins: [...decoded.plugins],
+    permissions: [...decoded.permissions],
+    layoutRules: [...decoded.layoutRules],
+  };
+}
 
 export const loadConfig = (path?: string): Effect.Effect<Config, never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
@@ -264,7 +292,7 @@ export const loadConfig = (path?: string): Effect.Effect<Config, never, FileSyst
       const exists = yield* fs.exists(resolved);
       if (!exists) return structuredClone(DEFAULT_CONFIG);
       const contents = yield* fs.readFileString(resolved);
-      return decodeConfig(yield* S.decodeEffect(S.fromJsonString(JsonValueSchema))(contents));
+      return toConfig(yield* S.decodeEffect(ConfigFileSchema)(contents));
     }).pipe(
       Effect.catch((error) =>
         Effect.logWarning(`Ignoring unreadable config at ${resolved}: ${errorMessage(error)}`).pipe(
@@ -282,9 +310,8 @@ export const saveConfig = (
     const resolved = path ?? (yield* configPath);
     const fs = yield* FileSystem.FileSystem;
     yield* fs.makeDirectory(dirname(resolved), { recursive: true });
-    // Config is validated field-by-field on read, by design (see decodeConfig's
-    // doc comment) rather than through one derived schema for the whole shape;
-    // encoding an already-typed Config has no unknown-shape risk to guard against.
-    // @effect-diagnostics-next-line preferSchemaOverJson:off
-    yield* fs.writeFileString(resolved, JSON.stringify(config, null, 2) + "\n");
+    // Config is already the Schema's Type; encode failure would be a bug in
+    // ConfigSchema, not a platform I/O error callers can recover from.
+    const encoded = yield* S.encodeEffect(ConfigFileSchema)(config).pipe(Effect.orDie);
+    yield* fs.writeFileString(resolved, encoded.endsWith("\n") ? encoded : `${encoded}\n`);
   });
