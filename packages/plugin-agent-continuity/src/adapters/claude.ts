@@ -9,16 +9,16 @@ import {
   type ForeignHarnessAdapter,
 } from "@danielfgray/amux";
 import {
-  ensureHooksObject,
   ensureNestedCommandHook,
+  ensureNestedHooksMap,
   homeDir,
   hookCommand,
-  readOrEmptyJsonObject,
+  readOrEmptyNestedHooksFile,
   removeManagedFile,
   removeNestedCommandHooks,
   requireConfigDirectory,
-  writeJsonObject,
   writeManagedFile,
+  writeNestedHooksFile,
 } from "../hooks-install.ts";
 
 const INTEGRATION_VERSION = 1;
@@ -42,8 +42,8 @@ const installClaudeHook = (
     );
     yield* writeManagedFile(hookPath, source, 0o755);
 
-    const { value } = yield* readOrEmptyJsonObject(settingsPath);
-    const hooks = ensureHooksObject(value);
+    const { value } = yield* readOrEmptyNestedHooksFile(settingsPath);
+    const hooks = ensureNestedHooksMap(value);
     // Drop legacy amux/herdr action variants for this path, then ensure session.
     removeNestedCommandHooks(hooks, "SessionStart", [
       hookCommand(hookPath, "session"),
@@ -51,7 +51,7 @@ const installClaudeHook = (
       hookCommand(hookPath),
     ]);
     ensureNestedCommandHook(hooks, "SessionStart", hookCommand(hookPath, "session"), 10, "*");
-    yield* writeJsonObject(settingsPath, value);
+    yield* writeNestedHooksFile(settingsPath, value);
     return hookPath;
   });
 
@@ -65,14 +65,14 @@ const uninstallClaudeHook = (
     const settings = yield* fs.readFileString(settingsPath).pipe(Effect.result);
     let updated = false;
     if (Result.isSuccess(settings)) {
-      const { value } = yield* readOrEmptyJsonObject(settingsPath);
-      const hooks = ensureHooksObject(value);
+      const { value } = yield* readOrEmptyNestedHooksFile(settingsPath);
+      const hooks = ensureNestedHooksMap(value);
       updated = removeNestedCommandHooks(hooks, "SessionStart", [
         hookCommand(hookPath, "session"),
         hookCommand(hookPath, "idle"),
         hookCommand(hookPath),
       ]);
-      if (updated) yield* writeJsonObject(settingsPath, value);
+      if (updated) yield* writeNestedHooksFile(settingsPath, value);
     }
     const removed = yield* removeManagedFile(hookPath);
     return removed || updated;

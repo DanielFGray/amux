@@ -300,14 +300,15 @@ function main(): Effect.Effect<number> {
           writeErr("error: 'process-state' requires a managed pane");
           return 2;
         }
-        const { isProcessState, reportProcessState, ProcessStateSchema } = yield* Effect.promise(
+        const { reportProcessState, ProcessStateSchema } = yield* Effect.promise(
           () => import("./process-state.ts"),
         );
-        if (state === undefined || !isProcessState(state)) {
+        const decoded = Option.flatMap(Option.fromNullishOr(state), Schema.decodeUnknownOption(ProcessStateSchema));
+        if (Option.isNone(decoded)) {
           writeErr(`error: --state must be one of ${ProcessStateSchema.literals.join(", ")}`);
           return 2;
         }
-        return yield* reportProcessState(socketPath, agent, state).pipe(
+        return yield* reportProcessState(socketPath, agent, decoded.value).pipe(
           Effect.as(0),
           Effect.catch((error) => {
             writeErr(`error: ${String(error)}`);

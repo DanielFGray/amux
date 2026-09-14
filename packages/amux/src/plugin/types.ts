@@ -8,7 +8,6 @@ import {
 } from "./services.ts";
 import type { JSX } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
-import type { JsonValue } from "../layout.ts";
 import type { PluginActivateError } from "./activate-error.ts";
 
 export interface SpawnProvider {
@@ -145,14 +144,14 @@ export interface PluginSettingsSection {
   readonly component: (props: { width: number; height: number; selected: number }) => JSX.Element;
 }
 
-export interface PluginKVKey<T extends JsonValue> {
+export interface PluginKVKey<A, E = A> {
   readonly key: string;
-  readonly schema: Schema.Codec<T>;
+  readonly schema: Schema.Codec<A, E>;
 }
 
 export interface PluginKV {
-  readonly get: <T extends JsonValue>(key: PluginKVKey<T>, defaultValue?: T) => T | undefined;
-  readonly set: <T extends JsonValue>(key: PluginKVKey<T>, value: T) => void;
+  readonly get: <A, E>(key: PluginKVKey<A, E>, defaultValue?: A) => A | undefined;
+  readonly set: <A, E>(key: PluginKVKey<A, E>, value: A) => void;
   readonly ready: boolean;
 }
 

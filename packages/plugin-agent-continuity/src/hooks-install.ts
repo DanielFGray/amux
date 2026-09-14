@@ -2,17 +2,19 @@
  * Shared install/uninstall helpers for foreign-harness hook assets.
  * Managed files carry AMUX_INTEGRATION_* markers; uninstall refuses unmarked files.
  */
-import { Effect, Option, Result, Schema as S } from "effect";
+import { Effect, Result, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { dirname, join } from "node:path";
 import { ForeignHarnessHookError } from "@danielfgray/amux";
-import { JsonValueSchema, type JsonValue } from "@danielfgray/amux/protocol";
 
 export const INTEGRATION_ID_MARKER = "AMUX_INTEGRATION_ID=";
 export const INTEGRATION_VERSION_MARKER = "AMUX_INTEGRATION_VERSION=";
 export const MANAGED_MARKER = "AMUX_AGENT_STATE_PLUGIN=1";
+
+/** Effect SchemaAST: keep undeclared object keys through decode and encode. */
+const preserveExcess = { onExcessProperty: "preserve" as const };
 
 export const homeDir = (): string => {
   // @effect-diagnostics-next-line processEnv:off -- default-argument fallback outside Effect.
@@ -41,11 +43,6 @@ export const hookCommand = (hookPath: string, action?: string): string => {
   return action === undefined ? base : `${base} ${action}`;
 };
 
-/** Mutable JSON object — foreign settings files keep unknown sibling keys. */
-export type JsonObject = { [key: string]: JsonValue };
-
-const JsonObjectSchema = S.Record(S.String, JsonValueSchema);
-
 const HookCommandSchema = S.Struct({
   type: S.String,
   command: S.String,
@@ -57,12 +54,64 @@ const NestedHookEntrySchema = S.Struct({
   hooks: S.Array(HookCommandSchema),
 });
 
-const parseJsonObject = (
+/** Claude / Codex settings: nested SessionStart-style entries under `hooks`. */
+export const NestedHooksFileSchema = S.Struct({
+  hooks: S.optionalKey(S.Record(S.String, S.Array(NestedHookEntrySchema))),
+});
+
+const SimpleHookEntrySchema = S.Struct({
+  command: S.String,
+});
+
+/** Cursor hooks.json: flat `{ command }` entries plus optional `version`. */
+export const SimpleHooksFileSchema = S.Struct({
+  version: S.optionalKey(S.Finite),
+  hooks: S.optionalKey(S.Record(S.String, S.Array(SimpleHookEntrySchema))),
+});
+
+export type NestedHookEntry = typeof NestedHookEntrySchema.Type;
+export type NestedHooksMap = {
+  [event: string]: readonly NestedHookEntry[];
+};
+export type NestedHooksFile = Omit<typeof NestedHooksFileSchema.Type, "hooks"> & {
+  hooks?: NestedHooksMap;
+};
+
+export type SimpleHookEntry = typeof SimpleHookEntrySchema.Type;
+export type SimpleHooksMap = {
+  [event: string]: readonly SimpleHookEntry[];
+};
+export type SimpleHooksFile = Omit<typeof SimpleHooksFileSchema.Type, "hooks"> & {
+  hooks?: SimpleHooksMap;
+};
+
+const mutableNestedFile = (decoded: typeof NestedHooksFileSchema.Type): NestedHooksFile => {
+  if (decoded.hooks === undefined) return { ...decoded };
+  return { ...decoded, hooks: { ...decoded.hooks } };
+};
+
+const mutableSimpleFile = (decoded: typeof SimpleHooksFileSchema.Type): SimpleHooksFile => {
+  if (decoded.hooks === undefined) return { ...decoded };
+  return { ...decoded, hooks: { ...decoded.hooks } };
+};
+
+const parseNestedHooksFile = (
   content: string,
   path: string,
-): Effect.Effect<JsonObject, ForeignHarnessHookError> =>
-  S.decodeEffect(S.fromJsonString(JsonObjectSchema))(content).pipe(
-    Effect.map((decoded) => ({ ...decoded }) satisfies JsonObject),
+): Effect.Effect<NestedHooksFile, ForeignHarnessHookError> =>
+  S.decodeEffect(S.fromJsonString(NestedHooksFileSchema), preserveExcess)(content).pipe(
+    Effect.map(mutableNestedFile),
+    Effect.mapError(
+      () => new ForeignHarnessHookError({ message: `failed to parse JSON object at ${path}` }),
+    ),
+  );
+
+const parseSimpleHooksFile = (
+  content: string,
+  path: string,
+): Effect.Effect<SimpleHooksFile, ForeignHarnessHookError> =>
+  S.decodeEffect(S.fromJsonString(SimpleHooksFileSchema), preserveExcess)(content).pipe(
+    Effect.map(mutableSimpleFile),
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to parse JSON object at ${path}` }),
     ),
@@ -102,33 +151,20 @@ export const removeManagedFile = (
     return true;
   });
 
-const asHookEntries = (value: JsonValue | undefined) => {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) =>
-    Option.match(S.decodeUnknownOption(NestedHookEntrySchema)(entry), {
-      onNone: () => [],
-      onSome: (decoded) => [decoded],
-    }),
-  );
-};
-
-const entriesAsJson = (entries: readonly (typeof NestedHookEntrySchema.Type)[]): JsonValue =>
-  S.encodeSync(S.Array(NestedHookEntrySchema))(entries);
-
 /** Ensure a nested command hook (claude/codex SessionStart shape). Idempotent. */
 export const ensureNestedCommandHook = (
-  hooks: JsonObject,
+  hooks: NestedHooksMap,
   event: string,
   command: string,
   timeout: number,
   matcher?: string,
 ): void => {
-  const entries = [...asHookEntries(hooks[event])];
+  const entries = [...(hooks[event] ?? [])];
   const already = entries.some((entry) =>
     entry.hooks.some((hook) => hook.type === "command" && hook.command === command),
   );
   if (already) {
-    hooks[event] = entriesAsJson(entries);
+    hooks[event] = entries;
     return;
   }
   const hook = {
@@ -141,16 +177,16 @@ export const ensureNestedCommandHook = (
       ? ({ hooks: [hook] } as const satisfies typeof NestedHookEntrySchema.Type)
       : ({ matcher, hooks: [hook] } as const satisfies typeof NestedHookEntrySchema.Type);
   entries.push(entry);
-  hooks[event] = entriesAsJson(entries);
+  hooks[event] = entries;
 };
 
 /** Remove nested command hooks whose command matches any of `commands`. */
 export const removeNestedCommandHooks = (
-  hooks: JsonObject,
+  hooks: NestedHooksMap,
   event: string,
   commands: readonly string[],
 ): boolean => {
-  const entries = asHookEntries(hooks[event]);
+  const entries = hooks[event] ?? [];
   if (entries.length === 0) return false;
   let removed = false;
   const next = entries.flatMap((entry) => {
@@ -162,59 +198,44 @@ export const removeNestedCommandHooks = (
     return kept.length === 0 ? [] : [{ ...entry, hooks: kept }];
   });
   if (next.length === 0) delete hooks[event];
-  else hooks[event] = entriesAsJson(next);
+  else hooks[event] = next;
   return removed;
-};
-
-/** Cursor hooks.json: flat `{ "command": "..." }` entries (docs/hooks). */
-const SimpleHookEntrySchema = S.Struct({
-  command: S.String,
-});
-
-const asSimpleHookEntries = (value: JsonValue | undefined) => {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) =>
-    Option.match(S.decodeUnknownOption(SimpleHookEntrySchema)(entry), {
-      onNone: () => [],
-      onSome: (decoded) => [decoded],
-    }),
-  );
 };
 
 /** Idempotent install of a Cursor-style simple command hook. */
 export const ensureSimpleCommandHook = (
-  hooks: JsonObject,
+  hooks: SimpleHooksMap,
   event: string,
   command: string,
 ): void => {
-  const entries = [...asSimpleHookEntries(hooks[event])];
+  const entries = [...(hooks[event] ?? [])];
   if (entries.some((entry) => entry.command === command)) {
-    hooks[event] = S.encodeSync(S.Array(SimpleHookEntrySchema))(entries);
+    hooks[event] = entries;
     return;
   }
   entries.push({ command });
-  hooks[event] = S.encodeSync(S.Array(SimpleHookEntrySchema))(entries);
+  hooks[event] = entries;
 };
 
 /** Remove Cursor-style simple command hooks matching `command`. */
 export const removeSimpleCommandHook = (
-  hooks: JsonObject,
+  hooks: SimpleHooksMap,
   event: string,
   command: string,
 ): boolean => {
-  const entries = asSimpleHookEntries(hooks[event]);
+  const entries = hooks[event] ?? [];
   if (entries.length === 0) return false;
   const next = entries.filter((entry) => entry.command !== command);
   if (next.length === entries.length) return false;
   if (next.length === 0) delete hooks[event];
-  else hooks[event] = S.encodeSync(S.Array(SimpleHookEntrySchema))(next);
+  else hooks[event] = next;
   return true;
 };
 
-export const readOrEmptyJsonObject = (
+export const readOrEmptyNestedHooksFile = (
   path: string,
 ): Effect.Effect<
-  { readonly content: string; readonly value: JsonObject },
+  { readonly content: string; readonly value: NestedHooksFile },
   PlatformError | ForeignHarnessHookError,
   FileSystem.FileSystem
 > =>
@@ -227,39 +248,73 @@ export const readOrEmptyJsonObject = (
     }
     return {
       content: existing.success,
-      value: yield* parseJsonObject(existing.success, path),
+      value: yield* parseNestedHooksFile(existing.success, path),
     };
   });
 
-export const writeJsonObject = (
+export const readOrEmptySimpleHooksFile = (
   path: string,
-  value: JsonObject,
+): Effect.Effect<
+  { readonly content: string; readonly value: SimpleHooksFile },
+  PlatformError | ForeignHarnessHookError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const existing = yield* fs.readFileString(path).pipe(Effect.result);
+    if (Result.isFailure(existing)) {
+      if (existing.failure.reason._tag === "NotFound") return { content: "{}", value: {} };
+      return yield* existing.failure;
+    }
+    return {
+      content: existing.success,
+      value: yield* parseSimpleHooksFile(existing.success, path),
+    };
+  });
+
+export const writeNestedHooksFile = (
+  path: string,
+  value: NestedHooksFile,
 ): Effect.Effect<void, PlatformError | ForeignHarnessHookError, FileSystem.FileSystem> =>
-  S.encodeEffect(S.fromJsonString(JsonObjectSchema, { space: 2 }))(value).pipe(
+  S.encodeEffect(S.fromJsonString(NestedHooksFileSchema, { space: 2 }), preserveExcess)(value).pipe(
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to encode JSON at ${path}` }),
     ),
     Effect.flatMap((text) => writeManagedFile(path, `${text}\n`)),
   );
 
-export const ensureHooksObject = (root: JsonObject): JsonObject =>
-  Option.match(
-    Option.flatMap(Option.fromNullishOr(root.hooks), (hooks) =>
-      S.decodeUnknownOption(JsonObjectSchema)(hooks),
+export const writeSimpleHooksFile = (
+  path: string,
+  value: SimpleHooksFile,
+): Effect.Effect<void, PlatformError | ForeignHarnessHookError, FileSystem.FileSystem> =>
+  S.encodeEffect(S.fromJsonString(SimpleHooksFileSchema, { space: 2 }), preserveExcess)(value).pipe(
+    Effect.mapError(
+      () => new ForeignHarnessHookError({ message: `failed to encode JSON at ${path}` }),
     ),
-    {
-      onNone: () => {
-        const created = {} satisfies JsonObject;
-        root.hooks = created;
-        return created;
-      },
-      onSome: (hooks) => {
-        const mutable = { ...hooks } satisfies JsonObject;
-        root.hooks = mutable;
-        return mutable;
-      },
-    },
+    Effect.flatMap((text) => writeManagedFile(path, `${text}\n`)),
   );
+
+export const ensureNestedHooksMap = (root: NestedHooksFile): NestedHooksMap => {
+  if (root.hooks === undefined) {
+    const created: NestedHooksMap = {};
+    root.hooks = created;
+    return created;
+  }
+  const mutable = { ...root.hooks };
+  root.hooks = mutable;
+  return mutable;
+};
+
+export const ensureSimpleHooksMap = (root: SimpleHooksFile): SimpleHooksMap => {
+  if (root.hooks === undefined) {
+    const created: SimpleHooksMap = {};
+    root.hooks = created;
+    return created;
+  }
+  const mutable = { ...root.hooks };
+  root.hooks = mutable;
+  return mutable;
+};
 
 export const requireConfigDirectory = (
   dir: string,

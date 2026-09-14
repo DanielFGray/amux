@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { join } from "node:path";
-import { Cause, Clock, Effect, Exit, Option, Schema as S, Scope } from "effect";
+import { Cause, Clock, Effect, Exit, Schema as S, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { isProcessState } from "@danielfgray/amux";
@@ -18,68 +18,50 @@ import { claudeAdapter } from "./adapters/claude.ts";
 import { codexAdapter } from "./adapters/codex.ts";
 import { cursorAdapter } from "./adapters/cursor.ts";
 import { opencodeAdapter } from "./adapters/opencode.ts";
-import { MANAGED_MARKER, parseIntegrationVersion } from "./hooks-install.ts";
+import { MANAGED_MARKER, NestedHooksFileSchema, parseIntegrationVersion, SimpleHooksFileSchema } from "./hooks-install.ts";
 
-const SimpleHooksProbe = S.Struct({
-  version: S.optionalKey(S.Finite),
-  hooks: S.optionalKey(S.Record(S.String, S.Array(S.Struct({ command: S.optionalKey(S.String) })))),
-});
+const preserveExcess = { onExcessProperty: "preserve" as const };
 
-const simpleHookCommand = (root: JsonValue, event: string, index: number): string => {
-  const command = Option.getOrUndefined(
-    Option.flatMap(S.decodeUnknownOption(SimpleHooksProbe)(root), (value) =>
-      Option.fromNullishOr(value.hooks?.[event]?.[index]?.command),
-    ),
-  );
+const decodeNestedHooks = S.decodeSync(S.fromJsonString(NestedHooksFileSchema), preserveExcess);
+const encodeNestedHooks = S.encodeSync(S.fromJsonString(NestedHooksFileSchema), preserveExcess);
+const decodeSimpleHooks = S.decodeSync(S.fromJsonString(SimpleHooksFileSchema), preserveExcess);
+const encodeSimpleHooks = S.encodeSync(S.fromJsonString(SimpleHooksFileSchema), preserveExcess);
+
+type NestedHooksFile = typeof NestedHooksFileSchema.Type;
+type SimpleHooksFile = typeof SimpleHooksFileSchema.Type;
+
+const simpleHookCommand = (root: SimpleHooksFile, event: string, index: number): string => {
+  const command = root.hooks?.[event]?.[index]?.command;
   if (command === undefined) throw new Error(`missing ${event}[${index}] command`);
   return command;
 };
 
-const simpleHookLength = (root: JsonValue, event: string): number =>
-  Option.getOrElse(
-    Option.map(
-      S.decodeUnknownOption(SimpleHooksProbe)(root),
-      (value) => value.hooks?.[event]?.length ?? 0,
-    ),
-    () => 0,
-  );
+const simpleHookLength = (root: SimpleHooksFile, event: string): number =>
+  root.hooks?.[event]?.length ?? 0;
 
-import { JsonValueSchema, type JsonValue } from "@danielfgray/amux/protocol";
+const nestedHookCommand = (root: NestedHooksFile, event: string, index: number): string => {
+  const command = root.hooks?.[event]?.[index]?.hooks?.[0]?.command;
+  if (command === undefined) throw new Error(`missing ${event}[${index}] command`);
+  return command;
+};
 
-const decodeJson = S.decodeSync(S.fromJsonString(JsonValueSchema));
-const encodeJson = S.encodeSync(S.fromJsonString(JsonValueSchema));
+const sessionStartLength = (root: NestedHooksFile): number => root.hooks?.SessionStart?.length ?? 0;
 
-const NestedHookProbe = S.Struct({
-  hooks: S.optionalKey(
-    S.Record(
-      S.String,
-      S.Array(
-        S.Struct({
-          hooks: S.optionalKey(S.Array(S.Struct({ command: S.optionalKey(S.String) }))),
-        }),
-      ),
-    ),
+const RpcLineSchema = S.Struct({
+  id: S.optionalKey(S.String),
+  method: S.String,
+  params: S.optionalKey(
+    S.Struct({
+      session: S.optionalKey(S.String),
+      state: S.optionalKey(S.String),
+      paneId: S.optionalKey(S.String),
+      source: S.optionalKey(S.String),
+      agent: S.optionalKey(S.String),
+      agentSessionId: S.optionalKey(S.String),
+    }),
   ),
 });
-
-const nestedHookCommand = (root: JsonValue, event: string, index: number): string => {
-  const command = Option.getOrUndefined(
-    Option.flatMap(S.decodeUnknownOption(NestedHookProbe)(root), (value) =>
-      Option.fromNullishOr(value.hooks?.[event]?.[index]?.hooks?.[0]?.command),
-    ),
-  );
-  if (command === undefined) throw new Error(`missing ${event}[${index}] command`);
-  return command;
-};
-
-const sessionStartLength = (root: JsonValue): number =>
-  Option.getOrElse(
-    Option.map(
-      S.decodeUnknownOption(NestedHookProbe)(root),
-      (value) => value.hooks?.SessionStart?.length ?? 0,
-    ),
-    () => 0,
-  );
+const decodeRpcLine = S.decodeSync(S.fromJsonString(RpcLineSchema), preserveExcess);
 
 const scoped = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Scope.Scope>) =>
   effect.pipe(Effect.provide(BunFileSystem.layer));
@@ -91,12 +73,12 @@ const temporaryHome = Effect.gen(function* () {
 
 const agentStateSocket = (path: string) =>
   Effect.acquireRelease(
-    Effect.callback<{ server: Server; received: unknown[] }>((resume) => {
-      const received: unknown[] = [];
+    Effect.callback<{ server: Server; received: (typeof RpcLineSchema.Type)[] }>((resume) => {
+      const received: (typeof RpcLineSchema.Type)[] = [];
       const server = createServer((socket) => {
         socket.on("data", (chunk) => {
           for (const line of chunk.toString("utf8").split("\n")) {
-            if (line) received.push(decodeJson(line));
+            if (line) received.push(decodeRpcLine(line));
           }
           socket.write('{"ok":true}\n');
         });
@@ -185,7 +167,7 @@ testEffect("installs claude hook and leaves user SessionStart hooks alone", () =
       yield* fs.makeDirectory(join(home, ".claude"), { recursive: true });
       yield* fs.writeFileString(
         join(home, ".claude/settings.json"),
-        encodeJson({
+        encodeNestedHooks({
           hooks: {
             SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "prog prime" }] }],
           },
@@ -193,16 +175,43 @@ testEffect("installs claude hook and leaves user SessionStart hooks alone", () =
       );
 
       const hookPath = yield* claudeAdapter.hooks.install(home);
-      const settings = decodeJson(yield* fs.readFileString(join(home, ".claude/settings.json")));
+      const settings = decodeNestedHooks(yield* fs.readFileString(join(home, ".claude/settings.json")));
       expect(yield* fs.readFileString(hookPath)).toContain("AMUX_INTEGRATION_ID=claude");
       expect(sessionStartLength(settings)).toBe(2);
       expect(nestedHookCommand(settings, "SessionStart", 0)).toBe("prog prime");
       expect(nestedHookCommand(settings, "SessionStart", 1)).toContain("session");
 
       expect(yield* claudeAdapter.hooks.uninstall(home)).toBe(true);
-      const after = decodeJson(yield* fs.readFileString(join(home, ".claude/settings.json")));
+      const after = decodeNestedHooks(yield* fs.readFileString(join(home, ".claude/settings.json")));
       expect(sessionStartLength(after)).toBe(1);
       expect(nestedHookCommand(after, "SessionStart", 0)).toBe("prog prime");
+    }),
+  ),
+);
+
+testEffect("claude install preserves unknown settings.json keys", () =>
+  scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* temporaryHome;
+      yield* fs.makeDirectory(join(home, ".claude"), { recursive: true });
+      const settingsPath = join(home, ".claude/settings.json");
+      yield* fs.writeFileString(
+        settingsPath,
+        `{
+  "permissions": { "allow": ["Bash(*)"] },
+  "hooks": {
+    "SessionStart": [{ "matcher": "", "hooks": [{ "type": "command", "command": "prog prime" }] }]
+  }
+}
+`,
+      );
+
+      yield* claudeAdapter.hooks.install(home);
+      const text = yield* fs.readFileString(settingsPath);
+      expect(text).toContain('"permissions"');
+      expect(text).toContain("Bash(*)");
+      expect(sessionStartLength(decodeNestedHooks(text))).toBe(2);
     }),
   ),
 );
@@ -217,7 +226,7 @@ testEffect("installs codex hook and enables features.hooks", () =>
 
       const hookPath = yield* codexAdapter.hooks.install(home);
       expect(yield* fs.readFileString(hookPath)).toContain("AMUX_INTEGRATION_ID=codex");
-      const hooks = decodeJson(yield* fs.readFileString(join(home, ".codex/hooks.json")));
+      const hooks = decodeNestedHooks(yield* fs.readFileString(join(home, ".codex/hooks.json")));
       expect(nestedHookCommand(hooks, "SessionStart", 0)).toContain("session");
       expect(yield* fs.readFileString(join(home, ".codex/config.toml"))).toContain("hooks = true");
 
@@ -234,7 +243,7 @@ testEffect("installs cursor hook into hooks.json and leaves unrelated stop hooks
       yield* fs.makeDirectory(join(home, ".cursor"), { recursive: true });
       yield* fs.writeFileString(
         join(home, ".cursor/hooks.json"),
-        encodeJson({
+        encodeSimpleHooks({
           version: 1,
           hooks: { stop: [{ command: "echo keep-me" }] },
         }),
@@ -242,7 +251,7 @@ testEffect("installs cursor hook into hooks.json and leaves unrelated stop hooks
 
       const hookPath = yield* cursorAdapter.hooks.install(home);
       expect(yield* fs.readFileString(hookPath)).toContain("AMUX_INTEGRATION_ID=cursor");
-      const hooksFile = decodeJson(yield* fs.readFileString(join(home, ".cursor/hooks.json")));
+      const hooksFile = decodeSimpleHooks(yield* fs.readFileString(join(home, ".cursor/hooks.json")));
       expect(simpleHookLength(hooksFile, "sessionStart")).toBe(1);
       expect(simpleHookCommand(hooksFile, "sessionStart", 0)).toContain("session");
       expect(simpleHookLength(hooksFile, "stop")).toBe(1);
@@ -251,13 +260,13 @@ testEffect("installs cursor hook into hooks.json and leaves unrelated stop hooks
       yield* cursorAdapter.hooks.install(home);
       expect(
         simpleHookLength(
-          decodeJson(yield* fs.readFileString(join(home, ".cursor/hooks.json"))),
+          decodeSimpleHooks(yield* fs.readFileString(join(home, ".cursor/hooks.json"))),
           "sessionStart",
         ),
       ).toBe(1);
 
       expect(yield* cursorAdapter.hooks.uninstall(home)).toBe(true);
-      const after = decodeJson(yield* fs.readFileString(join(home, ".cursor/hooks.json")));
+      const after = decodeSimpleHooks(yield* fs.readFileString(join(home, ".cursor/hooks.json")));
       expect(simpleHookLength(after, "sessionStart")).toBe(0);
       expect(simpleHookCommand(after, "stop", 0)).toBe("echo keep-me");
       expect(yield* Effect.promise(() => Bun.file(hookPath).exists())).toBe(false);
@@ -290,8 +299,7 @@ testEffect("reports opencode lifecycle transitions to the agent-state socket", (
 
       const byMethod = <M extends string>(method: M) =>
         received.filter(
-          (message): message is { id: string; method: M; params: unknown } =>
-            (message as { method: string }).method === method,
+          (message): message is typeof message & { method: M } => message.method === method,
         );
 
       expect(byMethod("process.state").map((m) => m.params)).toEqual([
@@ -343,8 +351,8 @@ testEffect("child session ids do not replace the root session report", () =>
       );
 
       const sessions = received
-        .filter((m) => (m as { method: string }).method === "pane.report_agent_session")
-        .map((m) => (m as { params: { agentSessionId: string } }).params.agentSessionId);
+        .filter((m) => m.method === "pane.report_agent_session")
+        .map((m) => m.params?.agentSessionId);
       expect(sessions).toEqual(["root"]);
     }),
   ),

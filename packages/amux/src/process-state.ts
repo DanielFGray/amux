@@ -13,9 +13,9 @@
  * whenever this vocabulary grows a state, so none of them import this module.
  * Instead every plane that means something by the value — the sidebar glyph,
  * the socket a process's hook writes, a harness relabeling a generic topic
- * frame — validates and interprets it at its own boundary via
- * `isProcessState`, and every union and `Record<ProcessState, _>` derives
- * from the names and schema defined once here.
+ * frame — decodes it at its own boundary with `ProcessStateSchema`, and every
+ * union and `Record<ProcessState, _>` derives from the names and schema
+ * defined once here.
  *
  * This module deliberately depends on nothing but Node and Effect: the leaf
  * modules that need the vocabulary (detect, backend) must not inherit the
@@ -23,7 +23,6 @@
  */
 import net from "node:net";
 import { Clock, Effect, Schema as S } from "effect";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
 
 /**
  * The name for every state, so no call site spells one out.
@@ -47,8 +46,7 @@ export const ProcessStateSchema = S.Literals([
 ]);
 export type ProcessState = typeof ProcessStateSchema.Type;
 
-export const isProcessState = (value: JsonValue): value is ProcessState =>
-  S.is(ProcessStateSchema)(value);
+export const isProcessState = S.is(ProcessStateSchema);
 
 class ProcessStateError extends S.TaggedError<ProcessStateError>()("ProcessStateError", {
   message: S.String,

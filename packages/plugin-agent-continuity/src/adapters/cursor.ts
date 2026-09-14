@@ -9,16 +9,16 @@ import {
   type ForeignHarnessAdapter,
 } from "@danielfgray/amux";
 import {
-  ensureHooksObject,
   ensureSimpleCommandHook,
+  ensureSimpleHooksMap,
   homeDir,
   hookCommand,
-  readOrEmptyJsonObject,
+  readOrEmptySimpleHooksFile,
   removeManagedFile,
   removeSimpleCommandHook,
   requireConfigDirectory,
-  writeJsonObject,
   writeManagedFile,
+  writeSimpleHooksFile,
 } from "../hooks-install.ts";
 
 const INTEGRATION_VERSION = 1;
@@ -51,15 +51,15 @@ const installCursorHook = (
     );
     yield* writeManagedFile(hookPath, source, 0o755);
 
-    const { value } = yield* readOrEmptyJsonObject(hooksPath);
-    if (value.version === undefined) value.version = 1;
-    const hooks = ensureHooksObject(value);
+    const { value: read } = yield* readOrEmptySimpleHooksFile(hooksPath);
+    const value = { version: 1, ...read };
+    const hooks = ensureSimpleHooksMap(value);
     const sessionCommand = hookCommand(hookPath, "session");
     for (const event of CURSOR_SESSION_HOOK_EVENTS) {
       removeSimpleCommandHook(hooks, event, sessionCommand);
     }
     ensureSimpleCommandHook(hooks, "sessionStart", sessionCommand);
-    yield* writeJsonObject(hooksPath, value);
+    yield* writeSimpleHooksFile(hooksPath, value);
     return hookPath;
   });
 
@@ -73,13 +73,13 @@ const uninstallCursorHook = (
     let updated = false;
     const existing = yield* fs.readFileString(hooksPath).pipe(Effect.result);
     if (Result.isSuccess(existing)) {
-      const { value } = yield* readOrEmptyJsonObject(hooksPath);
-      const hooks = ensureHooksObject(value);
+      const { value } = yield* readOrEmptySimpleHooksFile(hooksPath);
+      const hooks = ensureSimpleHooksMap(value);
       const sessionCommand = hookCommand(hookPath, "session");
       for (const event of CURSOR_SESSION_HOOK_EVENTS) {
         updated = removeSimpleCommandHook(hooks, event, sessionCommand) || updated;
       }
-      if (updated) yield* writeJsonObject(hooksPath, value);
+      if (updated) yield* writeSimpleHooksFile(hooksPath, value);
     }
     const removed = yield* removeManagedFile(hookPath);
     return removed || updated;

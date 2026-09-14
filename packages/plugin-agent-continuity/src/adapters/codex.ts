@@ -10,16 +10,16 @@ import {
 } from "@danielfgray/amux";
 import {
   buildCodexConfigWithHooks,
-  ensureHooksObject,
   ensureNestedCommandHook,
+  ensureNestedHooksMap,
   homeDir,
   hookCommand,
-  readOrEmptyJsonObject,
+  readOrEmptyNestedHooksFile,
   removeManagedFile,
   removeNestedCommandHooks,
   requireConfigDirectory,
-  writeJsonObject,
   writeManagedFile,
+  writeNestedHooksFile,
 } from "../hooks-install.ts";
 
 const INTEGRATION_VERSION = 1;
@@ -44,8 +44,8 @@ const installCodexHook = (
     );
     yield* writeManagedFile(hookPath, source, 0o755);
 
-    const { value } = yield* readOrEmptyJsonObject(hooksPath);
-    const hooks = ensureHooksObject(value);
+    const { value } = yield* readOrEmptyNestedHooksFile(hooksPath);
+    const hooks = ensureNestedHooksMap(value);
     for (const action of ["session", "idle", "working", "blocked"] as const) {
       removeNestedCommandHooks(hooks, "SessionStart", [hookCommand(hookPath, action)]);
       removeNestedCommandHooks(hooks, "PermissionRequest", [hookCommand(hookPath, action)]);
@@ -54,7 +54,7 @@ const installCodexHook = (
       removeNestedCommandHooks(hooks, "Stop", [hookCommand(hookPath, action)]);
     }
     ensureNestedCommandHook(hooks, "SessionStart", hookCommand(hookPath, "session"), 10);
-    yield* writeJsonObject(hooksPath, value);
+    yield* writeNestedHooksFile(hooksPath, value);
 
     const fs = yield* FileSystem.FileSystem;
     const existingConfig = yield* fs
@@ -76,8 +76,8 @@ const uninstallCodexHook = (
     let updated = false;
     const existing = yield* fs.readFileString(hooksPath).pipe(Effect.result);
     if (Result.isSuccess(existing)) {
-      const { value } = yield* readOrEmptyJsonObject(hooksPath);
-      const hooks = ensureHooksObject(value);
+      const { value } = yield* readOrEmptyNestedHooksFile(hooksPath);
+      const hooks = ensureNestedHooksMap(value);
       for (const event of [
         "SessionStart",
         "PermissionRequest",
@@ -90,7 +90,7 @@ const uninstallCodexHook = (
             removeNestedCommandHooks(hooks, event, [hookCommand(hookPath, action)]) || updated;
         }
       }
-      if (updated) yield* writeJsonObject(hooksPath, value);
+      if (updated) yield* writeNestedHooksFile(hooksPath, value);
     }
     const removed = yield* removeManagedFile(hookPath);
     return removed || updated;
