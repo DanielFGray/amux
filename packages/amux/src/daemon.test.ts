@@ -3,24 +3,20 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Fiber, Layer, Path, Scope, Stream } from "effect";
-import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
+import { Effect, Fiber, Stream } from "effect";
 import {
   makeDaemonService,
-  startDaemon,
   DaemonError,
-  type SessionDaemonOptions,
   type SessionDaemonService,
 } from "./daemon.ts";
 import { SessionStore, sessionPaths } from "./session.ts";
 import { command } from "./commands.ts";
 import { AttachClient } from "./attach.ts";
-import { controlCall, type ControlClient } from "./control-client.ts";
 import { waitFor } from "./test-wait.ts";
 import type { PaneContent } from "./layout.ts";
 import { testEffect } from "./test-effect.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
+import { ctl, open, run } from "./test-daemon.ts";
 
 registerCleanup();
 
@@ -36,22 +32,6 @@ async function env() {
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
-const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path | Scope.Scope>,
-  e: NodeJS.ProcessEnv,
-) =>
-  Effect.runPromise(
-    Effect.scoped(
-      effect.pipe(
-        Effect.provide(
-          SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-        ),
-        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(e)),
-      ),
-    ),
-  );
-const open = (id: string, e: NodeJS.ProcessEnv, options?: SessionDaemonOptions) =>
-  run(startDaemon(id, options), e);
 const paths = (id: string, e: NodeJS.ProcessEnv) => run(sessionPaths(id), e);
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
@@ -124,12 +104,6 @@ const rwc =
     ctx: Parameters<SessionDaemonService["runWorkspaceCommand"]>[2],
   ) =>
     Effect.runPromise(d.runWorkspaceCommand(value, rev, ctx));
-/** One control-plane request over the daemon's real Unix socket. */
-const ctl = <A, E>(
-  id: string,
-  e: NodeJS.ProcessEnv,
-  use: (control: ControlClient) => Effect.Effect<A, E>,
-) => run(controlCall(id, use), e);
 
 const status = (d: SessionDaemonService, e: NodeJS.ProcessEnv) =>
   ctl(d.id, e, (control) => control.Status());

@@ -9,19 +9,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  ConfigProvider,
   Deferred,
   Effect,
   Exit,
   Fiber,
-  Layer,
   Option,
-  Path,
   Scope,
   Stream,
 } from "effect";
-import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
 import {
   startDaemon,
   DaemonError,
@@ -30,9 +25,7 @@ import {
 import { AttachClient } from "../packages/amux/src/attach.ts";
 import { SessionClient } from "../packages/amux/src/client.ts";
 import {
-  controlCall,
   connectControl,
-  type ControlClient,
 } from "../packages/amux/src/control-client.ts";
 import { MAX_RPC_BYTES } from "../packages/amux/src/limits.ts";
 import { SessionStore, sessionPaths } from "../packages/amux/src/session.ts";
@@ -40,6 +33,7 @@ import { SessionHandle } from "../packages/amux/src/session-handle.ts";
 import { registerCleanup, tempDir } from "../packages/amux/src/test-tmp.ts";
 import { waitFor } from "../packages/amux/src/test-wait.ts";
 import { testEffect } from "../packages/amux/src/test-effect.ts";
+import { ctl, run } from "../packages/amux/src/test-daemon.ts";
 
 registerCleanup();
 
@@ -47,19 +41,6 @@ const daemons: SessionDaemonService[] = [];
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
 });
-
-const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path | Scope.Scope>,
-  env: NodeJS.ProcessEnv,
-) =>
-  Effect.runPromise(
-    Effect.scoped(effect).pipe(
-      Effect.provide(
-        SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-      ),
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
-    ),
-  );
 
 async function started(id: string) {
   const home = tempDir("control");
@@ -98,12 +79,6 @@ async function started(id: string) {
   daemons.push(daemon);
   return { daemon, env, pluginConfig };
 }
-
-const ctl = <A, E>(
-  id: string,
-  env: NodeJS.ProcessEnv,
-  use: (control: ControlClient) => Effect.Effect<A, E>,
-) => run(controlCall(id, use), env);
 
 /**
  * Write raw bytes to the control socket and report whether it stayed open.

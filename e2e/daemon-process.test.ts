@@ -3,27 +3,25 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join as nodeJoin } from "node:path";
-import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Path, Scope } from "effect";
-import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
+import { Cause, Effect, Exit, Fiber, Path } from "effect";
 import {
   startDaemon,
-  type SessionDaemonOptions,
   type SessionDaemonService,
 } from "../packages/amux/src/daemon.ts";
 import { SessionStore, sessionPaths } from "../packages/amux/src/session.ts";
 import { Command, command } from "../packages/amux/src/commands.ts";
-import { controlCall, type ControlClient } from "../packages/amux/src/control-client.ts";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
   type AttachFrame,
 } from "../packages/amux/src/effect/AttachProtocol.ts";
+import { controlCall } from "../packages/amux/src/control-client.ts";
 import { gitWorktreeExists, worktreeDirname } from "../packages/amux/src/git.ts";
 import { waitFor, until } from "../packages/amux/src/test-wait.ts";
 import { testEffect } from "../packages/amux/src/test-effect.ts";
 import { registerCleanup, tempDir } from "../packages/amux/src/test-tmp.ts";
 import type { WorkspaceCommandContext } from "../packages/amux/src/workspace-command-context.ts";
+import { ctl, open, run } from "../packages/amux/src/test-daemon.ts";
 
 registerCleanup();
 
@@ -34,33 +32,9 @@ async function env(prefix = "daemon") {
   return { HOME: home, XDG_STATE_HOME: nodeJoin(home, "state") };
 }
 
-const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path | Scope.Scope>,
-  e: NodeJS.ProcessEnv,
-) =>
-  Effect.runPromise(
-    Effect.scoped(
-      effect.pipe(
-        Effect.provide(
-          SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-        ),
-        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(e)),
-      ),
-    ),
-  );
-
-const open = (id: string, e: NodeJS.ProcessEnv, options?: SessionDaemonOptions) =>
-  run(startDaemon(id, options), e);
-
 const st = (d: SessionDaemonService) => Effect.runSync(d.getState);
 const ws = (d: SessionDaemonService) => Effect.runSync(d.getWorkspace);
 const S = (d: SessionDaemonService) => Effect.runPromise(d.stop);
-
-const ctl = <A, E>(
-  id: string,
-  e: NodeJS.ProcessEnv,
-  use: (control: ControlClient) => Effect.Effect<A, E>,
-) => run(controlCall(id, use), e);
 
 const expectProcessGone = (pid: number) =>
   waitFor(
@@ -83,19 +57,6 @@ const pathJoin = (...paths: string[]) =>
 const daemons: SessionDaemonService[] = [];
 const attachEnvs = new Map<string, NodeJS.ProcessEnv>();
 
-const attachRun = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path>,
-  env: NodeJS.ProcessEnv,
-) =>
-  Effect.runPromise(
-    Effect.scoped(effect).pipe(
-      Effect.provide(
-        SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-      ),
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
-    ),
-  );
-
 afterEach(() =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -107,7 +68,7 @@ afterEach(() =>
 const started = Effect.fnUntraced(function* (id: string) {
   const home = tempDir("attach-host");
   const env = { HOME: home, XDG_STATE_HOME: pathJoin(home, "state") };
-  const daemon = yield* Effect.promise(() => attachRun(Effect.scoped(startDaemon(id)), env));
+  const daemon = yield* Effect.promise(() => run(startDaemon(id), env));
   daemons.push(daemon);
   attachEnvs.set(daemon.id, env);
   return daemon;
@@ -144,20 +105,7 @@ const text = (frames: AttachFrame[]) =>
 
 // --- git-worktree helpers (from git-worktree.test.ts) ---
 
-const wtRun = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path>,
-  e: NodeJS.ProcessEnv,
-) =>
-  Effect.runPromise(
-    effect.pipe(
-      Effect.provide(
-        SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-      ),
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(e)),
-    ),
-  );
-
-const wtOpen = (id: string, e: NodeJS.ProcessEnv) => wtRun(Effect.scoped(startDaemon(id)), e);
+const wtOpen = (id: string, e: NodeJS.ProcessEnv) => run(startDaemon(id), e);
 const close = (d: SessionDaemonService) => Effect.runPromise(d.close);
 const runCommand = (
   d: SessionDaemonService,
@@ -549,7 +497,7 @@ testEffect("closing a daemon persists that the preserved session is detached", (
     const home = attachEnvs.get(daemon.id)!.HOME!;
     expect(
       (yield* Effect.promise(() =>
-        attachRun(
+        run(
           Effect.flatMap(SessionStore, (store) => store.load("close-detached")),
           {
             HOME: home,

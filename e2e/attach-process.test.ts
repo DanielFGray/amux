@@ -6,16 +6,12 @@
 import { afterEach, expect } from "bun:test";
 import {
   Config,
-  ConfigProvider,
   Effect,
   Exit,
-  Layer,
   Option,
   Path,
   Scope,
 } from "effect";
-import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
 import { SessionHandle } from "../packages/amux/src/session-handle.ts";
 import { SessionClient, type SessionClientContract } from "../packages/amux/src/client.ts";
 import { captureVisible } from "../packages/amux/src/capture.ts";
@@ -23,6 +19,7 @@ import { processAlive, SessionStore } from "../packages/amux/src/session.ts";
 import { registerCleanup, tempDir } from "../packages/amux/src/test-tmp.ts";
 import { testEffect } from "../packages/amux/src/test-effect.ts";
 import { until } from "../packages/amux/src/test-wait.ts";
+import { provideDaemon as run } from "../packages/amux/src/test-daemon.ts";
 
 registerCleanup();
 
@@ -34,16 +31,6 @@ const join = (...paths: string[]) =>
 const scopes: Scope.Closeable[] = [];
 const sessions: SessionHandle[] = [];
 
-const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path>,
-  env: NodeJS.ProcessEnv,
-) =>
-  effect.pipe(
-    Effect.provide(
-      SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-    ),
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
-  );
 
 const connect = Effect.fnUntraced(function* (
   id: string,

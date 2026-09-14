@@ -47,6 +47,7 @@ import { testEffect } from "./test-effect.ts";
 import { until } from "./test-wait.ts";
 import { layoutRefs } from "./layout.ts";
 import type { Config as AmuxConfig } from "./config.ts";
+import { provideDaemon as run } from "./test-daemon.ts";
 
 registerCleanup();
 
@@ -113,16 +114,6 @@ const connect = Effect.fnUntraced(function* (
 });
 const sessions: SessionHandle[] = [];
 let nextProjection = 0;
-const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path>,
-  env: NodeJS.ProcessEnv,
-) =>
-  effect.pipe(
-    Effect.provide(
-      SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-    ),
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
-  );
 
 afterEach(() =>
   Effect.runPromise(

@@ -254,7 +254,7 @@ export async function launch(
   const state = join(root, "state");
   const leasePath = join(state, "amux", "sessions", session, "lease.json");
   const pidFile = join(root, "daemon.pid");
-  await stopDaemon(leasePath);
+  await stopDaemon(pidFile);
   await rm(root, { recursive: true, force: true });
   await mkdir(state, { recursive: true });
 
@@ -361,15 +361,15 @@ export async function launch(
     // After the reader, never before: the pump can be holding a chunk, and a
     // write into a freed terminal corrupts ghostty's heap rather than faulting.
     await attempt("term.free", async () => term.free());
-    await attempt("stopDaemon", () => stopDaemon(leasePath, trackedPid));
+    await attempt("stopDaemon", () => stopDaemon(pidFile, trackedPid));
     await attempt("rm home", () => rm(home, { recursive: true, force: true }));
     await attempt("rm state root", () => rm(root, { recursive: true, force: true }));
     untrackDaemon(leasePath);
     if (failures.length > 0) throw new AggregateError(failures, "e2e cleanup failed");
   };
 
-  // Track the lease before the boot waits: an interrupt during boot must still
-  // find the daemon and kill it.
+  // Track before the boot waits: an interrupt during boot must still find the
+  // daemon. The pid file is written by ensureDaemon at spawn (before the lease).
   trackDaemon(leasePath, pidFile, null);
   try {
     await until(
@@ -377,10 +377,7 @@ export async function launch(
       "the workspace to have an agent",
     );
     await until(() => hasSidebarFooter(captureVisible(term)), "the sidebar to draw its footer");
-    // The daemon wrote its lease before the host came up, so it is readable
-    // now. Cache the pid: teardown must not depend on a single lease read at
-    // stop time, which has been observed to fail under load (ts-549538).
-    trackedPid = await readLeasePid(leasePath);
+    trackedPid = readPidFileSync(pidFile);
     if (trackedPid) trackDaemon(leasePath, pidFile, trackedPid);
   } catch (e) {
     await cleanup().catch(() => {});
@@ -412,27 +409,11 @@ export async function launch(
   };
 }
 
-/** The daemon's pid from its lease, or null when no lease is readable yet. */
-async function readLeasePid(leasePath: string): Promise<number | null> {
-  const lease = await Bun.file(leasePath)
-    .json()
-    .catch(() => null);
-  const pid = lease?.pid;
-  return Number.isInteger(pid) && pid > 0 ? (pid as number) : null;
-}
-
 /** Stop the detached daemon and wait for its scoped finalizers to release its PTYs. */
-async function stopDaemon(leasePath: string, knownPid?: number | null): Promise<void> {
-  // Teardown must not depend on a single lease read at stop time: the lease is
-  // written at daemon start before the host is up, so an early read can miss it
-  // under load and orphan the daemon (ts-549538). Prefer the pid cached at
-  // launch; otherwise retry the read briefly before giving up.
-  let pid = knownPid ?? null;
-  const deadline = Date.now() + 3_000;
-  while (!pid && Date.now() < deadline) {
-    pid = await readLeasePid(leasePath);
-    if (!pid) await Bun.sleep(20);
-  }
+async function stopDaemon(pidFile: string, knownPid?: number | null): Promise<void> {
+  // The pid file ensureDaemon writes at spawn names the daemon. lease.json does
+  // not: close removes the lease while the process is still alive.
+  const pid = knownPid ?? readPidFileSync(pidFile);
   if (!pid) return;
 
   try {

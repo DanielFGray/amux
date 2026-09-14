@@ -10,17 +10,15 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Layer, Option, Path, Scope, Stream } from "effect";
-import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
+import { Effect, Option, Stream } from "effect";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
-import { controlCall, connectControl, type ControlClient } from "./control-client.ts";
+import { connectControl } from "./control-client.ts";
 import { command } from "./commands.ts";
-import { SessionStore } from "./session.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { waitFor } from "./test-wait.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
 import { testEffect } from "./test-effect.ts";
+import { ctl, run } from "./test-daemon.ts";
 
 registerCleanup();
 
@@ -28,19 +26,6 @@ const daemons: SessionDaemonService[] = [];
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
 });
-
-const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path | Scope.Scope>,
-  env: NodeJS.ProcessEnv,
-) =>
-  Effect.runPromise(
-    Effect.scoped(effect).pipe(
-      Effect.provide(
-        SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-      ),
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
-    ),
-  );
 
 async function started(id: string, opts?: { plugins?: boolean }) {
   const home = tempDir("control");
@@ -78,12 +63,6 @@ async function started(id: string, opts?: { plugins?: boolean }) {
   daemons.push(daemon);
   return { daemon, env };
 }
-
-const ctl = <A, E>(
-  id: string,
-  env: NodeJS.ProcessEnv,
-  use: (control: ControlClient) => Effect.Effect<A, E>,
-) => run(controlCall(id, use), env);
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
