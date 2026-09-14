@@ -11,6 +11,7 @@ import { awaitPluginHostClient, supervisePluginHost, type PluginHostClient } fro
 
 const program = Effect.gen(function* () {
   const socketPath = yield* Config.string("AMUX_PLUGIN_HOST_SOCKET");
+  const capabilitiesSocketPath = `${socketPath}.capabilities`;
   const status = yield* Ref.make<PluginHostStatus>({
     state: "starting",
     restarts: 0,
@@ -20,6 +21,7 @@ const program = Effect.gen(function* () {
   yield* Effect.forkScoped(
     supervisePluginHost({
       socketPath,
+      capabilitiesSocketPath,
       status,
       client,
     }),

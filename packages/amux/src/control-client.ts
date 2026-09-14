@@ -9,9 +9,11 @@
  * {@link controlCall}, which opens and closes a connection per request.
  */
 import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
+import type * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
+import type * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import { Effect, Layer, Schema as S, Scope, Stream } from "effect";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { DaemonEvent, DaemonEventPayload } from "./effect/EventBus.ts";
@@ -24,6 +26,25 @@ import { errorMessage } from "./error-message.ts";
  * ControlError or with RpcClientError when the connection itself breaks.
  */
 export type ControlClient = RpcClient.RpcClient<RpcGroup.Rpcs<typeof ControlRpcs>, RpcClientError>;
+
+/**
+ * Open an Effect RPC client against a Unix socket for any group. The protocol
+ * layer is built into the caller's scope so later calls keep a live connection.
+ */
+export const connectRpcPath = <Rpcs extends Rpc.Any, E>(
+  socket: string,
+  group: RpcGroup.RpcGroup<Rpcs>,
+  serialization: Layer.Layer<RpcSerialization.RpcSerialization>,
+  toError: (message: string) => E,
+): Effect.Effect<RpcClient.RpcClient<Rpcs, RpcClientError>, E, Scope.Scope> =>
+  Effect.gen(function* () {
+    const protocol = RpcClient.layerProtocolSocket().pipe(
+      Layer.provide(NodeSocket.layerNet({ path: socket })),
+      Layer.provide(serialization),
+    );
+    const context = yield* Layer.build(protocol);
+    return yield* RpcClient.make(group, { disableTracing: true }).pipe(Effect.provide(context));
+  }).pipe(Effect.mapError((error) => toError(errorMessage(error))));
 
 /** All a control connection needs is the env that resolves the session socket. */
 /**
@@ -42,16 +63,12 @@ export const connectControl = (
 export const connectControlPath = (
   socket: string,
 ): Effect.Effect<ControlClient, ControlError, Scope.Scope> =>
-  Effect.gen(function* () {
-    const protocol = RpcClient.layerProtocolSocket().pipe(
-      Layer.provide(NodeSocket.layerNet({ path: socket })),
-      Layer.provide(ControlSerialization),
-    );
-    const context = yield* Layer.build(protocol);
-    return yield* RpcClient.make(ControlRpcs, { disableTracing: true }).pipe(
-      Effect.provide(context),
-    );
-  }).pipe(Effect.mapError(toControlError));
+  connectRpcPath(
+    socket,
+    ControlRpcs,
+    ControlSerialization,
+    (message) => new ControlError({ message }),
+  );
 
 /** One request against a live daemon, on a connection that dies with it. */
 export const controlCall = <A, E>(

@@ -53,6 +53,8 @@ export type PluginHostClient = RpcClient.RpcClient<
 
 export interface PluginHostSupervisorOptions {
   readonly socketPath: string;
+  /** Capability socket path passed to the child as AMUX_PLUGIN_CAPABILITIES_SOCKET. */
+  readonly capabilitiesSocketPath: string;
   readonly status: Ref.Ref<PluginHostStatus>;
   /** Slot for the live generation's client; cleared by the generation release. */
   readonly client: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostClient>>;
@@ -101,6 +103,7 @@ type HostChild = {
 const spawnHost = (
   argv: readonly string[],
   socketPath: string,
+  capabilitiesSocketPath: string,
 ): Effect.Effect<HostChild, string, Scope.Scope> =>
   Effect.gen(function* () {
     const child = yield* Effect.try({
@@ -109,6 +112,7 @@ const spawnHost = (
           env: {
             ...process.env,
             AMUX_PLUGIN_HOST_SOCKET: socketPath,
+            AMUX_PLUGIN_CAPABILITIES_SOCKET: capabilitiesSocketPath,
           },
           stdin: "pipe",
           stdout: "ignore",
@@ -240,7 +244,11 @@ const runGeneration = (
     const pingIntervalMs = options.pingIntervalMs ?? PLUGIN_HOST_PING_INTERVAL_MS;
     const readyTimeoutMs = options.readyTimeoutMs ?? PLUGIN_HOST_READY_TIMEOUT_MS;
 
-    const childResult = yield* spawnHost(argv, options.socketPath).pipe(Effect.result);
+    const childResult = yield* spawnHost(
+      argv,
+      options.socketPath,
+      options.capabilitiesSocketPath,
+    ).pipe(Effect.result);
     if (childResult._tag === "Failure") {
       yield* setStatus(options.status, {
         state: "failed",

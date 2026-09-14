@@ -88,6 +88,24 @@ export function admits(peer: PeerCredentials | null, selfUid: number | undefined
 }
 
 /**
+ * Who counts as the supervised plugin-host child: same user, and the pid the
+ * daemon recorded for the live generation.
+ *
+ * Separate from {@link admits} so the pid rule can be stated against a pid this
+ * process does not have — an older generation, or any other process, is refused
+ * without needing to spawn one under a foreign identity.
+ */
+export function admitsHostChild(
+  peer: PeerCredentials | null,
+  selfUid: number | undefined,
+  expectedPid: number | undefined,
+): boolean {
+  return (
+    admits(peer, selfUid) && expectedPid !== undefined && peer !== null && peer.pid === expectedPid
+  );
+}
+
+/**
  * True when the peer runs as the same user as this process.
  *
  * The socket file's own mode already stops another user from opening it, so a

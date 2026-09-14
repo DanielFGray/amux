@@ -26,14 +26,15 @@ import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem, BunServices } from "@effect/platform-bun";
 import { captureRootRuntime, provideRootServices } from "./env.ts";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
-import * as Socket from "effect/unstable/socket/Socket";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
-import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
-import { isSameUserPeer, socketFd } from "./peer-credentials.ts";
+import { admits, admitsHostChild } from "./peer-credentials.ts";
+import { peerCheckedSocketServer } from "./peer-checked-socket-server.ts";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { PluginHostStatus } from "./plugin-host/rpc.ts";
+import { serveDaemonSessions } from "./plugin-host/capabilities-server.ts";
 import { supervisePluginHost, type PluginHostClient } from "./plugin-host/supervisor.ts";
+import { removeStaleSocket } from "./remove-stale-socket.ts";
 import { type AttachHostService } from "./effect/AttachHost.ts";
 import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
 import { makeAgentLog } from "./effect/AgentLog.ts";
@@ -881,47 +882,21 @@ export const makeDaemonService = Effect.fnUntraced(
           });
         }
 
-        yield* fs
-          .remove(paths.socket)
-          .pipe(
-            Effect.catchTag("PlatformError", (e) =>
-              e.reason._tag === "NotFound" ? Effect.void : Effect.die(e),
-            ),
-          );
+        yield* removeStaleSocket(paths.socket).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+        );
 
         const controlScope = yield* Scope.make();
         const socketServer = yield* NodeSocketServer.make({
           path: paths.socket,
         }).pipe(Scope.provide(controlScope));
-        const controlSocketServer = SocketServer.SocketServer.of({
-          ...socketServer,
-          run: (handler) =>
-            socketServer.run((socket) =>
-              // The control socket is the boundary that matters: anything that
-              // reaches the RPC handler can Run commands as this user. The peer's
-              // uid comes from the kernel, so it is the one claim about a caller
-              // the caller cannot make up.
-              // `NetSocket` is placed in the connection's context by the node
-              // socket server but absent from `run`'s signature, so it is read as
-              // an option. Absent means the peer cannot be identified, which is
-              // refused for the same reason an unreadable uid is.
-              Effect.flatMap(Effect.serviceOption(NodeSocket.NetSocket), (conn) =>
-                Option.isNone(conn) || !isSameUserPeer(socketFd(conn.value))
-                  ? Effect.sync(() => {
-                      if (Option.isSome(conn)) conn.value.destroy();
-                    })
-                  : handler(socket).pipe(
-                      Effect.catchCause((cause) => {
-                        const error = Cause.squash(cause);
-                        return Socket.SocketError.is(error) &&
-                          error.reason._tag === "SocketReadError"
-                          ? Effect.void
-                          : Effect.failCause(cause);
-                      }),
-                    ),
-              ),
-            ),
-        });
+        // The control socket is the boundary that matters: anything that
+        // reaches the RPC handler can Run commands as this user. The peer's
+        // uid comes from the kernel, so it is the one claim about a caller
+        // the caller cannot make up.
+        const controlSocketServer = peerCheckedSocketServer(socketServer, (peer) =>
+          Effect.succeed(admits(peer, process.getuid?.())),
+        );
         yield* Layer.build(
           RpcServer.layer(ControlRpcs, { disableTracing: true }).pipe(
             Layer.provide(RpcServer.layerProtocolSocketServer),
@@ -930,6 +905,15 @@ export const makeDaemonService = Effect.fnUntraced(
             Layer.provide(controlHandlers),
           ),
         ).pipe(Scope.provide(controlScope));
+
+        // Capability socket before the supervisor so the child finds it on spawn.
+        // Same controlScope: shutdown closes both listeners. Admission is the
+        // live plugin-host pid, read at connect time — an older generation is refused.
+        yield* serveDaemonSessions(paths.pluginCapabilities, daemonSessions, (peer) =>
+          Ref.get(pluginHostStatus).pipe(
+            Effect.map((status) => admitsHostChild(peer, process.getuid?.(), status.pid)),
+          ),
+        ).pipe(Scope.provide(controlScope), Effect.provideService(FileSystem.FileSystem, fs));
 
         const heartbeatFiber = yield* Effect.forkIn(
           Effect.forever(
@@ -979,6 +963,7 @@ export const makeDaemonService = Effect.fnUntraced(
         yield* Effect.forkIn(
           supervisePluginHost({
             socketPath: paths.pluginHost,
+            capabilitiesSocketPath: paths.pluginCapabilities,
             status: pluginHostStatus,
             client: pluginHostClient,
             argv: options.pluginHost?.argv,
@@ -1050,6 +1035,7 @@ export const makeDaemonService = Effect.fnUntraced(
           }
 
           yield* fs.remove(paths.socket).pipe(Effect.ignore);
+          yield* fs.remove(paths.pluginCapabilities).pipe(Effect.ignore);
           yield* fs.remove(paths.lease).pipe(Effect.ignore);
           yield* Scope.close(lockScope, Exit.void);
           return yield* Option.match(finalFailure, {

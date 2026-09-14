@@ -319,6 +319,12 @@ export interface SessionPaths {
    * that answers Ping/Stop and, later, plugin calls — never terminal bytes.
    */
   pluginHost: string;
+  /**
+   * DaemonSessions capability socket. Only the supervised plugin-host child
+   * (same uid, matching live pid) may connect; control and plugin-host
+   * lifecycle stay on their own sockets.
+   */
+  pluginCapabilities: string;
 }
 
 export const stateRoot = Effect.fnUntraced(function* () {
@@ -666,6 +672,7 @@ function sessionPathsFromRoot(id: string, root: string): Effect.Effect<SessionPa
       attach: path.join(rootPath, "attach.sock"),
       processState: path.join(rootPath, "process-state.sock"),
       pluginHost: path.join(rootPath, "plugin-host.sock"),
+      pluginCapabilities: path.join(rootPath, "plugin-capabilities.sock"),
     };
   }).pipe(Effect.provide(Path.layer));
 }

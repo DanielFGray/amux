@@ -4,27 +4,15 @@
  * The entry builds handlers via a factory; fixtures pass their own.
  */
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
 import { Cause, Config, Deferred, Effect, Layer, Option, Scope, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
-import * as Socket from "effect/unstable/socket/Socket";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
-import { isSameUserPeer, socketFd } from "../peer-credentials.ts";
+import { admits } from "../peer-credentials.ts";
+import { peerCheckedSocketServer } from "../peer-checked-socket-server.ts";
+import { removeStaleSocket } from "../remove-stale-socket.ts";
 import { PluginHostRpcs, PluginHostSerialization, type PluginHostHandlers } from "./rpc.ts";
-
-const removeStaleSocket = (path: string): Effect.Effect<void, never, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs
-      .remove(path)
-      .pipe(
-        Effect.catchTag("PlatformError", (e) =>
-          e.reason._tag === "NotFound" ? Effect.void : Effect.die(e),
-        ),
-      );
-  });
 
 /**
  * Serve `handlers` on `socketPath` until the enclosing scope closes.
@@ -40,26 +28,12 @@ export const runPluginHost = (
     yield* removeStaleSocket(socketPath);
 
     const socketServer = yield* NodeSocketServer.make({ path: socketPath });
-    const hostSocketServer = SocketServer.SocketServer.of({
-      ...socketServer,
-      run: (handler) =>
-        socketServer.run((socket) =>
-          Effect.flatMap(Effect.serviceOption(NodeSocket.NetSocket), (conn) =>
-            Option.isNone(conn) || !isSameUserPeer(socketFd(conn.value))
-              ? Effect.sync(() => {
-                  if (Option.isSome(conn)) conn.value.destroy();
-                })
-              : handler(socket).pipe(
-                  Effect.catchCause((cause) => {
-                    const error = Cause.squash(cause);
-                    return Socket.SocketError.is(error) && error.reason._tag === "SocketReadError"
-                      ? Effect.void
-                      : Effect.failCause(cause);
-                  }),
-                ),
-          ),
-        ),
-    });
+    // The host control socket admits any same-user peer: the daemon is the
+    // intended client, and the session root's 0700 already keeps other users
+    // out. Capability RPCs use a tighter pid check on a separate socket.
+    const hostSocketServer = peerCheckedSocketServer(socketServer, (peer) =>
+      Effect.succeed(admits(peer, process.getuid?.())),
+    );
 
     yield* Layer.build(
       RpcServer.layer(PluginHostRpcs, { disableTracing: true }).pipe(

@@ -2,7 +2,13 @@
 import { test, expect } from "bun:test";
 import * as Net from "node:net";
 import { join } from "node:path";
-import { admits, isSameUserPeer, peerCredentials, socketFd } from "./peer-credentials.ts";
+import {
+  admits,
+  admitsHostChild,
+  isSameUserPeer,
+  peerCredentials,
+  socketFd,
+} from "./peer-credentials.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 
 registerCleanup();
@@ -75,6 +81,17 @@ test("refuses a peer belonging to another user", () => {
   // closed rather than falling through to admission.
   expect(admits(null, 1000)).toBe(false);
   expect(admits(peer, undefined)).toBe(false);
+});
+
+test("admits the supervised host child only when uid and pid both match", () => {
+  const peer = { pid: 4321, uid: 1000, gid: 1000 };
+  expect(admitsHostChild(peer, 1000, 4321)).toBe(true);
+  // Wrong pid (older generation, or any other process) is refused even as us.
+  expect(admitsHostChild(peer, 1000, 9999)).toBe(false);
+  expect(admitsHostChild(peer, 1000, undefined)).toBe(false);
+  // Wrong uid is refused even with a matching pid.
+  expect(admitsHostChild(peer, 1001, 4321)).toBe(false);
+  expect(admitsHostChild(null, 1000, 4321)).toBe(false);
 });
 
 test("finds the descriptor behind a real node socket, and none where there is none", async () => {
