@@ -4,27 +4,23 @@ import * as Path from "effect/Path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Exact source text for one reloadable module in a committed generation. */
-export interface LastGoodModule {
-  readonly url: string;
-  readonly text: string;
-}
+export const LastGoodModule = S.Struct({
+  url: S.String,
+  text: S.String,
+});
+export type LastGoodModule = typeof LastGoodModule.Type;
 
 /** A recoverable plugin cohort. Definitions cannot be persisted: activations are closures. */
-export interface LastGoodGeneration {
-  readonly version: 1;
-  readonly entries: readonly string[];
-  readonly modules: readonly LastGoodModule[];
-}
+export const LastGoodGeneration = S.Struct({
+  version: S.Literal(1),
+  entries: S.Array(S.String),
+  modules: S.Array(LastGoodModule),
+});
+export type LastGoodGeneration = typeof LastGoodGeneration.Type;
 
 export class LastGoodStoreError extends S.TaggedError<LastGoodStoreError>()("LastGoodStoreError", {
   message: S.String,
 }) {}
-
-const GenerationSchema = S.Struct({
-  version: S.Literal(1),
-  entries: S.Array(S.String),
-  modules: S.Array(S.Struct({ url: S.String, text: S.String })),
-});
 
 export interface LastGoodStore {
   readonly read: Effect.Effect<Option.Option<LastGoodGeneration>, LastGoodStoreError>;
@@ -47,7 +43,7 @@ export const makeLastGoodStore = (
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const read = fs.readFileString(file).pipe(
-      Effect.flatMap((text) => S.decodeEffect(S.fromJsonString(GenerationSchema))(text)),
+      Effect.flatMap((text) => S.decodeEffect(S.fromJsonString(LastGoodGeneration))(text)),
       Effect.map(Option.some),
       Effect.catchTag("PlatformError", (error) =>
         error.reason._tag === "NotFound"
@@ -63,7 +59,7 @@ export const makeLastGoodStore = (
     const write = (generation: LastGoodGeneration) =>
       Effect.gen(function* () {
         yield* fs.makeDirectory(path.dirname(file), { recursive: true });
-        const text = yield* S.encodeEffect(S.fromJsonString(GenerationSchema))(generation).pipe(
+        const text = yield* S.encodeEffect(S.fromJsonString(LastGoodGeneration))(generation).pipe(
           Effect.mapError((error) => new LastGoodStoreError({ message: String(error) })),
         );
         const temp = `${file}.${process.pid}.tmp`;

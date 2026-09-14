@@ -14,6 +14,7 @@ import {
   LastGoodStoreTag,
   restoreLastGood,
   type LastGoodGeneration,
+  type LastGoodModule,
 } from "./last-good.ts";
 import { digestAndAnnounce, type PluginUiHalf } from "./ui-announcement.ts";
 
@@ -28,6 +29,14 @@ export interface PluginEntry {
   readonly definition: PluginDefinition;
 }
 
+/**
+ * An entry the loader actually imported. `modules` are the texts that import
+ * ran from — checkpoint writes them and never re-reads disk.
+ */
+export interface LoadedPluginEntry extends PluginEntry {
+  readonly modules: readonly LastGoodModule[];
+}
+
 /** Host `prepare`/`publish` rejected the configuration; the previous one is unchanged. */
 export class PluginReconcileError extends S.TaggedError<PluginReconcileError>()(
   "PluginReconcileError",
@@ -35,7 +44,7 @@ export class PluginReconcileError extends S.TaggedError<PluginReconcileError>()(
 ) {}
 
 export interface LoadedPlugins {
-  readonly entries: readonly PluginEntry[];
+  readonly entries: readonly LoadedPluginEntry[];
   /** Startup imported archived source for at least one plugin that failed on disk. */
   readonly recovered: boolean;
   /** Entries the host's configuration could not satisfy — see `RefusedPlugin`. */
@@ -71,16 +80,16 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
-  previous: readonly PluginEntry[] = [],
+  previous: readonly LoadedPluginEntry[] = [],
   storeDir?: string,
   entrypoint: string = ".",
 ) {
   const resolvedStore = storeDir ?? (yield* pluginStoreDir);
-  const entries: PluginEntry[] = [];
+  const entries: LoadedPluginEntry[] = [];
   const enabled: PluginDefinition[] = [];
   const failures: PluginLoadFailure[] = [];
   let recovered = false;
-  const previousByKey = new Map<string, PluginEntry>();
+  const previousByKey = new Map<string, LoadedPluginEntry>();
   for (const entry of previous) {
     if (entry.path !== undefined) previousByKey.set(entry.path, entry);
   }
@@ -108,15 +117,26 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
     return true;
   };
 
+  type ArchivedCandidate = {
+    readonly url: URL;
+    readonly restored: ReadonlyMap<string, URL>;
+    readonly archive: LastGoodGeneration;
+  };
+
   const tryArchived = (
     diskUrl: URL,
-  ): Effect.Effect<Option.Option<URL>, never, FileSystem.FileSystem | Path.Path> =>
+  ): Effect.Effect<Option.Option<ArchivedCandidate>, never, FileSystem.FileSystem | Path.Path> =>
     Option.match(saved, {
       onNone: () => Effect.succeed(Option.none()),
       onSome: (archive) =>
         archive.modules.some((module) => module.url === diskUrl.href)
           ? restoreLastGood(archive, archiveDir).pipe(
-              Effect.map((map) => Option.fromUndefinedOr(map.get(diskUrl.href))),
+              Effect.map((restored) => {
+                const url = restored.get(diskUrl.href);
+                return url === undefined
+                  ? Option.none()
+                  : Option.some({ url, restored, archive });
+              }),
               Effect.orElseSucceed(() => Option.none()),
             )
           : Effect.succeed(Option.none()),
@@ -135,6 +155,45 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
       }
       return { _tag: "ok" as const, definition: imported.success };
     });
+
+  /**
+   * Read the reloadable closure after a successful import. Window: Bun has
+   * already evaluated the files; an edit between that import and this read is
+   * still possible (.tsx/.js bypass the onLoad hook).
+   */
+  const recordDiskModules = (
+    source: URL,
+  ): Effect.Effect<readonly LastGoodModule[], string, FileSystem.FileSystem> =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return yield* Effect.forEach(hotModuleClosure([source]), (url) =>
+        fs.readFileString(fileURLToPath(url)).pipe(
+          Effect.map((text): LastGoodModule => ({ url: url.href, text })),
+          Effect.mapError((error) => `could not record '${url}': ${error.message}`),
+        ),
+      );
+    });
+
+  /** Map the archived import closure back to the disk URLs and archived texts. */
+  const recordArchivedModules = (
+    importUrl: URL,
+    restored: ReadonlyMap<string, URL>,
+    archive: LastGoodGeneration,
+  ): readonly LastGoodModule[] => {
+    const restoredToDisk = new Map(
+      [...restored.entries()].map(([disk, url]) => [url.href, disk] as const),
+    );
+    const textByDisk = new Map(archive.modules.map((module) => [module.url, module.text] as const));
+    const modules: LastGoodModule[] = [];
+    for (const url of hotModuleClosure([importUrl])) {
+      const diskHref = restoredToDisk.get(url.href);
+      if (diskHref === undefined) continue;
+      const text = textByDisk.get(diskHref);
+      if (text === undefined) continue;
+      modules.push({ url: diskHref, text });
+    }
+    return modules;
+  };
 
   for (const spec of specs) {
     const key = pluginSpecKey(spec);
@@ -158,13 +217,22 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
 
     const disk = yield* importAndCompat(source.url, source.url);
     if (disk._tag === "ok") {
-      if (spec.enabled) enabled.push(disk.definition);
-      entries.push({
-        id: disk.definition.id,
-        path: key,
-        source: source.url,
-        definition: disk.definition,
-      });
+      const recorded = yield* recordDiskModules(source.url).pipe(Effect.result);
+      if (Result.isSuccess(recorded)) {
+        if (spec.enabled) enabled.push(disk.definition);
+        entries.push({
+          id: disk.definition.id,
+          path: key,
+          source: source.url,
+          definition: disk.definition,
+          modules: recorded.success,
+        });
+        continue;
+      }
+      yield* Effect.logWarning(`Could not load plugin '${key}': ${recorded.failure}`);
+      if (!spec.enabled) continue;
+      if (keepPrevious(key, recorded.failure)) continue;
+      failures.push({ spec: key, reason: recorded.failure });
       continue;
     }
 
@@ -176,7 +244,7 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
       failures.push({ spec: key, reason: disk.reason });
       continue;
     }
-    const restored = yield* importAndCompat(archived.value, source.url);
+    const restored = yield* importAndCompat(archived.value.url, source.url);
     if (restored._tag === "fail") {
       failures.push({ spec: key, reason: disk.reason });
       continue;
@@ -189,6 +257,11 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
       path: key,
       source: source.url,
       definition: restored.definition,
+      modules: recordArchivedModules(
+        archived.value.url,
+        archived.value.restored,
+        archived.value.archive,
+      ),
     });
   }
 
@@ -211,7 +284,7 @@ export const loadPlugins = (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
-  previous: readonly PluginEntry[] = [],
+  previous: readonly LoadedPluginEntry[] = [],
   storeDir?: string,
 ) =>
   loadPluginsEffect(plugins, host, configDir, coreEntries, previous, storeDir, ".").pipe(
@@ -225,7 +298,7 @@ export const prepareDaemonPlugins = (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
-  previous: readonly PluginEntry[] = [],
+  previous: readonly LoadedPluginEntry[] = [],
   storeDir?: string,
 ) =>
   loadPluginsEffect(plugins, host, configDir, coreEntries, previous, storeDir, "./daemon").pipe(
@@ -240,7 +313,7 @@ export const loadCliPlugins = (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
-  previous: readonly PluginEntry[] = [],
+  previous: readonly LoadedPluginEntry[] = [],
   storeDir?: string,
 ) =>
   loadPluginsEffect(plugins, host, configDir, coreEntries, previous, storeDir, "./cli").pipe(
@@ -451,22 +524,23 @@ export const collectUiHalves = (
 /** Checkpoint committed plugin sources after a successful Publish. */
 export const checkpointLastGood = (
   configDir: string,
-  entries: readonly PluginEntry[],
+  entries: readonly LoadedPluginEntry[],
 ): Effect.Effect<void, string, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     if (entries.length === 0) return;
     const path = yield* Path.Path;
-    const fs = yield* FileSystem.FileSystem;
     const store = yield* LastGoodStoreTag.pipe(
       Effect.provide(lastGoodStoreLayer(path.join(configDir, ".amux", "plugin-last-good.json"))),
     );
-    const sources = hotModuleClosure(entries.map((entry) => entry.source));
-    const modules = yield* Effect.forEach(sources, (source) =>
-      fs.readFileString(fileURLToPath(source)).pipe(
-        Effect.map((text) => ({ url: source.href, text })),
-        Effect.mapError((error) => `could not checkpoint '${source}': ${error.message}`),
-      ),
-    );
+    const seen = new Set<string>();
+    const modules: LastGoodModule[] = [];
+    for (const entry of entries) {
+      for (const module of entry.modules) {
+        if (seen.has(module.url)) continue;
+        seen.add(module.url);
+        modules.push(module);
+      }
+    }
     const generation: LastGoodGeneration = {
       version: 1,
       entries: entries.map((entry) => entry.source.href),

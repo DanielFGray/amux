@@ -266,6 +266,67 @@ const waitForUiPlugin = (
     15_000,
   );
 
+const scratchKeyOf = (pluginId: string) => scratchStem(pluginId);
+
+/** Status.pluginUiByClient: at least `min` control clients report ready for this scratch stem. */
+const waitForUiReadyClients = (
+  id: string,
+  env: NodeJS.ProcessEnv,
+  pluginId: string,
+  min: number,
+) => {
+  const stem = scratchKeyOf(pluginId);
+  return until(
+    () =>
+      Effect.gen(function* () {
+        const status = yield* provideEnv(
+          controlCall(id, (c) => c.Status()),
+          env,
+        );
+        const revision = status.pluginPublicationRevision;
+        const byClient = status.pluginUiByClient;
+        if (revision === undefined || byClient === undefined) return false;
+        let ready = 0;
+        for (const report of Object.values(byClient)) {
+          if (report.revision !== revision) continue;
+          if (report.plugins.some((plugin) => plugin.key.includes(stem) && plugin.ready)) {
+            ready += 1;
+          }
+        }
+        return ready >= min;
+      }),
+    `${min} clients UI-ready for ${pluginId}`,
+    15_000,
+  );
+};
+
+/** At least one client reports this scratch stem not ready, with an error string. */
+const waitForUiFailedClient = (id: string, env: NodeJS.ProcessEnv, pluginId: string) => {
+  const stem = scratchKeyOf(pluginId);
+  return until(
+    () =>
+      Effect.gen(function* () {
+        const status = yield* provideEnv(
+          controlCall(id, (c) => c.Status()),
+          env,
+        );
+        const byClient = status.pluginUiByClient;
+        if (byClient === undefined) return false;
+        return Object.values(byClient).some((report) =>
+          report.plugins.some(
+            (plugin) =>
+              plugin.key.includes(stem) && plugin.ready === false && plugin.error !== undefined,
+          ),
+        );
+      }),
+    `UI failure reported for ${pluginId}`,
+    15_000,
+  );
+};
+
+const echoToken = (id: string, env: NodeJS.ProcessEnv, pluginId: string, text: string) =>
+  Effect.promise(() => batch(id, env, command(`${pluginId}.echo`, { text })));
+
 testEffect(
   "demo loop over control socket: eval → inspect → promote → fresh load",
   () =>
@@ -381,34 +442,40 @@ testEffect(
   60_000,
 );
 
+/**
+ * One public-command scenario for the host-owned plugin lifecycle.
+ * Replaces the three overlapping proofs that each covered a slice of this path.
+ */
 testEffect(
-  "authored plugin survives detach and host restart",
+  "shared plugin lifecycle through public commands",
   () =>
     Effect.gen(function* () {
-      const sessionId = "live-image-survive";
-      const pluginId = `live.survive.${Date.now()}`;
+      const sessionId = "live-image-lifecycle";
+      const pluginId = `live.life.${Date.now()}`;
       const { daemon, env, configDir, home } = yield* Effect.promise(() => started(sessionId));
       yield* waitForHostReady(daemon.id, env);
 
-      const halves = dualHalfSources(pluginId, "v1");
+      const fs = yield* FileSystem.FileSystem;
       const scratchDir = join(home, "state", "amux", "scratch");
       const companionDir = join(scratchDir, scratchStem(pluginId));
-      const fs = yield* FileSystem.FileSystem;
       yield* fs.makeDirectory(companionDir, { recursive: true });
-      yield* fs.writeFileString(join(companionDir, "daemon.ts"), halves.daemon);
+
+      // 1. Author UI + daemon halves via plugin.eval (daemon companion on disk first).
+      const v1 = dualHalfSources(pluginId, "v1");
+      yield* fs.writeFileString(join(companionDir, "daemon.ts"), v1.daemon);
       const evaluated = yield* Effect.promise(() =>
-        batch(daemon.id, env, command("plugin.eval", { plugin: pluginId, source: halves.ui })),
+        batch(daemon.id, env, command("plugin.eval", { plugin: pluginId, source: v1.ui })),
       );
       expect(evaluated.result).toEqual(
         expect.objectContaining({ plugin: pluginId, path: expect.any(String) }),
       );
 
-      const before = yield* Effect.promise(() => statusOf(daemon.id, env));
-      const revisionBefore = before.pluginPublicationRevision;
-      expect(revisionBefore).toBeDefined();
+      // 2. Host command runs.
+      const echo1 = yield* echoToken(daemon.id, env, pluginId, "step2");
+      expect(echo1.result).toEqual(expect.objectContaining({ token: "v1", text: "step2" }));
 
-      const clientA = yield* attachClient(daemon.id, env, "survive-a");
-      const clientB = yield* attachClient(daemon.id, env, "survive-b");
+      const clientA = yield* attachClient(daemon.id, env, "life-a");
+      const clientB = yield* attachClient(daemon.id, env, "life-b");
       const scopeA = yield* Scope.make();
       const scopeB = yield* Scope.make();
       scopes.push(scopeA, scopeB);
@@ -422,163 +489,44 @@ testEffect(
       );
       yield* waitForUiPlugin(appA, pluginId);
       yield* waitForUiPlugin(appB, pluginId);
+      yield* waitForUiReadyClients(daemon.id, env, pluginId, 2);
 
-      yield* Scope.close(scopeA, Exit.void);
-      yield* Scope.close(scopeB, Exit.void);
-      clientA.close();
-      clientB.close();
-      clients.splice(0, clients.length);
+      const beforeEdit = yield* Effect.promise(() => statusOf(daemon.id, env));
+      const rev0 = beforeEdit.pluginPublicationRevision;
+      expect(rev0).toBeDefined();
+      if (rev0 === undefined) return;
 
-      yield* daemon.stop;
-      daemons.splice(0, daemons.length);
-      const restarted = yield* Effect.promise(() => run(startDaemon(sessionId), env));
-      daemons.push(restarted);
-      yield* waitForHostReady(restarted.id, env);
-
-      const after = yield* Effect.promise(() => statusOf(restarted.id, env));
-      expect(after.pluginPublicationRevision).toBeDefined();
-
-      const clientC = yield* attachClient(restarted.id, env, "survive-c");
-      const clientD = yield* attachClient(restarted.id, env, "survive-d");
-      const scopeC = yield* Scope.make();
-      const scopeD = yield* Scope.make();
-      scopes.push(scopeC, scopeD);
-      const appC = yield* Scope.provide(
-        bootApp(clientC, { ...DEFAULT_CONFIG, plugins: [] }, configDir),
-        scopeC,
+      // 3. Edit both halves; watched change reaches every client's publication stream; new code runs.
+      const nextA = Effect.runPromise(
+        Effect.scoped(
+          clientA.pluginPublications.pipe(
+            Stream.filter((announcement) => announcement.revision > rev0),
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        ),
       );
-      const appD = yield* Scope.provide(
-        bootApp(clientD, { ...DEFAULT_CONFIG, plugins: [] }, configDir),
-        scopeD,
+      const nextB = Effect.runPromise(
+        Effect.scoped(
+          clientB.pluginPublications.pipe(
+            Stream.filter((announcement) => announcement.revision > rev0),
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        ),
       );
-      yield* waitForUiPlugin(appC, pluginId);
-      yield* waitForUiPlugin(appD, pluginId);
-
-      const statusC = yield* Effect.promise(() => statusOf(restarted.id, env));
-      const statusD = yield* Effect.promise(() => statusOf(restarted.id, env));
-      expect(statusC.pluginPublicationRevision).toBe(statusD.pluginPublicationRevision);
-    }).pipe(Effect.provide(BunFileSystem.layer)),
-  90_000,
-);
-
-testEffect(
-  "failed eval keeps last good host image",
-  () =>
-    Effect.gen(function* () {
-      const sessionId = "live-image-last-good";
-      const pluginId = `live.good.${Date.now()}`;
-      const { daemon, env, configDir, home } = yield* Effect.promise(() => started(sessionId));
-      yield* waitForHostReady(daemon.id, env);
-
-      const good = dualHalfSources(pluginId, "good");
-      const scratchDir = join(home, "state", "amux", "scratch");
-      const companionDir = join(scratchDir, scratchStem(pluginId));
-      const fs = yield* FileSystem.FileSystem;
-      yield* fs.makeDirectory(companionDir, { recursive: true });
-      yield* fs.writeFileString(join(companionDir, "daemon.ts"), good.daemon);
-      yield* Effect.promise(() =>
-        batch(daemon.id, env, command("plugin.eval", { plugin: pluginId, source: good.ui })),
-      );
-
-      const client = yield* attachClient(daemon.id, env, "last-good-ui");
-      const appScope = yield* Scope.make();
-      scopes.push(appScope);
-      const app = yield* Scope.provide(
-        bootApp(client, { ...DEFAULT_CONFIG, plugins: [] }, configDir),
-        appScope,
-      );
-      yield* waitForUiPlugin(app, pluginId);
-      const before = yield* Effect.promise(() => statusOf(daemon.id, env));
-      const revisionBefore = before.pluginPublicationRevision;
-      expect(revisionBefore).toBeDefined();
-
-      const echoGood = yield* Effect.promise(() =>
-        batch(daemon.id, env, command(`${pluginId}.echo`, { text: "before" })),
-      );
-      expect(echoGood.result).toEqual(expect.objectContaining({ token: "good", text: "before" }));
-
-      yield* fs.writeFileString(
-        join(companionDir, "daemon.ts"),
-        `this is not a valid daemon module ===`,
-      );
-      const reloaded = yield* Effect.promise(() =>
-        batch(daemon.id, env, command("plugin.reload", {})),
-      );
-      expect(reloaded.result).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            spec: expect.stringContaining(scratchStem(pluginId)),
-            reason: expect.any(String),
-          }),
-        ]),
-      );
-
-      const echoKept = yield* Effect.promise(() =>
-        batch(daemon.id, env, command(`${pluginId}.echo`, { text: "after" })),
-      );
-      expect(echoKept.result).toEqual(expect.objectContaining({ token: "good", text: "after" }));
-      expect(app.pluginHost.status().some((s) => s.id === pluginId && s.phase === "active")).toBe(
-        true,
-      );
-
-      const after = yield* Effect.promise(() => statusOf(daemon.id, env));
-      expect(after.pluginPublicationRevision).toBeDefined();
-      expect(after.pluginPublicationRevision!).toBeGreaterThanOrEqual(revisionBefore!);
-    }).pipe(Effect.provide(BunFileSystem.layer)),
-  60_000,
-);
-
-testEffect(
-  "plugin.reload / watched change reaches every attached client's publication stream",
-  () =>
-    Effect.gen(function* () {
-      const sessionId = "live-image-watch";
-      const pluginId = `live.watch.${Date.now()}`;
-      const { daemon, env, configDir, home } = yield* Effect.promise(() => started(sessionId));
-      yield* waitForHostReady(daemon.id, env);
-
-      const v1 = dualHalfSources(pluginId, "w1");
-      const scratchDir = join(home, "state", "amux", "scratch");
-      const companionDir = join(scratchDir, scratchStem(pluginId));
-      const fs = yield* FileSystem.FileSystem;
-      yield* fs.makeDirectory(companionDir, { recursive: true });
-      yield* fs.writeFileString(join(companionDir, "daemon.ts"), v1.daemon);
-      yield* Effect.promise(() =>
-        batch(daemon.id, env, command("plugin.eval", { plugin: pluginId, source: v1.ui })),
-      );
-
-      const clientA = yield* attachClient(daemon.id, env, "watch-a");
-      const clientB = yield* attachClient(daemon.id, env, "watch-b");
-      const scopeA = yield* Scope.make();
-      const scopeB = yield* Scope.make();
-      scopes.push(scopeA, scopeB);
-      yield* Scope.provide(bootApp(clientA, { ...DEFAULT_CONFIG, plugins: [] }, configDir), scopeA);
-      yield* Scope.provide(bootApp(clientB, { ...DEFAULT_CONFIG, plugins: [] }, configDir), scopeB);
-
-      const before = yield* Effect.promise(() => statusOf(daemon.id, env));
-      const rev0 = before.pluginPublicationRevision!;
-
-      const nextA = clientA.pluginPublications.pipe(
-        Stream.filter((announcement) => announcement.revision > rev0),
-        Stream.take(1),
-        Stream.runCollect,
-      );
-      const nextB = clientB.pluginPublications.pipe(
-        Stream.filter((announcement) => announcement.revision > rev0),
-        Stream.take(1),
-        Stream.runCollect,
-      );
-      const waitA = Effect.runPromise(Effect.scoped(nextA));
-      const waitB = Effect.runPromise(Effect.scoped(nextB));
-
-      const v2 = dualHalfSources(pluginId, "w2");
+      const v2 = dualHalfSources(pluginId, "v2");
+      yield* fs.writeFileString(join(companionDir, "daemon.ts"), v2.daemon);
       yield* fs.writeFileString(scratchEntryPath(pluginId, scratchDir), v2.ui);
-
-      const [gotA, gotB] = yield* Effect.promise(() => Promise.all([waitA, waitB]));
+      const [gotA, gotB] = yield* Effect.promise(() => Promise.all([nextA, nextB]));
       expect(gotA[0]!.revision).toBeGreaterThan(rev0);
       expect(gotB[0]!.revision).toBe(gotA[0]!.revision);
+      yield* waitForUiPlugin(appA, pluginId);
+      yield* waitForUiPlugin(appB, pluginId);
+      const echo2 = yield* echoToken(daemon.id, env, pluginId, "step3");
+      expect(echo2.result).toEqual(expect.objectContaining({ token: "v2", text: "step3" }));
 
-      // Explicit reload also advances for both.
+      // Explicit reload also advances both clients (same proof the watch-only slice had).
       const rev1 = gotA[0]!.revision;
       const reloadA = Effect.runPromise(
         Effect.scoped(
@@ -602,6 +550,145 @@ testEffect(
       const [rA, rB] = yield* Effect.promise(() => Promise.all([reloadA, reloadB]));
       expect(rA[0]!.revision).toBeGreaterThan(rev1);
       expect(rB[0]!.revision).toBe(rA[0]!.revision);
+
+      // 4. Break the daemon half; last good keeps running; failure is reported.
+      yield* fs.writeFileString(
+        join(companionDir, "daemon.ts"),
+        `this is not a valid daemon module ===`,
+      );
+      const reloaded = yield* Effect.promise(() =>
+        batch(daemon.id, env, command("plugin.reload", {})),
+      );
+      expect(reloaded.result).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            spec: expect.stringContaining(scratchStem(pluginId)),
+            reason: expect.any(String),
+          }),
+        ]),
+      );
+      const echoKept = yield* echoToken(daemon.id, env, pluginId, "step4");
+      expect(echoKept.result).toEqual(expect.objectContaining({ token: "v2", text: "step4" }));
+      expect(appA.pluginHost.status().some((s) => s.id === pluginId && s.phase === "active")).toBe(
+        true,
+      );
+
+      // 5. Detach every client; host command still runs with nobody attached.
+      yield* Scope.close(scopeA, Exit.void);
+      yield* Scope.close(scopeB, Exit.void);
+      scopes.splice(scopes.indexOf(scopeA), 1);
+      scopes.splice(scopes.indexOf(scopeB), 1);
+      clientA.close();
+      clientB.close();
+      clients.splice(0, clients.length);
+      const echoDetached = yield* echoToken(daemon.id, env, pluginId, "step5");
+      expect(echoDetached.result).toEqual(
+        expect.objectContaining({ token: "v2", text: "step5" }),
+      );
+
+      // 6. Reattach two clients; both share the active publication revision / UI readiness.
+      const clientC = yield* attachClient(daemon.id, env, "life-c");
+      const clientD = yield* attachClient(daemon.id, env, "life-d");
+      const scopeC = yield* Scope.make();
+      const scopeD = yield* Scope.make();
+      scopes.push(scopeC, scopeD);
+      const appC = yield* Scope.provide(
+        bootApp(clientC, { ...DEFAULT_CONFIG, plugins: [] }, configDir),
+        scopeC,
+      );
+      const appD = yield* Scope.provide(
+        bootApp(clientD, { ...DEFAULT_CONFIG, plugins: [] }, configDir),
+        scopeD,
+      );
+      yield* waitForUiPlugin(appC, pluginId);
+      yield* waitForUiPlugin(appD, pluginId);
+      yield* waitForUiReadyClients(daemon.id, env, pluginId, 2);
+      const statusBoth = yield* Effect.promise(() => statusOf(daemon.id, env));
+      const sharedRevision = statusBoth.pluginPublicationRevision;
+      expect(sharedRevision).toBeDefined();
+      if (sharedRevision === undefined) return;
+      const readyReports = Object.values(statusBoth.pluginUiByClient ?? {});
+      expect(readyReports.length).toBeGreaterThanOrEqual(2);
+      for (const report of readyReports) {
+        expect(report.revision).toBe(sharedRevision);
+      }
+
+      // 7. Failed UI import does not block the host command or the PTY owner; readiness shows.
+      yield* fs.writeFileString(
+        scratchEntryPath(pluginId, scratchDir),
+        `this is not valid ui ===\n`,
+      );
+      yield* Effect.promise(() => batch(daemon.id, env, command("plugin.reload", {})));
+      yield* waitForUiFailedClient(daemon.id, env, pluginId);
+      const echoDuringUiFail = yield* echoToken(daemon.id, env, pluginId, "step7");
+      expect(echoDuringUiFail.result).toEqual(
+        expect.objectContaining({ token: "v2", text: "step7" }),
+      );
+      // Spawn a session-backed pane while UI is failed — daemon owns the PTY.
+      const split = yield* Effect.promise(() =>
+        batch(daemon.id, env, command("pane.split", { axis: "row" })),
+      );
+      expect(split.result).toEqual(
+        expect.objectContaining({ session: expect.any(String), pane: expect.any(String) }),
+      );
+      const created = split.result as { session: string; pane: string };
+      const panes = yield* Effect.promise(() => batch(daemon.id, env, command("pane.list", {})));
+      expect(panes.result).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: created.pane, session: created.session }),
+        ]),
+      );
+      const statusDuringFail = yield* Effect.promise(() => statusOf(daemon.id, env));
+      expect(statusDuringFail.agents).toContain(created.session);
+      const failedUi = Object.values(statusDuringFail.pluginUiByClient ?? {}).some((report) =>
+        report.plugins.some(
+          (plugin) =>
+            plugin.key.includes(scratchStem(pluginId)) &&
+            plugin.ready === false &&
+            plugin.error !== undefined,
+        ),
+      );
+      expect(failedUi).toBe(true);
+
+      // Restore UI so restart clients can load; leave daemon half broken so last-good recovers it.
+      yield* fs.writeFileString(scratchEntryPath(pluginId, scratchDir), v2.ui);
+
+      // 8. Host restart recovers the last published (checkpointed) daemon source.
+      yield* Scope.close(scopeC, Exit.void);
+      yield* Scope.close(scopeD, Exit.void);
+      clientC.close();
+      clientD.close();
+      clients.splice(0, clients.length);
+      yield* daemon.stop;
+      daemons.splice(0, daemons.length);
+      const restarted = yield* Effect.promise(() => run(startDaemon(sessionId), env));
+      daemons.push(restarted);
+      yield* waitForHostReady(restarted.id, env);
+      const echoRestart = yield* echoToken(restarted.id, env, pluginId, "step8");
+      expect(echoRestart.result).toEqual(
+        expect.objectContaining({ token: "v2", text: "step8" }),
+      );
+
+      const clientE = yield* attachClient(restarted.id, env, "life-e");
+      const clientF = yield* attachClient(restarted.id, env, "life-f");
+      const scopeE = yield* Scope.make();
+      const scopeF = yield* Scope.make();
+      scopes.push(scopeE, scopeF);
+      const appE = yield* Scope.provide(
+        bootApp(clientE, { ...DEFAULT_CONFIG, plugins: [] }, configDir),
+        scopeE,
+      );
+      const appF = yield* Scope.provide(
+        bootApp(clientF, { ...DEFAULT_CONFIG, plugins: [] }, configDir),
+        scopeF,
+      );
+      yield* waitForUiPlugin(appE, pluginId);
+      yield* waitForUiPlugin(appF, pluginId);
+      const afterRestart = yield* Effect.promise(() => statusOf(restarted.id, env));
+      expect(afterRestart.pluginPublicationRevision).toBeDefined();
+      const statusE = yield* Effect.promise(() => statusOf(restarted.id, env));
+      const statusF = yield* Effect.promise(() => statusOf(restarted.id, env));
+      expect(statusE.pluginPublicationRevision).toBe(statusF.pluginPublicationRevision);
     }).pipe(Effect.provide(BunFileSystem.layer)),
-  90_000,
+  180_000,
 );

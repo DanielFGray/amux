@@ -32,7 +32,7 @@ import {
   checkpointLastGood,
   collectUiHalves,
   prepareDaemonPlugins,
-  type PluginEntry,
+  type LoadedPluginEntry,
 } from "../plugin/loader.ts";
 import {
   listScratchSpecs,
@@ -146,8 +146,8 @@ export const createBehaviourHostRuntime = Effect.gen(function* () {
 
   // Last successful prepare's entries — a failed Prepare leaves this alone so the
   // next attempt can keep a working plugin when its edited source will not import.
-  let previousEntries: readonly PluginEntry[] = [];
-  let preparedEntries: readonly PluginEntry[] | undefined;
+  let previousEntries: readonly LoadedPluginEntry[] = [];
+  let preparedEntries: readonly LoadedPluginEntry[] | undefined;
   let lastUiHalves: readonly PluginUiHalf[] = [];
 
   const readHostConfig = (): Effect.Effect<AmuxConfig> =>
