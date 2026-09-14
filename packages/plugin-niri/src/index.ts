@@ -1,6 +1,7 @@
 import { BoxRenderable, createTimeline, type Timeline, type Renderable } from "@opentui/core";
 import {
   definePlugin,
+  LayoutKindsTag,
   OptionsTag,
   makeLayout,
   registerEnumValue,
@@ -188,7 +189,7 @@ const scrollRenderer: LayoutKindRenderer = {
 
 export const niriPlugin: PluginDefinition = definePlugin({
   id: "amux.tiling.niri",
-  inject: [OptionsTag],
+  inject: [OptionsTag, LayoutKindsTag],
   effect: () =>
     Effect.gen(function* () {
       yield* registerEnumValue({

@@ -29,7 +29,7 @@ import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { Context, Effect } from "effect";
 import type * as Scope from "effect/Scope";
-import { Backend, captureRootRuntime, workspaceEnv } from "./env.ts";
+import { Backend, captureRootRuntime, workspaceEnv, type LayoutKindLookup } from "./env.ts";
 import { projectWorkspace, SpaceSet, type Space } from "./space.ts";
 import type { Window } from "./window.ts";
 import type { SessionBackendFactory } from "./backend.ts";
@@ -75,6 +75,8 @@ export interface ProjectOptions {
   shell?: string[];
   backend?: SessionBackendFactory;
   paneContent?: PaneView;
+  /** Layout-kind renderers Window mounts; defaults to none. */
+  layoutKinds?: LayoutKindLookup;
   /** Build the host the workspace mounts into, instead of the harness adding a
    *  full-size one. The builder receives the renderer setup, attaches its boxes
    *  to the renderer root, and returns the leaf host — how a test reproduces the
@@ -125,6 +127,7 @@ export function project(
       shell: options.shell,
       backend: options.backend,
       paneContent: options.paneContent,
+      layoutKinds: options.layoutKinds,
       options: optionsRuntime,
       runtime: rootRuntime,
     });

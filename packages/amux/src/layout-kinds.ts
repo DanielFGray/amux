@@ -1,6 +1,5 @@
 /**
- * Where a `LayoutContainer`'s `kind` (layout.ts) becomes two independent
- * facts: how to validate its opaque `arrangement`, and how to draw it.
+ * Where a `LayoutContainer`'s `kind` (layout.ts) becomes how to draw it.
  *
  * Kept as its own small module rather than folded into an existing registry
  * because neither existing one fits: `ui/slots.ts`'s registry unconditionally
@@ -12,20 +11,14 @@
  * algorithm can reuse "split" the same way. See
  * docs/adr/0004-arrangement-kind-is-an-open-registry.md.
  *
- * The two registrations run in different processes and are made
- * independently: a schema from a plugin's `"./daemon"` entrypoint (decoding
- * session.json and wire snapshots is daemon-side), a renderer from its `"."`
- * (UI) entrypoint (opentui materialization is client-side). Neither knows
- * the other exists; a kind that registers only one of them still decodes (as
- * unvalidated arrangement) or still renders (as no-op passthrough,
- * respectively) — see the fallbacks below.
+ * Renderers are a contributions table owned by a `PluginInstance`: visibility
+ * follows host commit, so a reload's replacement and a failed candidate are
+ * both handled the same way as session views. Window reads the lookup from
+ * `WorkspaceEnv` (`LayoutKinds` in env.ts).
  */
 import type { Renderable, RenderContext } from "@opentui/core";
-import { Effect, Schema as S, Scope } from "effect";
 import type { LayoutContainer } from "./layout.ts";
-
-const schemas = new Map<string, S.Schema<unknown>>();
-const renderers = new Map<string, LayoutKindRenderer>();
+import type { PluginContributions, PluginInstance } from "./plugin/contributions.ts";
 
 /** Chrome helpers Window passes into a kind renderer — drag handles between
  *  that container's children, so a scroll strip can host the same divider
@@ -61,55 +54,26 @@ export interface LayoutKindRenderer {
   applyArrangement?(node: LayoutContainer): boolean;
 }
 
-/** Register `kind`'s arrangement schema — decoded against raw `unknown` input
- *  via `S.decodeUnknownEffect`, so any `Schema` works regardless of its own
- *  encoded type. Dies naming the earlier owner if `kind` already has one —
- *  "declaring is claiming," the same rule `ui/slots.ts` enforces for chrome
- *  slots. Disposed when the registering plugin's scope closes. */
-export function registerLayoutKindSchema<A>(
-  kind: string,
-  schema: S.Schema<A>,
-): Effect.Effect<void, never, Scope.Scope> {
-  if (schemas.has(kind)) {
-    return Effect.die(
-      new Error(`layout kind '${kind}' already has a registered arrangement schema`),
-    );
-  }
-  schemas.set(kind, schema as S.Schema<unknown>);
-  return Effect.addFinalizer(() =>
-    Effect.sync(() => {
-      if (schemas.get(kind) === schema) schemas.delete(kind);
-    }),
-  );
+export interface LayoutKinds {
+  readonly register: (
+    owner: PluginInstance,
+    kind: string,
+    renderer: LayoutKindRenderer,
+  ) => () => void;
+  /** `kind`'s committed renderer, or undefined when none is loaded. */
+  readonly renderer: (kind: string) => LayoutKindRenderer | undefined;
 }
 
-/** `kind`'s registered arrangement schema, or undefined if no plugin
- *  providing it is currently loaded — a decode-time fact, not an error: see
- *  the "missing kind" consequence in ADR 0004. */
-export function layoutKindSchema(kind: string): S.Schema<unknown> | undefined {
-  return schemas.get(kind);
-}
-
-/** Register `kind`'s renderer. Same collision/disposal rules as
- *  `registerLayoutKindSchema`. */
-export function registerLayoutKindRenderer(
-  kind: string,
-  renderer: LayoutKindRenderer,
-): Effect.Effect<void, never, Scope.Scope> {
-  if (renderers.has(kind)) {
-    return Effect.die(new Error(`layout kind '${kind}' already has a registered renderer`));
-  }
-  renderers.set(kind, renderer);
-  return Effect.addFinalizer(() =>
-    Effect.sync(() => {
-      if (renderers.get(kind) === renderer) renderers.delete(kind);
-    }),
-  );
-}
-
-/** `kind`'s registered renderer, or undefined if no plugin providing it is
- *  currently loaded. Synchronous and side-effect-free: `Window#mount()`
- *  calls it inline while building renderables, not through Effect. */
-export function layoutKindRenderer(kind: string): LayoutKindRenderer | undefined {
-  return renderers.get(kind);
+/**
+ * The renderers a plugin can claim for a layout container kind.
+ *
+ * Two instances of one plugin may hold the same kind during a reload; the
+ * table decides which of them Window is looking at.
+ */
+export function createLayoutKinds(contributions: PluginContributions): LayoutKinds {
+  const renderers = contributions.table<LayoutKindRenderer>();
+  return {
+    register: renderers.add,
+    renderer: (kind) => renderers.get(kind),
+  };
 }

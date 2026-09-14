@@ -23,7 +23,7 @@ const hangHandlers: PluginHostHandlerFactory = (stopped) =>
           return Effect.void;
         },
         Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
-        Load: () => Effect.succeed(emptyPluginDeclarations),
+        Load: () => Effect.succeed({ declarations: emptyPluginDeclarations, failures: [] }),
         Reduce: () =>
           Effect.fail(new PluginReducerError({ message: "hang fixture has no reducers" })),
         CheckDescriptor: () =>

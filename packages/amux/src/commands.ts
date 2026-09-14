@@ -1010,6 +1010,7 @@ const PluginReload = define(
     exposure: "agent",
   },
   (args) => resourcesOf(args.plugin),
+  S.Array(S.Struct({ spec: S.String, reason: S.String })),
 );
 /**
  * In-session authorship: materialize `source` into the scratch plugin dir and

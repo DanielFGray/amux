@@ -9,6 +9,7 @@ import type {
 } from "../ui/slots.ts";
 import type { SessionViews } from "./session-views.tsx";
 import type { PaneView } from "../component-pane.tsx";
+import type { LayoutKindRenderer, LayoutKinds } from "../layout-kinds.ts";
 import type { Bindings, CommandSpec } from "../bindings.ts";
 import type { ContextPriorityConflict, ContextSpec } from "../key-context.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
@@ -68,6 +69,8 @@ export type SessionViewsService = Omit<SessionViews, "register"> &
   RegistryService<readonly [string, PaneView]>;
 export type ProcessDisplayService = Omit<ProcessDisplay, "register"> &
   RegistryService<ProcessDisplayProvider>;
+export type LayoutKindsService = Omit<LayoutKinds, "register"> &
+  RegistryService<readonly [string, LayoutKindRenderer]>;
 export type BindingsService = Bindings & RegistryService<CommandSpec>;
 export interface ContextsService extends RegistryService<ContextSpec> {
   readonly all: () => readonly ContextSpec[];
@@ -198,6 +201,9 @@ export class SessionViewsTag extends Context.Service<SessionViewsTag, SessionVie
 export class ProcessDisplayTag extends Context.Service<ProcessDisplayTag, ProcessDisplayService>()(
   "amux/ProcessDisplay",
 ) {}
+export class LayoutKindsTag extends Context.Service<LayoutKindsTag, LayoutKindsService>()(
+  "amux/LayoutKinds",
+) {}
 export class BindingsTag extends Context.Service<BindingsTag, BindingsService>()("amux/Bindings") {}
 export class ContextsTag extends Context.Service<ContextsTag, ContextsService>()("amux/Contexts") {}
 export class SettingsTag extends Context.Service<SettingsTag, SettingsService>()("amux/Settings") {}
@@ -313,6 +319,12 @@ export const registerTilingAlgorithm = (
   registration: TilingAlgorithmRegistration,
 ): Effect.Effect<void, never, TilingAlgorithmsTag | CurrentPlugin | Scope.Scope> =>
   TilingAlgorithmsTag.pipe(Effect.flatMap((algorithms) => algorithms.register(registration)));
+
+export const registerLayoutKindRenderer = (
+  kind: string,
+  renderer: LayoutKindRenderer,
+): Effect.Effect<void, never, LayoutKindsTag | CurrentPlugin | Scope.Scope> =>
+  LayoutKindsTag.pipe(Effect.flatMap((kinds) => kinds.register([kind, renderer])));
 
 export interface PluginService {
   readonly key: string;

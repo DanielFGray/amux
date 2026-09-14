@@ -7,6 +7,7 @@ import {
   type ProcessDisplay,
   type ProcessDisplayProvider,
 } from "./process-display.ts";
+import { createLayoutKinds, type LayoutKindRenderer, type LayoutKinds } from "../layout-kinds.ts";
 import { createPluginContributions, type PluginInstance } from "./contributions.ts";
 import { createSlots, type Slots } from "../ui/slots.ts";
 import { testPanelContext } from "../ui/test-panel.ts";
@@ -33,6 +34,7 @@ import {
   OptionsTag,
   PanelTag,
   ProcessDisplayTag,
+  LayoutKindsTag,
   RemoteEventsTag,
   SlotsTag,
   SessionViewsTag,
@@ -48,6 +50,7 @@ interface RawTestRegistries {
   readonly slots: Slots;
   readonly sessionViews: SessionViews;
   readonly processDisplay: ProcessDisplay;
+  readonly layoutKinds: LayoutKinds;
   readonly bindings: (owner: PluginInstance, binding: CommandSpec) => () => void;
   readonly contexts: (owner: PluginInstance, context: ContextSpec) => () => void;
   readonly settings: (owner: PluginInstance, section: PluginSettingsSection) => () => void;
@@ -74,6 +77,7 @@ type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "contributions"> & 
   readonly slots?: Slots;
   readonly sessionViews?: SessionViews;
   readonly processDisplay?: ProcessDisplay;
+  readonly layoutKinds?: LayoutKinds;
   readonly registries?: Partial<RawTestRegistries>;
   readonly contributions?: PluginEnvironment["contributions"];
 };
@@ -86,6 +90,7 @@ export function testPluginEnvironment(
   const slots = parts.slots ?? createSlots(renderer, contributions);
   const sessionViews = parts.sessionViews ?? createSessionViews(contributions);
   const processDisplay = parts.processDisplay ?? createProcessDisplay(contributions);
+  const layoutKinds = parts.layoutKinds ?? createLayoutKinds(contributions);
   const bindingTable = contributions.table<CommandSpec>();
   const contextTable = contributions.table<ContextSpec>();
   const settingsTable = contributions.table<PluginSettingsSection>();
@@ -104,6 +109,7 @@ export function testPluginEnvironment(
     slots,
     sessionViews,
     processDisplay,
+    layoutKinds,
     bindings: (owner, binding) => bindingTable.add(owner, binding.name, binding),
     contexts: (owner, context) => contextTable.add(owner, context.id, context),
     settings: (owner, section) => settingsTable.add(owner, section.id, section),
@@ -146,6 +152,11 @@ export function testPluginEnvironment(
       { display: processDisplay.display },
       (owner, provider: ProcessDisplayProvider) =>
         registries.processDisplay.register(owner, provider),
+    ),
+    layoutKinds: scopedRegistry(
+      { renderer: layoutKinds.renderer },
+      (owner, [kind, renderer]: readonly [string, LayoutKindRenderer]) =>
+        registries.layoutKinds.register(owner, kind, renderer),
     ),
     bindings: scopedRegistry(rawBindings, registries.bindings),
     contexts: scopedRegistry(
@@ -203,6 +214,11 @@ export function testPluginEnvironment(
       (ctx) => void ctx.provide(ProcessDisplayTag, services.processDisplay),
     ),
     provider(
+      "amux.registry.layout-kinds",
+      LayoutKindsTag,
+      (ctx) => void ctx.provide(LayoutKindsTag, services.layoutKinds),
+    ),
+    provider(
       "amux.registry.bindings",
       BindingsTag,
       (ctx) => void ctx.provide(BindingsTag, services.bindings),
@@ -247,6 +263,7 @@ export function testPluginEnvironment(
     slots: _slots,
     sessionViews: _sessionViews,
     processDisplay: _processDisplay,
+    layoutKinds: _layoutKinds,
     registries: _registries,
     panel: _panel,
     frames: _frames,

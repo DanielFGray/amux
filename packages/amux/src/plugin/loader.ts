@@ -1,8 +1,9 @@
 import { BunServices } from "@effect/platform-bun";
-import { Effect, Option, Path, Schema as S } from "effect";
+import { Effect, Option, Path, Result, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { pluginSpecKey, type PluginSpec } from "../config.ts";
+import type { PluginLoadFailure } from "../plugin-behaviour.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost, RefusedPlugin } from "./host.ts";
 import { hotImport, resolveExportsSubpath } from "./hot.ts";
@@ -22,12 +23,20 @@ export interface PluginEntry {
   readonly definition: PluginDefinition;
 }
 
+/** Host `reconcile` rejected the configuration; the previous one is unchanged. */
+export class PluginReconcileError extends S.TaggedError<PluginReconcileError>()(
+  "PluginReconcileError",
+  { message: S.String },
+) {}
+
 export interface LoadedPlugins {
   readonly entries: readonly PluginEntry[];
   /** Startup imported archived source instead of the current disk files. */
   readonly recovered: boolean;
   /** Entries the host's configuration could not satisfy — see `RefusedPlugin`. */
   readonly refused: readonly RefusedPlugin[];
+  /** Enabled specs that failed to import or pass compat; may still be in `entries`. */
+  readonly failures: readonly PluginLoadFailure[];
 }
 
 /** Discover user entry files without making discovery a second loading path. */
@@ -55,12 +64,18 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
+  previous: readonly PluginEntry[] = [],
   storeDir?: string,
   entrypoint: string = ".",
 ) {
   const resolvedStore = storeDir ?? (yield* pluginStoreDir);
   const entries: PluginEntry[] = [];
   const enabled: PluginDefinition[] = [];
+  const failures: PluginLoadFailure[] = [];
+  const previousByKey = new Map<string, PluginEntry>();
+  for (const entry of previous) {
+    if (entry.path !== undefined) previousByKey.set(entry.path, entry);
+  }
   const path = yield* Path.Path;
   const recovery = yield* LastGoodStoreTag.pipe(
     Effect.provide(lastGoodStoreLayer(path.join(configDir, ".amux", "plugin-last-good.json"))),
@@ -88,6 +103,14 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
       .map((path) => ({ path, enabled: true })),
   ];
 
+  const keepPrevious = (key: string, reason: string) => {
+    failures.push({ spec: key, reason });
+    const prior = previousByKey.get(key);
+    if (prior === undefined) return;
+    enabled.push(prior.definition);
+    entries.push(prior);
+  };
+
   for (const spec of specs) {
     const key = pluginSpecKey(spec);
     const source =
@@ -109,18 +132,20 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
     if (source._tag !== "found") continue;
 
     const imported = restored.get(source.url.href) ?? source.url;
-    const loaded = yield* hotImport(imported).pipe(
-      Effect.tapError((error) => Effect.logWarning(`Could not load plugin '${key}': ${error}`)),
-      Effect.orElseSucceed(() => null),
-    );
-    if (!loaded) continue;
+    const importedResult = yield* hotImport(imported).pipe(Effect.result);
+    if (Result.isFailure(importedResult)) {
+      yield* Effect.logWarning(`Could not load plugin '${key}': ${importedResult.failure}`);
+      if (spec.enabled) keepPrevious(key, importedResult.failure);
+      continue;
+    }
+    const loaded = importedResult.success;
 
-    const compatible = yield* checkPluginCompat(source.url, loaded.id).pipe(
-      Effect.tapError((error) => Effect.logWarning(error)),
-      Effect.as(true),
-      Effect.orElseSucceed(() => false),
-    );
-    if (!compatible) continue;
+    const compatResult = yield* checkPluginCompat(source.url, loaded.id).pipe(Effect.result);
+    if (Result.isFailure(compatResult)) {
+      yield* Effect.logWarning(compatResult.failure);
+      if (spec.enabled) keepPrevious(key, compatResult.failure);
+      continue;
+    }
 
     if (spec.enabled) enabled.push(loaded);
     entries.push({ id: loaded.id, path: key, source: source.url, definition: loaded });
@@ -131,9 +156,9 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
   // listed after its consumer is still a provider.
   const refused = yield* host
     .reconcile([...coreEntries, ...enabled])
-    .pipe(Effect.catchCause(() => Effect.succeed([] as readonly RefusedPlugin[])));
+    .pipe(Effect.mapError((message) => new PluginReconcileError({ message })));
 
-  return { entries, recovered: restored.size > 0, refused } as LoadedPlugins;
+  return { entries, recovered: restored.size > 0, refused, failures } satisfies LoadedPlugins;
 });
 
 export const loadPlugins = (
@@ -141,9 +166,10 @@ export const loadPlugins = (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
+  previous: readonly PluginEntry[] = [],
   storeDir?: string,
 ) =>
-  loadPluginsEffect(plugins, host, configDir, coreEntries, storeDir, ".").pipe(
+  loadPluginsEffect(plugins, host, configDir, coreEntries, previous, storeDir, ".").pipe(
     Effect.provide(BunServices.layer),
   );
 
@@ -153,9 +179,10 @@ export const loadDaemonPlugins = (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
+  previous: readonly PluginEntry[] = [],
   storeDir?: string,
 ) =>
-  loadPluginsEffect(plugins, host, configDir, coreEntries, storeDir, "./daemon").pipe(
+  loadPluginsEffect(plugins, host, configDir, coreEntries, previous, storeDir, "./daemon").pipe(
     Effect.provide(BunServices.layer),
   );
 
@@ -167,9 +194,10 @@ export const loadCliPlugins = (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
+  previous: readonly PluginEntry[] = [],
   storeDir?: string,
 ) =>
-  loadPluginsEffect(plugins, host, configDir, coreEntries, storeDir, "./cli").pipe(
+  loadPluginsEffect(plugins, host, configDir, coreEntries, previous, storeDir, "./cli").pipe(
     Effect.provide(BunServices.layer),
   );
 

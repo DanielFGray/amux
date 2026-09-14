@@ -101,6 +101,13 @@ export const emptyPluginDeclarations: PluginDeclarations = {
   adapters: [],
 };
 
+/** A configured, enabled spec that failed to import or pass the compat check. */
+export const PluginLoadFailureSchema = S.Struct({
+  spec: S.String,
+  reason: S.String,
+});
+export type PluginLoadFailure = typeof PluginLoadFailureSchema.Type;
+
 export class PluginBehaviourError extends S.TaggedError<PluginBehaviourError>()(
   "PluginBehaviourError",
   { message: S.String },

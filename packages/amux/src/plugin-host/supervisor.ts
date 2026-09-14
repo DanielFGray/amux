@@ -27,12 +27,12 @@ import {
 } from "effect";
 import { errorMessage } from "../error-message.ts";
 import { formatStderrTail, makeStderrTail } from "../stderr-tail.ts";
-import type { PluginDeclarations } from "../plugin-behaviour.ts";
 import { type PluginHostClient, type PluginHostGeneration } from "./client.ts";
 import {
   PluginHostError,
   PluginHostRpcs,
   PluginHostSerialization,
+  type PluginHostLoadResult,
   type PluginHostStatus,
 } from "./rpc.ts";
 
@@ -66,7 +66,7 @@ export interface PluginHostSupervisorOptions {
    */
   readonly loadGeneration: (
     client: PluginHostClient,
-  ) => Effect.Effect<PluginDeclarations, PluginHostError>;
+  ) => Effect.Effect<PluginHostLoadResult, PluginHostError>;
   /** Override the host argv (tests: hang fixture). Default: this package's CLI. */
   readonly argv?: readonly string[];
   readonly pingIntervalMs?: number;
@@ -410,7 +410,7 @@ const runGeneration = (
 
         yield* SubscriptionRef.set(
           options.generation,
-          Option.some({ client, declarations: loaded.success }),
+          Option.some({ client, declarations: loaded.success.declarations }),
         );
         yield* setStatus(options.status, { state: "ready", restarts, pid: child.pid });
         yield* Ref.set(reachedReady, true);

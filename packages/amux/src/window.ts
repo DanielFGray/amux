@@ -8,14 +8,15 @@ import {
   RenderCtx,
   Backend as BackendContext,
   PaneViews,
+  LayoutKinds,
   OptionsRuntime,
   RootRuntime,
+  type LayoutKindLookup,
   type RootRuntimeContext,
   type WorkspaceEnv,
 } from "./env.ts";
 import { rollUp } from "./space.ts";
 import { Divider, setWeight, setDirection, type JunctionFrame } from "./divider.ts";
-import { layoutKindRenderer } from "./layout-kinds.ts";
 import type { Options } from "./options.ts";
 
 import {
@@ -177,6 +178,9 @@ export class Window {
    *  registered none; see PaneViews in env.ts. */
   #paneContent: PaneView | null;
 
+  /** Layout-kind renderers for container nodes; see LayoutKinds in env.ts. */
+  #layoutKinds: LayoutKindLookup;
+
   /** Live option values, one instance per workspace; see OptionsRuntime in
    *  env.ts. Passed on to every Pane and Divider this window creates. */
   #options: Options;
@@ -202,6 +206,7 @@ export class Window {
     this.#ctx = Context.get(env, RenderCtx);
     this.#backend = Context.get(env, BackendContext);
     this.#paneContent = Context.get(env, PaneViews);
+    this.#layoutKinds = Context.get(env, LayoutKinds);
     this.#options = Context.get(env, OptionsRuntime);
     this.#runtime = Context.get(env, RootRuntime);
     this.number = number;
@@ -313,7 +318,7 @@ export class Window {
     if (!scrollArrangementPatchable(this.#layout, next)) return false;
     const root = next.root;
     if (!root || root.type !== "container") return false;
-    return layoutKindRenderer(root.kind)?.applyArrangement?.(root) === true;
+    return this.#layoutKinds(root.kind)?.applyArrangement?.(root) === true;
   }
 
   /** Drop a client projection after the daemon has removed its owner. */
@@ -625,7 +630,7 @@ export class Window {
     if (node instanceof Pane) {
       const container = this.#containerHolding(node.id);
       if (container) {
-        const fromKind = layoutKindRenderer(container.kind)?.hasNeighbour?.(
+        const fromKind = this.#layoutKinds(container.kind)?.hasNeighbour?.(
           container,
           node.id,
           axis,
@@ -1001,7 +1006,7 @@ export class Window {
         return pane.view;
       }
       if (node.type === "container") {
-        const renderer = layoutKindRenderer(node.kind);
+        const renderer = this.#layoutKinds(node.kind);
         const children = node.children.map((child, i) => build(child, [...path, i]));
         // A container whose plugin is no longer loaded has no renderer to
         // arrange its children — fall back to a plain flex box rather than

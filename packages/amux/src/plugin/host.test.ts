@@ -15,6 +15,7 @@ import type { PluginService } from "./services.ts";
 import { key } from "./kv.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import type { SessionViews } from "./session-views.tsx";
+import type { LayoutKinds } from "../layout-kinds.ts";
 import { testPluginEnvironment, type TestPluginEnvironment } from "./test-environment.ts";
 import { testPanelContext } from "../ui/test-panel.ts";
 import { command } from "../commands.ts";
@@ -23,6 +24,7 @@ import type { PanelContext } from "../ui/panel.ts";
 import {
   BindingsTag,
   CliCommandsTag,
+  LayoutKindsTag,
   OptionsTag,
   PanelTag,
   SlotsTag,
@@ -32,6 +34,7 @@ import {
   type CliCommandRegistration,
 } from "./services.ts";
 import { createPluginContributions } from "./contributions.ts";
+import type { LayoutKindRenderer } from "../layout-kinds.ts";
 
 type EnvironmentOverrides = NonNullable<Parameters<typeof testPluginEnvironment>[1]>;
 
@@ -73,6 +76,7 @@ function makeHost(overrides: EnvironmentOverrides = {}): Effect.Effect<
     host: PluginHost;
     slots: Slots;
     sessionViews: SessionViews;
+    layoutKinds: LayoutKinds;
     registryEntries: readonly PluginDefinition[];
   },
   never,
@@ -85,6 +89,7 @@ function makeHost(overrides: EnvironmentOverrides = {}): Effect.Effect<
       host: yield* createPluginHost(env),
       slots: env.registries.slots,
       sessionViews: env.registries.sessionViews,
+      layoutKinds: env.registries.layoutKinds,
       registryEntries: env.registryEntries,
     };
   });
@@ -387,6 +392,63 @@ testEffect("registered session views are disposed when the plugin is removed", (
     yield* host.remove(plugin.id);
     expect(views.has("test")).toBe(false);
   }),
+);
+
+testEffect(
+  "replacing a layout-kind plugin updates the committed renderer; a failed candidate keeps it",
+  () =>
+    Effect.gen(function* () {
+      const { host, layoutKinds, registryEntries } = yield* makeHost();
+      yield* host.add(registryProviding(registryEntries, LayoutKindsTag));
+
+      const stub = (label: string): LayoutKindRenderer => ({
+        render: () => {
+          throw new Error(`renderer ${label} is not drawn in this test`);
+        },
+      });
+      const oldRenderer = stub("old");
+      const newRenderer = stub("new");
+      const failRenderer = stub("fail");
+
+      yield* host.add(
+        mkPlugin({
+          id: "kind-plugin",
+          inject: [LayoutKindsTag],
+          effect: () =>
+            Effect.gen(function* () {
+              const kinds = yield* LayoutKindsTag;
+              yield* kinds.register(["scroll", oldRenderer]);
+            }),
+        }),
+      );
+      expect(layoutKinds.renderer("scroll")).toBe(oldRenderer);
+
+      yield* host.add(
+        mkPlugin({
+          id: "kind-plugin",
+          inject: [LayoutKindsTag],
+          effect: () =>
+            Effect.gen(function* () {
+              const kinds = yield* LayoutKindsTag;
+              yield* kinds.register(["scroll", newRenderer]);
+            }),
+        }),
+      );
+      expect(layoutKinds.renderer("scroll")).toBe(newRenderer);
+
+      const failed = mkPlugin({
+        id: "kind-plugin",
+        inject: [LayoutKindsTag],
+        effect: () =>
+          Effect.gen(function* () {
+            const kinds = yield* LayoutKindsTag;
+            yield* kinds.register(["scroll", failRenderer]);
+            return yield* new PluginActivateError({ message: "candidate failed" });
+          }),
+      });
+      expect(Exit.isFailure(yield* host.add(failed).pipe(Effect.exit))).toBe(true);
+      expect(layoutKinds.renderer("scroll")).toBe(newRenderer);
+    }),
 );
 
 testEffect("registered bindings are disposed when the plugin is removed", () =>

@@ -195,6 +195,11 @@ const dispatchPluginCommand = Effect.fnUntraced(function* (sub: string, argv: st
       "\n\nPlugins unavailable outside an attached client:\n" +
       result.refused.map((r) => `  ${r.id} (needs ${r.key})`).join("\n");
   }
+  if (result.failures.length > 0) {
+    text +=
+      "\n\nPlugin load failures:\n" +
+      result.failures.map((f) => `  ${f.spec}: ${f.reason}`).join("\n");
+  }
   writeOut(text);
   return 0;
 });

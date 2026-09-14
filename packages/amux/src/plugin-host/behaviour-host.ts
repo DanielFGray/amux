@@ -12,14 +12,10 @@ import {
   makeForeignHarnessAdapters,
   type ForeignHarnessAdapter,
 } from "../foreign-harness.ts";
-import {
-  buildPluginBehaviour,
-  type PluginBehaviourService,
-  type PluginDeclarations,
-} from "../plugin-behaviour.ts";
+import { buildPluginBehaviour, type PluginBehaviourService } from "../plugin-behaviour.ts";
 import { createPluginContributions } from "../plugin/contributions.ts";
 import { createPluginHost } from "../plugin/host.ts";
-import { loadDaemonPlugins } from "../plugin/loader.ts";
+import { loadDaemonPlugins, type PluginEntry } from "../plugin/loader.ts";
 import {
   DaemonCommandsTag,
   scopedRegistry,
@@ -31,7 +27,12 @@ import {
 } from "../plugin/services.ts";
 import type { PluginDefinition } from "../plugin/types.ts";
 import { daemonSessionsFromCapabilitiesSocket } from "./daemon-sessions-layer.ts";
-import { PluginHostError, PluginHostRpcs, type PluginHostHandlers } from "./rpc.ts";
+import {
+  PluginHostError,
+  PluginHostRpcs,
+  type PluginHostHandlers,
+  type PluginHostLoadResult,
+} from "./rpc.ts";
 
 const registryCoreEntries = (
   daemonCommands: DaemonCommandsService,
@@ -58,7 +59,9 @@ const registryCoreEntries = (
 
 export type BehaviourHostRuntime = {
   readonly behaviour: PluginBehaviourService;
-  readonly load: (input: PluginHostLoadInput) => Effect.Effect<PluginDeclarations, PluginHostError>;
+  readonly load: (
+    input: PluginHostLoadInput,
+  ) => Effect.Effect<PluginHostLoadResult, PluginHostError>;
 };
 
 /**
@@ -94,10 +97,26 @@ export const createBehaviourHostRuntime = Effect.gen(function* () {
     sessions,
   );
 
-  const load = (input: PluginHostLoadInput): Effect.Effect<PluginDeclarations, PluginHostError> =>
-    loadDaemonPlugins(input.plugins, host, input.configDirectory, coreEntries).pipe(
+  // Last successful load's entries — a failed Load leaves this alone so the
+  // next attempt can keep a working plugin when its edited source will not import.
+  let previousEntries: readonly PluginEntry[] = [];
+
+  const load = (input: PluginHostLoadInput): Effect.Effect<PluginHostLoadResult, PluginHostError> =>
+    loadDaemonPlugins(
+      input.plugins,
+      host,
+      input.configDirectory,
+      coreEntries,
+      previousEntries,
+    ).pipe(
       Effect.mapError((error) => new PluginHostError({ message: errorMessage(error) })),
-      Effect.andThen(behaviour.declarations),
+      Effect.flatMap((loaded) =>
+        Effect.gen(function* () {
+          previousEntries = loaded.entries;
+          const declarations = yield* behaviour.declarations;
+          return { declarations, failures: loaded.failures };
+        }),
+      ),
     );
 
   return { behaviour, load };

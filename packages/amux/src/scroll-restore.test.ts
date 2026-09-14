@@ -12,7 +12,8 @@ import {
   type LayoutPane,
   type PaneRef,
 } from "./layout.ts";
-import { registerLayoutKindRenderer } from "./layout-kinds.ts";
+import { createLayoutKinds } from "./layout-kinds.ts";
+import { createPluginContributions } from "./plugin/contributions.ts";
 import { testEffect } from "./test-effect.ts";
 
 const { live } = testEffect(Layer.empty);
@@ -45,7 +46,7 @@ test("a multi-column niri scroll root round-trips through encode and decode", ()
 
 live("a scroll container without its renderer still places columns side by side", () =>
   Effect.gen(function* () {
-    // No registerLayoutKindRenderer — Window falls back to a row flex box.
+    // No layout-kind registration — Window falls back to a row flex box.
     // Before the remount-after-plugin-load fix, Yoga's default column stacked
     // these as rows; detach/reattach then looked like a vertical split.
     const layout = niriTilingMethods.init([ref("a"), ref("b")], { cols: 80, rows: 24 });
@@ -62,18 +63,26 @@ live("a scroll container without its renderer still places columns side by side"
 
 live("remounting after the scroll renderer registers keeps columns side by side", () =>
   Effect.gen(function* () {
+    const contributions = createPluginContributions();
+    const kinds = createLayoutKinds(contributions);
     const layout = niriTilingMethods.init([ref("a"), ref("b")], { cols: 80, rows: 24 });
-    const scene = yield* project(layout, { width: 80, height: 24 });
+    const scene = yield* project(layout, {
+      width: 80,
+      height: 24,
+      layoutKinds: kinds.renderer,
+    });
     yield* scene.renderOnce();
 
     // Minimal stand-in for plugin-niri's scroll renderer: row strip.
-    yield* registerLayoutKindRenderer("scroll", {
+    kinds.register({ id: "test.scroll", generation: 0 }, "scroll", {
       render(ctx, _node, children) {
         const box = new BoxRenderable(ctx, { flexDirection: "row", flexGrow: 1 });
         for (const child of children) box.add(child);
         return box;
       },
     });
+    // Commit the contribution so Window's lookup can see it.
+    contributions.commit({ id: "test.scroll", generation: 0 });
 
     yield* scene.window.project(layout, { ...windowState(), focus: layout.focus ?? null });
     yield* scene.renderOnce();

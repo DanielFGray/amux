@@ -2,12 +2,17 @@ import { afterEach, expect, test } from "bun:test";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Effect, Layer, Path, Scope } from "effect";
+import { Effect, Layer, Path, Result, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
 import { createPluginHost, type PluginHost } from "./host.ts";
-import { loadDaemonPlugins, loadPlugins as loadConfiguredPlugins } from "./loader.ts";
+import {
+  loadDaemonPlugins,
+  loadPlugins as loadConfiguredPlugins,
+  PluginReconcileError,
+  type PluginEntry,
+} from "./loader.ts";
 import { testPluginEnvironment, type TestPluginEnvironment } from "./test-environment.ts";
 import { definePlugin, type PluginDefinition } from "./types.ts";
 import type { Config, PluginSpec } from "../config.ts";
@@ -70,6 +75,7 @@ const loadPlugins = (
   host: PluginHost,
   configDir: string,
   entries: readonly PluginDefinition[] = [],
+  previous: readonly PluginEntry[] = [],
   storeDir?: string,
 ) =>
   loadConfiguredPlugins(
@@ -77,6 +83,7 @@ const loadPlugins = (
     host,
     configDir,
     [...(registryEntriesByHost.get(host) ?? []), ...entries],
+    previous,
     ...(storeDir === undefined ? [] : [storeDir]),
   );
 
@@ -642,7 +649,7 @@ testEffect("loads an installed package by name", () =>
     const config = baseConfig({ plugins: [{ package: "fake-example-plugin", enabled: true }] });
     const { host } = yield* makeHost();
 
-    yield* loadPlugins(config, host, dir, [], store);
+    yield* loadPlugins(config, host, dir, [], [], store);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["fake-example"]);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -656,7 +663,7 @@ testEffect("a configured package with no install is skipped", () =>
     const config = baseConfig({ plugins: [{ package: "absent-plugin", enabled: true }] });
     const { host } = yield* makeHost();
 
-    yield* loadPlugins(config, host, dir, [], store);
+    yield* loadPlugins(config, host, dir, [], [], store);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -677,9 +684,91 @@ testEffect("a package whose engines.amux misses the host is refused, without blo
     });
     const { host } = yield* makeHost();
 
-    yield* loadPlugins(config, host, dir, [], store);
+    yield* loadPlugins(config, host, dir, [], [], store);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["present"]);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
+testEffect("keeps the previous entry when edited source fails to import", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    const entry = yield* writePluginFile(dir, "kept.ts", mkPluginSrc("kept"));
+    const config = baseConfig({ plugins: [spec(entry)] });
+    const { host } = yield* makeHost();
+
+    const first = yield* loadPlugins(config, host, dir);
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["kept"]);
+    expect(first.failures).toEqual([]);
+
+    yield* writePluginFile(dir, "kept.ts", mkPluginSrc("kept", "throw"));
+    const second = yield* loadPlugins(config, host, dir, [], first.entries);
+
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["kept"]);
+    expect(second.entries).toEqual(first.entries);
+    expect(second.failures).toEqual([expect.objectContaining({ spec: entry })]);
+    expect(second.failures[0]?.reason.length).toBeGreaterThan(0);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
+testEffect("keeps the previous entry when edited source fails the compat check", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    const fs = yield* FileSystem.FileSystem;
+    const entry = yield* writePluginFile(dir, "compat.ts", mkPluginSrc("compat"));
+    yield* fs.writeFileString(
+      join(dir, "package.json"),
+      // Fixture JSON for engines.amux — not a typed Config encode.
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      JSON.stringify({ name: "compat-probe", engines: { amux: "^0.1.0" } }),
+    );
+    const config = baseConfig({ plugins: [spec(entry)] });
+    const { host } = yield* makeHost();
+
+    const first = yield* loadPlugins(config, host, dir);
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["compat"]);
+
+    yield* fs.writeFileString(
+      join(dir, "package.json"),
+      // Fixture JSON for engines.amux — not a typed Config encode.
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      JSON.stringify({ name: "compat-probe", engines: { amux: "^99.0.0" } }),
+    );
+    const second = yield* loadPlugins(config, host, dir, [], first.entries);
+
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["compat"]);
+    expect(second.entries).toEqual(first.entries);
+    expect(second.failures.map((failure) => failure.spec)).toEqual([entry]);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
+testEffect("a reconcile failure fails the load", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    const entry = yield* writePluginFile(dir, "collide.ts", mkPluginSrc("amux.consumer.0"));
+    const { environment, dispose } = yield* Effect.promise(() => mockRegions());
+    cleanupFns.push(dispose);
+    const host = yield* createPluginHost({
+      ...environment,
+      consumers: [
+        {
+          name: "panel",
+          inject: [],
+          activate: () => Effect.void,
+        },
+      ],
+    });
+    registryEntriesByHost.set(host, environment.registryEntries);
+
+    const result = yield* Effect.result(
+      loadPlugins(baseConfig({ plugins: [spec(entry)] }), host, dir),
+    );
+
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toBeInstanceOf(PluginReconcileError);
+      expect(result.failure.message).toContain("collides with a host-owned consumer");
+    }
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 

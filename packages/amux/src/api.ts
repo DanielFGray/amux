@@ -35,6 +35,7 @@ export {
   SlotsTag,
   SessionViewsTag,
   ProcessDisplayTag,
+  LayoutKindsTag,
   BindingsTag,
   ContextsTag,
   SettingsTag,
@@ -52,6 +53,7 @@ export {
   registerCommand,
   registerDaemonCommand,
   registerTilingAlgorithm,
+  registerLayoutKindRenderer,
   registerEnumValue,
   type CommandRegistration,
   type CliCommandRegistration,
@@ -380,14 +382,7 @@ export { type Direction, type SplitDirection } from "./window.ts";
 
 // A container node's `kind` is an open, plugin-registered fact rather than a
 // closed union member — see docs/adr/0004-arrangement-kind-is-an-open-registry.md.
-export {
-  type LayoutKindRenderer,
-  type LayoutKindChrome,
-  registerLayoutKindSchema,
-  registerLayoutKindRenderer,
-  layoutKindSchema,
-  layoutKindRenderer,
-} from "./layout-kinds.ts";
+export { type LayoutKindRenderer, type LayoutKindChrome } from "./layout-kinds.ts";
 
 // Drawing.
 export {

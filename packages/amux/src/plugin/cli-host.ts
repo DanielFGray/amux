@@ -13,6 +13,7 @@ import {
   makeForeignHarnessAdapters,
   type ForeignHarnessAdapter,
 } from "../foreign-harness.ts";
+import type { PluginLoadFailure } from "../plugin-behaviour.ts";
 
 export interface CliCommandFound {
   readonly code: number;
@@ -20,9 +21,11 @@ export interface CliCommandFound {
 
 /** No plugin registers `name`. `refused` is why one might be missing: every
  *  entry the host's reduced registry could not satisfy, reported the same way
- *  `reconcile` reports any other unsatisfiable injection. */
+ *  `reconcile` reports any other unsatisfiable injection. `failures` are
+ *  enabled specs that would not import or pass compat. */
 export interface CliCommandMissing {
   readonly refused: readonly RefusedPlugin[];
+  readonly failures: readonly PluginLoadFailure[];
 }
 
 /**
@@ -51,21 +54,28 @@ export const dispatchCliCommand = (
       const adapterTable = contributions.table<ForeignHarnessAdapter>();
       const foreignHarnessAdapters = makeForeignHarnessAdapters(adapterTable);
       const host = yield* createPluginHost({ contributions });
-      const { refused } = yield* loadCliPlugins(config.plugins, host, dirname(yield* configPath), [
-        definePlugin({
-          id: "amux.registry.cli-commands",
-          provide: [CliCommandsTag],
-          effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
-        }),
-        definePlugin({
-          id: "amux.registry.foreign-harness-adapters",
-          provide: [ForeignHarnessAdaptersTag],
-          effect: (ctx) =>
-            Effect.sync(() => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters)),
-        }),
-      ]);
+      const { refused, failures } = yield* loadCliPlugins(
+        config.plugins,
+        host,
+        dirname(yield* configPath),
+        [
+          definePlugin({
+            id: "amux.registry.cli-commands",
+            provide: [CliCommandsTag],
+            effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
+          }),
+          definePlugin({
+            id: "amux.registry.foreign-harness-adapters",
+            provide: [ForeignHarnessAdaptersTag],
+            effect: (ctx) =>
+              Effect.sync(
+                () => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters),
+              ),
+          }),
+        ],
+      );
       const match = table.all().find((entry) => entry.value.name === name);
-      if (!match) return { refused };
+      if (!match) return { refused, failures };
       return { code: yield* match.value.handler(argv) };
     }).pipe(Effect.scoped, Effect.provide(BunFileSystem.layer)),
   );

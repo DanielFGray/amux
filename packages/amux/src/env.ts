@@ -17,6 +17,7 @@ import { BunFileSystem } from "@effect/platform-bun";
 import type { RenderContext } from "@opentui/core";
 import { localPty, type SessionBackendFactory } from "./backend.ts";
 import type { PaneView } from "./component-pane.tsx";
+import type { LayoutKindRenderer } from "./layout-kinds.ts";
 import { resolveOptions, type Options } from "./options.ts";
 
 /** The renderer everything in a workspace draws into. No default: there is no
@@ -61,6 +62,16 @@ export const Backend = Context.Reference<SessionBackendFactory>("Backend", {
  */
 export const PaneViews = Context.Reference<PaneView | null>("PaneViews", {
   defaultValue: (): PaneView | null => null,
+});
+
+/**
+ * Layout-container kind renderers Window asks for while mounting. Default is
+ * "no renderer" — Window falls back to a row/column flex box, the same as a
+ * kind that has not registered yet (see scroll-restore tests).
+ */
+export type LayoutKindLookup = (kind: string) => LayoutKindRenderer | undefined;
+export const LayoutKinds = Context.Reference<LayoutKindLookup>("LayoutKinds", {
+  defaultValue: (): LayoutKindLookup => () => undefined,
 });
 
 /**
@@ -131,9 +142,9 @@ export const provideRootServices = <A, E, R>(
   Effect.flatMap(captureRootRuntime, (runtime) => Effect.provideContext(effect, runtime));
 
 /** Everything a workspace reads out of its context. Shell, Backend,
- *  PaneViews, OptionsRuntime, RootRuntime are References, not Services —
- *  they always resolve to a default and so carry no identity in the
- *  requirement channel; only the renderer is actually required. */
+ *  PaneViews, LayoutKinds, OptionsRuntime, RootRuntime are References, not
+ *  Services — they always resolve to a default and so carry no identity in
+ *  the requirement channel; only the renderer is actually required. */
 export type WorkspaceEnv = RenderCtx;
 
 /**
@@ -151,6 +162,7 @@ export const workspaceEnv = (
     shell?: string[];
     backend?: SessionBackendFactory;
     paneContent?: PaneView;
+    layoutKinds?: LayoutKindLookup;
     options?: Options;
     runtime?: RootRuntimeContext;
   } = {},
@@ -159,6 +171,7 @@ export const workspaceEnv = (
   if (options.shell) env = Context.add(env, Shell, options.shell);
   if (options.backend) env = Context.add(env, Backend, options.backend);
   if (options.paneContent) env = Context.add(env, PaneViews, options.paneContent);
+  if (options.layoutKinds) env = Context.add(env, LayoutKinds, options.layoutKinds);
   if (options.options) env = Context.add(env, OptionsRuntime, options.options);
   if (options.runtime) env = Context.add(env, RootRuntime, options.runtime);
   return env;

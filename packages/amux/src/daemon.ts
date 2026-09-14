@@ -732,6 +732,11 @@ export const makeDaemonService = Effect.fnUntraced(
                     configDirectory,
                   }),
                 ),
+                Effect.tap((loaded) =>
+                  Effect.forEach(loaded.failures, (failure) =>
+                    Effect.logWarning(`Could not load plugin '${failure.spec}': ${failure.reason}`),
+                  ),
+                ),
                 Effect.mapError(
                   (error) =>
                     new PluginHostError({
@@ -1673,7 +1678,7 @@ export const makeDaemonService = Effect.fnUntraced(
               }
               const client = live.value.client;
               const config = yield* readPluginConfig();
-              const declarations = yield* asHostFailure(
+              const loaded = yield* asHostFailure(
                 S.is(ControlError),
                 (message) => new ControlError({ message }),
                 client
@@ -1687,12 +1692,14 @@ export const makeDaemonService = Effect.fnUntraced(
                 Option.match(current, {
                   onNone: () => Option.none(),
                   onSome: (generation) =>
-                    generation.client === client ? Option.some({ client, declarations }) : current,
+                    generation.client === client
+                      ? Option.some({ client, declarations: loaded.declarations })
+                      : current,
                 }),
               );
               if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
               else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
-              return {};
+              return { result: loaded.failures };
             }),
           ),
           Match.tag("process-plugin.action.invoke", (invoke) =>

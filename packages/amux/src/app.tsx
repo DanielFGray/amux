@@ -19,6 +19,7 @@ import {
   Layer,
   Option,
   Path,
+  Result,
   Scope,
   Stream,
 } from "effect";
@@ -119,6 +120,7 @@ import {
   OptionsTag,
   PanelTag,
   ProcessDisplayTag,
+  LayoutKindsTag,
   RemoteEventsTag,
   SessionViewsTag,
   SessionFactsTag,
@@ -132,6 +134,7 @@ import {
   type CommandsService,
   type ContextsService,
   type EnumValueRegistration,
+  type LayoutKindsService,
   type OptionsService,
   type ProcessDisplayService,
   type SlotsService,
@@ -187,6 +190,7 @@ import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
 import { createProcessDisplay, type ProcessDisplayProvider } from "./plugin/process-display.ts";
+import { createLayoutKinds, type LayoutKindRenderer } from "./layout-kinds.ts";
 import type { PaneView } from "./component-pane.tsx";
 import { ComponentPane } from "./component-pane.tsx";
 import { errorMessage } from "./error-message.ts";
@@ -356,6 +360,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     const contributions = createPluginContributions();
     const sessionViews = createSessionViews(contributions);
     const processDisplay = createProcessDisplay(contributions);
+    const layoutKinds = createLayoutKinds(contributions);
     const sessionViewsService = scopedRegistry(
       { view: sessionViews.view, has: sessionViews.has, ownerOf: sessionViews.ownerOf },
       (owner, [type, view]: readonly [string, PaneView]) =>
@@ -365,13 +370,20 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       { display: processDisplay.display },
       (owner, provider: ProcessDisplayProvider) => processDisplay.register(owner, provider),
     );
+    const layoutKindsService = scopedRegistry(
+      { renderer: layoutKinds.renderer },
+      (owner, [kind, renderer]: readonly [string, LayoutKindRenderer]) =>
+        layoutKinds.register(owner, kind, renderer),
+    );
     const sessionViewsProvider = providerRef<SessionViewsService>(sessionViewsService);
     const processDisplayProvider = providerRef<ProcessDisplayService>(processDisplayService);
+    const layoutKindsProvider = providerRef<LayoutKindsService>(layoutKindsService);
     const spaces = yield* SpaceSet.make(
       workspaceEnv(options.renderer, {
         shell: initialShell,
         backend: options.session.backend(),
         paneContent: (props) => sessionViewsProvider.value.view(props),
+        layoutKinds: (kind) => layoutKindsProvider.value.renderer(kind),
         options: optionsRuntime,
         runtime: rootRuntime,
       }),
@@ -423,12 +435,14 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
             slots: slotsProvider,
             sessionViews: sessionViewsProvider,
             processDisplay: processDisplayProvider,
+            layoutKinds: layoutKindsProvider,
             spawnProviders: spawnProvidersProvider,
           },
           {
             slots: slotsService,
             sessionViews: sessionViewsService,
             processDisplay: processDisplayService,
+            layoutKinds: layoutKindsService,
             spawnProviders: spawnProvidersService,
           },
         ),
@@ -480,12 +494,20 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     runFiber(
       "plugin-load",
       Effect.gen(function* () {
-        const loaded = yield* loadPlugins(
+        const loadedResult = yield* loadPlugins(
           options.config.plugins,
           pluginHost,
           options.configDir ?? dirname(yield* configPath),
           [...app.registryEntries, ...app.coreEntries],
-        );
+        ).pipe(Effect.result);
+        if (Result.isFailure(loadedResult)) {
+          app.panel.reportError(errorMessage(loadedResult.failure));
+          return;
+        }
+        const loaded = loadedResult.success;
+        for (const failure of loaded.failures) {
+          app.panel.reportError(`${failure.spec}: ${failure.reason}`);
+        }
         pluginEntries = [...app.pluginEntries, ...loaded.entries];
         yield* resumePending(options.session.workspace());
         // Initial project ran before this fiber finished; containers whose
@@ -638,12 +660,14 @@ function buildApp(
     readonly slots: ProviderRef<SlotsService>;
     readonly sessionViews: ProviderRef<SessionViewsService>;
     readonly processDisplay: ProviderRef<ProcessDisplayService>;
+    readonly layoutKinds: ProviderRef<LayoutKindsService>;
     readonly spawnProviders: ProviderRef<SpawnProvidersService>;
   },
   externalDefaults: {
     readonly slots: SlotsService;
     readonly sessionViews: SessionViewsService;
     readonly processDisplay: ProcessDisplayService;
+    readonly layoutKinds: LayoutKindsService;
     readonly spawnProviders: SpawnProvidersService;
   },
 ): ManagedAppHandle {
@@ -1960,14 +1984,7 @@ function buildApp(
       }),
     // Through the daemon and back, so that every client attached to this
     // workspace reloads — including the one the agent is not looking at.
-    "plugin.reload": (value) =>
-      Effect.gen(function* () {
-        const context = yield* callerWorkspaceContext;
-        yield* session.run(value, context).pipe(
-          Effect.asVoid,
-          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-        );
-      }),
+    "plugin.reload": runCommand,
     // Client-local: scratch materialize + adopt/reload. Arrives here both from
     // a local invoke and from the daemon's runOnClient forward (CLI/agent).
     "plugin.eval": ({ plugin, source }) =>
@@ -3275,6 +3292,12 @@ function buildApp(
       ProcessDisplayTag,
       externalProviders.processDisplay,
       externalDefaults.processDisplay,
+    ),
+    registry(
+      "layout-kinds",
+      LayoutKindsTag,
+      externalProviders.layoutKinds,
+      externalDefaults.layoutKinds,
     ),
     registry("bindings", BindingsTag, bindingsProvider, bindingsService),
     registry("contexts", ContextsTag, contextsProvider, contextsService),

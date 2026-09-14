@@ -20,6 +20,7 @@ import { MAX_RPC_BYTES } from "../limits.ts";
 import {
   PluginBehaviourError,
   PluginDeclarationsSchema,
+  PluginLoadFailureSchema,
   QueuedPluginActionSchema,
 } from "../plugin-behaviour.ts";
 import { DaemonSessionCommandContextSchema } from "../plugin/services.ts";
@@ -49,12 +50,19 @@ export const PluginHostStatusSchema = S.Struct({
 });
 export type PluginHostStatus = typeof PluginHostStatusSchema.Type;
 
+/** Declarations plus every enabled spec that failed to import or pass compat. */
+export const PluginHostLoadResultSchema = S.Struct({
+  declarations: PluginDeclarationsSchema,
+  failures: S.Array(PluginLoadFailureSchema),
+});
+export type PluginHostLoadResult = typeof PluginHostLoadResultSchema.Type;
+
 export class PluginHostRpcs extends RpcGroup.make(
   Rpc.make("Ping", { success: S.Void, error: PluginHostError }),
   Rpc.make("Stop", { success: S.Void, error: PluginHostError }),
   Rpc.make("Load", {
     payload: PluginHostLoadInputSchema,
-    success: PluginDeclarationsSchema,
+    success: PluginHostLoadResultSchema,
     error: PluginHostError,
   }),
   Rpc.make("Reduce", {

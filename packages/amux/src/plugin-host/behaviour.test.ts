@@ -326,3 +326,74 @@ test("plugin.reload drops a disabled plugin from declarations", async () => {
     await Effect.runPromise(daemon.stop);
   }
 }, 60_000);
+
+test("plugin.reload keeps a working plugin when its edited source fails to import", async () => {
+  const home = tempDir("host-behaviour");
+  const configHome = join(home, "config");
+  const pluginDir = join(configHome, "amux", "probe-plugin");
+  await mkdir(pluginDir, { recursive: true });
+
+  const typesPath = new URL("../plugin/types.ts", import.meta.url).pathname;
+  const servicesPath = new URL("../plugin/services.ts", import.meta.url).pathname;
+  const definePath = new URL("../define-daemon-command.ts", import.meta.url).pathname;
+
+  const daemonSource = `import { Effect, Schema as S } from "effect";
+import { definePlugin } from ${JSON.stringify(typesPath)};
+import { DaemonCommandsTag, registerDaemonCommand } from ${JSON.stringify(servicesPath)};
+import { defineDaemonCommand } from ${JSON.stringify(definePath)};
+
+const ping = defineDaemonCommand({
+  tag: "probe.ping",
+  fields: S.Struct({}),
+  meta: { desc: "probe", group: "probe", target: "session", exposure: "agent" },
+  resources: () => [],
+  run: () => Effect.void,
+});
+
+export default definePlugin({
+  id: "probe.daemon",
+  inject: [DaemonCommandsTag],
+  effect: () => registerDaemonCommand(ping),
+});
+`;
+  const clientSource = `import { Effect } from "effect";
+import { definePlugin } from ${JSON.stringify(typesPath)};
+export default definePlugin({ id: "probe", effect: () => Effect.void });
+`;
+
+  const probePath = join(pluginDir, "probe.ts");
+  await writeFile(probePath, clientSource);
+  await writeFile(join(pluginDir, "daemon.ts"), daemonSource);
+  await writeConfig(configHome, [{ path: probePath, enabled: true }]);
+
+  const env = {
+    HOME: home,
+    XDG_STATE_HOME: join(home, "state"),
+    XDG_CONFIG_HOME: configHome,
+  } satisfies TestEnv;
+  const daemon = await run(startDaemon("hb-reload-keep"), env);
+  try {
+    await waitReady(daemon, env);
+
+    const before = await ctl(daemon.id, env, (c) => c.PluginDeclarations());
+    expect(before.commands.some((entry) => entry.tag === "probe.ping")).toBe(true);
+
+    await writeFile(join(pluginDir, "daemon.ts"), `throw new Error("broken edit");\n`);
+
+    const reloaded = await ctl(daemon.id, env, (c) =>
+      c.Batch({
+        values: [{ _tag: "plugin.reload" }],
+        context,
+      }),
+    );
+
+    expect(reloaded.outputs[0]?.result).toEqual([
+      { spec: probePath, reason: expect.stringContaining("broken edit") },
+    ]);
+
+    const after = await ctl(daemon.id, env, (c) => c.PluginDeclarations());
+    expect(after.commands.some((entry) => entry.tag === "probe.ping")).toBe(true);
+  } finally {
+    await Effect.runPromise(daemon.stop);
+  }
+}, 60_000);
