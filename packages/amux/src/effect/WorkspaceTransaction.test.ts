@@ -8,7 +8,6 @@ import {
   Option,
   Path,
   Ref,
-  Scope,
   Stream,
   ConfigProvider,
   Schema as S,
@@ -38,7 +37,7 @@ import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
 import { PLUGIN_REDUCE_TIMEOUT_MS, PluginReducerError } from "../workspace-changes.ts";
-import type { QueuedPluginAction } from "../workspace-changes.ts";
+import type { QueuedPluginAction, WorkspaceReducerAnswer } from "../workspace-changes.ts";
 import type { ManagedSession, SessionSpec } from "./SessionRegistry.ts";
 import { defaultTilingAlgorithm, defaultTilingMethods } from "../tiling-algorithm-default.ts";
 import { tilingAlgorithmFromMethods, TilingAlgorithmError } from "../tiling-algorithm.ts";
@@ -363,10 +362,10 @@ testEffect("rejects stale revision", () => {
   return Effect.gen(function* () {
     const tx = yield* WorkspaceTransaction;
     const result = yield* Effect.exit(
-      tx.run(command("space.rename", { name: "foo" }), 999, context),
+      tx.run(command("space.rename", { name: "foo" }), 999, context, emptyPluginBehaviour),
     );
     expect(result._tag).toBe("Failure");
-  }).pipe(Effect.provide(withPluginBehaviour(layer)));
+  }).pipe(Effect.provide(layer));
 });
 
 testEffect("rejects non-workspace commands", () => {
@@ -375,10 +374,10 @@ testEffect("rejects non-workspace commands", () => {
   return Effect.gen(function* () {
     const tx = yield* WorkspaceTransaction;
     const result = yield* Effect.exit(
-      tx.run(command("app.quit"), initial.workspace.revision, context),
+      tx.run(command("app.quit"), initial.workspace.revision, context, emptyPluginBehaviour),
     );
     expect(result._tag).toBe("Failure");
-  }).pipe(Effect.provide(withPluginBehaviour(layer)));
+  }).pipe(Effect.provide(layer));
 });
 
 testEffect("executes a non-destructive command and publishes events", () => {
@@ -390,10 +389,11 @@ testEffect("executes a non-destructive command and publishes events", () => {
       command("space.rename", { name: "renamed" }),
       initial.workspace.revision,
       context,
+      emptyPluginBehaviour,
     );
     expect(result.snapshot.revision).toBe(1);
     expect(result.snapshot.spaces[0]!.name).toBe("renamed");
-  }).pipe(Effect.provide(withPluginBehaviour(layer)));
+  }).pipe(Effect.provide(layer));
 });
 
 testEffect("rolls back prepared sessions and does not persist on session failure", () => {
@@ -404,7 +404,12 @@ testEffect("rolls back prepared sessions and does not persist on session failure
   return Effect.gen(function* () {
     const tx = yield* WorkspaceTransaction;
     const result = yield* Effect.exit(
-      tx.run(command("pane.split", { axis: "row" }), initial.workspace.revision, context),
+      tx.run(
+        command("pane.split", { axis: "row" }),
+        initial.workspace.revision,
+        context,
+        emptyPluginBehaviour,
+      ),
     );
     expect(result._tag).toBe("Failure");
 
@@ -413,7 +418,7 @@ testEffect("rolls back prepared sessions and does not persist on session failure
 
     const sessions = yield* Ref.get(sessionRef);
     expect(sessions.activated).toHaveLength(0);
-  }).pipe(Effect.provide(withPluginBehaviour(layer)));
+  }).pipe(Effect.provide(layer));
 });
 
 testEffect("activates prepared sessions after successful commit", () => {
@@ -425,6 +430,7 @@ testEffect("activates prepared sessions after successful commit", () => {
       command("pane.split", { axis: "row" }),
       initial.workspace.revision,
       context,
+      emptyPluginBehaviour,
     );
     expect(result.snapshot.revision).toBe(1);
     const panes = layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root);
@@ -434,7 +440,7 @@ testEffect("activates prepared sessions after successful commit", () => {
     const sessions = yield* Ref.get(sessionRef);
     expect(sessions.prepared.length).toBe(1);
     expect(sessions.activated.length).toBe(1);
-  }).pipe(Effect.provide(withPluginBehaviour(layer)));
+  }).pipe(Effect.provide(layer));
 });
 
 testEffect("rejects worktree removal when dirty", () => {
@@ -443,16 +449,16 @@ testEffect("rejects worktree removal when dirty", () => {
   return Effect.gen(function* () {
     const tx = yield* WorkspaceTransaction;
     const result = yield* Effect.exit(
-      tx.run(command("space.close", { space: "wt-space" }), initial.workspace.revision, context),
+      tx.run(
+        command("space.close", { space: "wt-space" }),
+        initial.workspace.revision,
+        context,
+        emptyPluginBehaviour,
+      ),
     );
     expect(result._tag).toBe("Failure");
-  }).pipe(Effect.provide(withPluginBehaviour(layer)));
+  }).pipe(Effect.provide(layer));
 });
-
-const withPluginBehaviour = <R, E>(
-  base: Layer.Layer<R, E, Scope.Scope | PluginBehaviour>,
-  behaviour: PluginBehaviourService = emptyPluginBehaviour,
-) => base.pipe(Layer.provide(Layer.succeed(PluginBehaviour, behaviour)));
 
 testEffect("a failing plugin reducer leaves the revision unchanged", () => {
   const initial = singlePaneState();
@@ -469,12 +475,14 @@ testEffect("a failing plugin reducer leaves the revision unchanged", () => {
     yield* Effect.gen(function* () {
       const tx = yield* WorkspaceTransaction;
       const before = initial.workspace.revision;
-      const result = yield* Effect.exit(tx.run(runtimeCommand("probe.fail", {}), before, context));
+      const result = yield* Effect.exit(
+        tx.run(runtimeCommand("probe.fail", {}), before, context, behaviour),
+      );
       expect(result._tag).toBe("Failure");
       const persisted = yield* Ref.get(persistRef);
       expect(persisted.persisted).toHaveLength(0);
       expect(before).toBe(initial.workspace.revision);
-    }).pipe(Effect.provide(withPluginBehaviour(layer, behaviour)));
+    }).pipe(Effect.provide(layer));
   });
 });
 
@@ -596,14 +604,20 @@ testEffect("a maxCols layout rule elects different algorithms for narrow and wid
           ...context,
           size: { cols: 40, rows: 24 },
         },
+        behaviour,
       );
-      yield* tx.run(command("pane.split", { axis: "row" }), narrowResult.snapshot.revision, {
-        ...context,
-        size: { cols: 120, rows: 24 },
-      });
+      yield* tx.run(
+        command("pane.split", { axis: "row" }),
+        narrowResult.snapshot.revision,
+        {
+          ...context,
+          size: { cols: 120, rows: 24 },
+        },
+        behaviour,
+      );
       expect(elected).toEqual(["narrow", "wide"]);
     }).pipe(
-      Effect.provide(withPluginBehaviour(layer, behaviour)),
+      Effect.provide(layer),
       Effect.provideService(
         ConfigProvider.ConfigProvider,
         ConfigProvider.fromUnknown({ XDG_CONFIG_HOME: configHome }),
@@ -612,12 +626,69 @@ testEffect("a maxCols layout rule elects different algorithms for narrow and wid
   }).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, Path.layer))),
 );
 
+testEffect("reduce and runAction both run on the PluginBehaviour passed to run", () => {
+  const initial = singlePaneState();
+  const { layer } = testLayer(initial);
+  const calls: string[] = [];
+  const answer: WorkspaceReducerAnswer = {
+    changes: [{ _tag: "action.push", action: { _tag: "bind.act", n: 1 } }],
+  };
+  const binding: PluginBehaviourService = {
+    declarations: Effect.succeed({
+      commands: [
+        {
+          tag: "bind.cmd",
+          meta: {
+            desc: "bind",
+            group: "bind",
+            target: "workspace",
+            exposure: "human",
+          },
+          fields: { type: "object", properties: {} },
+          declaresResult: false,
+          actionTags: ["bind.act"],
+          paneTypes: [],
+          providers: [],
+          owner: { id: "test", generation: 0 },
+        },
+      ],
+      algorithms: [],
+      adapters: [],
+    }),
+    reduce: () =>
+      Effect.sync(() => {
+        calls.push("reduce");
+        return answer;
+      }),
+    checkDescriptor: (_type, descriptor) => Effect.succeed(descriptor),
+    runAction: () =>
+      Effect.sync(() => {
+        calls.push("runAction");
+      }),
+    runSession: () => Effect.succeed(null),
+    runTiling: () =>
+      Effect.fail(new TilingAlgorithmError({ algorithm: "unused", message: "unused" })),
+    planResume: () => Effect.succeed(Option.none()),
+  };
+  return Effect.gen(function* () {
+    const tx = yield* WorkspaceTransaction;
+    yield* tx.run(runtimeCommand("bind.cmd", {}), initial.workspace.revision, context, binding);
+    expect(calls).toEqual(["reduce", "runAction"]);
+  }).pipe(Effect.provide(layer));
+});
+
 testEffect(
   "a hand-built PluginBehaviour reduce is applied and its action reaches runAction",
   () => {
     const initial = singlePaneState();
     const { layer } = testLayer(initial);
     const ran: QueuedPluginAction[] = [];
+    const answer: WorkspaceReducerAnswer = {
+      changes: [
+        { _tag: "result.set", result: { ok: true } },
+        { _tag: "action.push", action: { _tag: "fake.act", n: 1 } },
+      ],
+    };
     const fake: PluginBehaviourService = {
       declarations: Effect.succeed({
         commands: [
@@ -640,13 +711,7 @@ testEffect(
         algorithms: [],
         adapters: [],
       }),
-      reduce: () =>
-        Effect.succeed({
-          changes: [
-            { _tag: "result.set" as const, result: { ok: true } },
-            { _tag: "action.push" as const, action: { _tag: "fake.act", n: 1 } },
-          ],
-        }),
+      reduce: () => Effect.succeed(answer),
       checkDescriptor: (_type, descriptor) => Effect.succeed(descriptor),
       runAction: (action) =>
         Effect.sync(() => {
@@ -663,10 +728,11 @@ testEffect(
         runtimeCommand("fake.cmd", {}),
         initial.workspace.revision,
         context,
+        fake,
       );
       expect(result.result).toEqual({ ok: true });
       expect(ran).toEqual([{ _tag: "fake.act", payload: { _tag: "fake.act", n: 1 } }]);
-    }).pipe(Effect.provide(withPluginBehaviour(layer, fake)));
+    }).pipe(Effect.provide(layer));
   },
 );
 
@@ -715,6 +781,7 @@ testEffect(
           command("pane.split", { axis: "row" }),
           initial.workspace.revision,
           context,
+          fake,
         );
         expect(tilingCalls).toBe(1);
         expect(result.snapshot.revision).toBeGreaterThan(initial.workspace.revision);
@@ -723,7 +790,7 @@ testEffect(
         if (layout === undefined) return;
         expect(layoutPanes(layout.root).length).toBe(2);
       }).pipe(
-        Effect.provide(withPluginBehaviour(layer, fake)),
+        Effect.provide(layer),
         Effect.provideService(
           ConfigProvider.ConfigProvider,
           ConfigProvider.fromUnknown({ XDG_CONFIG_HOME: configHome }),

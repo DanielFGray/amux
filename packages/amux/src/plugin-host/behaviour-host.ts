@@ -3,7 +3,7 @@
  * and the PluginBehaviour built over them. The daemon reaches this only via
  * PluginHostRpcs (Load + behaviour methods).
  */
-import { Config, Context, Deferred, Effect, Layer, Option } from "effect";
+import { Config, Context, Deferred, Effect, Layer, Option, Ref } from "effect";
 import type { PluginHostLoadInput } from "../config.ts";
 import { DaemonSessions, type DaemonSessionsService } from "../daemon-sessions.ts";
 import { errorMessage } from "../error-message.ts";
@@ -12,7 +12,12 @@ import {
   makeForeignHarnessAdapters,
   type ForeignHarnessAdapter,
 } from "../foreign-harness.ts";
-import { buildPluginBehaviour, type PluginBehaviourService } from "../plugin-behaviour.ts";
+import {
+  buildPluginBehaviour,
+  PluginPublicationChanged,
+  type PluginBehaviourService,
+  type PluginPublicationRevision,
+} from "../plugin-behaviour.ts";
 import { createPluginContributions } from "../plugin/contributions.ts";
 import { createPluginHost } from "../plugin/host.ts";
 import { loadDaemonPlugins, type PluginEntry } from "../plugin/loader.ts";
@@ -62,11 +67,13 @@ export type BehaviourHostRuntime = {
   readonly load: (
     input: PluginHostLoadInput,
   ) => Effect.Effect<PluginHostLoadResult, PluginHostError>;
+  readonly revision: Ref.Ref<PluginPublicationRevision>;
 };
 
 /**
  * Build the host-side tables, PluginHost, DaemonSessions, and behaviour once
  * per process. Missing AMUX_PLUGIN_CAPABILITIES_SOCKET fails as ConfigError.
+ * Owns the publication revision Ref: each successful Load increments it.
  */
 export const createBehaviourHostRuntime = Effect.gen(function* () {
   const socket = yield* Config.string("AMUX_PLUGIN_CAPABILITIES_SOCKET");
@@ -96,6 +103,7 @@ export const createBehaviourHostRuntime = Effect.gen(function* () {
     foreignHarnessAdapters,
     sessions,
   );
+  const revision = yield* Ref.make<PluginPublicationRevision>(0);
 
   // Last successful load's entries — a failed Load leaves this alone so the
   // next attempt can keep a working plugin when its edited source will not import.
@@ -114,33 +122,58 @@ export const createBehaviourHostRuntime = Effect.gen(function* () {
         Effect.gen(function* () {
           previousEntries = loaded.entries;
           const declarations = yield* behaviour.declarations;
-          return { declarations, failures: loaded.failures };
+          const next = yield* Ref.updateAndGet(revision, (current) => current + 1);
+          return { declarations, failures: loaded.failures, revision: next };
         }),
       ),
     );
 
-  return { behaviour, load };
+  return { behaviour, load, revision };
 });
 
 /**
  * Default host handlers: Ping/Stop plus Load and the PluginBehaviour RPCs.
  * RunAction / RunSession use the process-scoped DaemonSessions from runtime.
+ * Each behaviour method checks the bound revision against the host Ref.
  */
 export const behaviourPluginHostHandlers = (
   stopped: Deferred.Deferred<void>,
   runtime: BehaviourHostRuntime,
-): PluginHostHandlers =>
-  PluginHostRpcs.toLayer({
+): PluginHostHandlers => {
+  const guardRevision = <A, E, R>(
+    expected: PluginPublicationRevision,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | PluginPublicationChanged, R> =>
+    Effect.gen(function* () {
+      const current = yield* Ref.get(runtime.revision);
+      if (expected !== current) {
+        return yield* new PluginPublicationChanged({ expected, current });
+      }
+      return yield* effect;
+    });
+
+  return PluginHostRpcs.toLayer({
     Ping: () => Effect.void,
     Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
     Load: (input) => runtime.load(input),
-    Reduce: ({ command, context, reads }) => runtime.behaviour.reduce(command, context, reads),
-    CheckDescriptor: ({ type, descriptor }) => runtime.behaviour.checkDescriptor(type, descriptor),
-    RunAction: (action) => runtime.behaviour.runAction(action),
-    RunSession: ({ command, context }) =>
-      runtime.behaviour
-        .runSession(command, context)
-        .pipe(Effect.map((result) => (result === undefined ? Option.none() : Option.some(result)))),
-    RunTiling: ({ algorithmId, operation }) => runtime.behaviour.runTiling(algorithmId, operation),
-    PlanResume: ({ adapterId, ref }) => runtime.behaviour.planResume(adapterId, ref),
+    Reduce: ({ revision: expected, command, context, reads }) =>
+      guardRevision(expected, runtime.behaviour.reduce(command, context, reads)),
+    CheckDescriptor: ({ revision: expected, type, descriptor }) =>
+      guardRevision(expected, runtime.behaviour.checkDescriptor(type, descriptor)),
+    RunAction: ({ revision: expected, action }) =>
+      guardRevision(expected, runtime.behaviour.runAction(action)),
+    RunSession: ({ revision: expected, command, context }) =>
+      guardRevision(
+        expected,
+        runtime.behaviour
+          .runSession(command, context)
+          .pipe(
+            Effect.map((result) => (result === undefined ? Option.none() : Option.some(result))),
+          ),
+      ),
+    RunTiling: ({ revision: expected, algorithmId, operation }) =>
+      guardRevision(expected, runtime.behaviour.runTiling(algorithmId, operation)),
+    PlanResume: ({ revision: expected, adapterId, ref }) =>
+      guardRevision(expected, runtime.behaviour.planResume(adapterId, ref)),
   });
+};

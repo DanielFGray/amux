@@ -34,7 +34,7 @@ import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { PluginHostStatus } from "./plugin-host/rpc.ts";
 import { serveDaemonSessions } from "./plugin-host/capabilities-server.ts";
 import { awaitFirstPluginHostOutcome, supervisePluginHost } from "./plugin-host/supervisor.ts";
-import type { PluginHostGeneration } from "./plugin-host/client.ts";
+import type { PluginHostBehaviourCalls, PluginPublication } from "./plugin-host/client.ts";
 import { PluginHostError } from "./plugin-host/rpc.ts";
 import { removeStaleSocket } from "./remove-stale-socket.ts";
 import { type AttachHostService } from "./effect/AttachHost.ts";
@@ -58,8 +58,9 @@ import { DaemonSessions, buildDaemonSessions } from "./daemon-sessions.ts";
 import {
   PluginBehaviour,
   asHostFailure,
-  pluginBehaviourFromHostSlot,
+  bindPluginBehaviour,
   runPluginSessionCommand,
+  type PluginBehaviourService,
 } from "./plugin-behaviour.ts";
 import { configPath, loadConfig, type Config } from "./config.ts";
 import { createPluginContributions } from "./plugin/contributions.ts";
@@ -441,7 +442,9 @@ export const makeDaemonService = Effect.fnUntraced(
       state: "starting",
       restarts: 0,
     });
-    const pluginHostGeneration = yield* SubscriptionRef.make(Option.none<PluginHostGeneration>());
+    const pluginHostPublication = yield* SubscriptionRef.make(
+      Option.none<PluginPublication<PluginHostBehaviourCalls>>(),
+    );
     const configDirectory = dirname(yield* configPath);
     const readPluginConfig = (): Effect.Effect<Config> =>
       options.pluginConfig !== undefined
@@ -449,12 +452,7 @@ export const makeDaemonService = Effect.fnUntraced(
         : provideRootServices(loadConfig());
 
     const pluginContributions = createPluginContributions();
-    const pluginBehaviour = yield* Layer.build(
-      pluginBehaviourFromHostSlot(pluginHostGeneration),
-    ).pipe(
-      Scope.provide(daemonScope),
-      Effect.map((ctx) => Context.get(ctx, PluginBehaviour)),
-    );
+    const bindBehaviour = bindPluginBehaviour(pluginHostPublication);
 
     const activeSaveRef = {
       current: null as Fiber.Fiber<void, WorkspaceTransactionError> | null,
@@ -723,7 +721,7 @@ export const makeDaemonService = Effect.fnUntraced(
             socketPath: paths.pluginHost,
             capabilitiesSocketPath: paths.pluginCapabilities,
             status: pluginHostStatus,
-            generation: pluginHostGeneration,
+            generation: pluginHostPublication,
             loadGeneration: (client) =>
               readPluginConfig().pipe(
                 Effect.flatMap((pluginConfig) =>
@@ -753,7 +751,7 @@ export const makeDaemonService = Effect.fnUntraced(
           daemonScope,
         );
         // Wait for Load to publish a generation or fail — no config-shaped timeout.
-        yield* awaitFirstPluginHostOutcome(pluginHostGeneration, pluginHostStatus);
+        yield* awaitFirstPluginHostOutcome(pluginHostPublication, pluginHostStatus);
 
         yield* Effect.gen(function* () {
           const cur = yield* model.get;
@@ -796,9 +794,12 @@ export const makeDaemonService = Effect.fnUntraced(
           // Ask adapters before the spawn loop so a plugin-host socket round
           // trip stays off the claim-order path. Claims still run below in
           // loop order so the first pane wins.
-          const plansBySession = yield* collectSessionResumePlans(planCandidates).pipe(
-            Effect.provideService(PluginBehaviour, pluginBehaviour),
-          );
+          const plansBySession = yield* Effect.gen(function* () {
+            const behaviour = yield* bindBehaviour;
+            return yield* collectSessionResumePlans(planCandidates).pipe(
+              Effect.provideService(PluginBehaviour, behaviour),
+            );
+          });
           for (const { session: a, pane } of restoreEntries) {
             // Native agent resume: park the plan until a client resize
             // settles geometry. Spawning at persisted cols/rows now would
@@ -1250,7 +1251,6 @@ export const makeDaemonService = Effect.fnUntraced(
       WorkspaceTransaction.layer.pipe(
         Layer.provide(Layer.succeed(DaemonModel, model)),
         Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
-        Layer.provide(Layer.succeed(PluginBehaviour, pluginBehaviour)),
         Layer.provide(Layer.succeed(DaemonSessions, daemonSessions)),
         Layer.provide(Layer.succeed(WorkspaceTransactionSessions, transactionSessions)),
         Layer.provide(makeWorktreeOps),
@@ -1350,18 +1350,35 @@ export const makeDaemonService = Effect.fnUntraced(
       }),
     ).pipe(Effect.asVoid);
 
+    const runWorkspaceWithBehaviour = (
+      value: Command | RuntimeCommand,
+      expectedRevision: number,
+      context: WorkspaceCommandContext,
+      behaviour: PluginBehaviourService,
+    ): Effect.Effect<WorkspaceTransactionResult, DaemonError> => {
+      return transaction
+        .run(
+          value,
+          expectedRevision,
+          {
+            ...context,
+            worktreesRoot: daemonWorktreesRoot,
+          },
+          behaviour,
+        )
+        .pipe(Effect.mapError((e) => new DaemonError({ message: e.message })));
+    };
+
     const runWorkspaceCommand = (
       value: Command | RuntimeCommand,
       expectedRevision: number,
       context: WorkspaceCommandContext,
-    ): Effect.Effect<WorkspaceTransactionResult, DaemonError> => {
-      return transaction
-        .run(value, expectedRevision, {
-          ...context,
-          worktreesRoot: daemonWorktreesRoot,
-        })
-        .pipe(Effect.mapError((e) => new DaemonError({ message: e.message })));
-    };
+    ): Effect.Effect<WorkspaceTransactionResult, DaemonError> =>
+      bindBehaviour.pipe(
+        Effect.flatMap((behaviour) =>
+          runWorkspaceWithBehaviour(value, expectedRevision, context, behaviour),
+        ),
+      );
 
     /**
      * Every control-plane procedure. `guard` turns failures *and* defects
@@ -1459,18 +1476,20 @@ export const makeDaemonService = Effect.fnUntraced(
       context?: WorkspaceCommandRequestContext,
       caller?: { readonly client: string; readonly connection: string },
     ) {
+      const behaviour = yield* bindBehaviour;
       const meta = (COMMAND_META as Record<string, CommandMeta>)[value._tag];
       if (!meta) {
-        const declarations = yield* pluginBehaviour.declarations;
+        const declarations = yield* behaviour.declarations;
         const registration = declarations.commands.find((entry) => entry.tag === value._tag);
         if (registration) {
           if (registration.meta.target === "workspace") {
             const cur = yield* model.get;
             const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
-            const output = yield* runWorkspaceCommand(
+            const output = yield* runWorkspaceWithBehaviour(
               value,
               expectedRevision ?? cur.workspace.revision,
               ctx,
+              behaviour,
             );
             if (output.result === undefined) return { workspace: encodeJson(output.snapshot) };
             return { workspace: encodeJson(output.snapshot), result: output.result };
@@ -1481,7 +1500,7 @@ export const makeDaemonService = Effect.fnUntraced(
               snapshot: structuredClone(cur.workspace),
             };
             const result = yield* runPluginSessionCommand(value, commandContext).pipe(
-              Effect.provideService(PluginBehaviour, pluginBehaviour),
+              Effect.provideService(PluginBehaviour, behaviour),
               Effect.mapError(
                 (error) =>
                   new ControlError({
@@ -1646,10 +1665,11 @@ export const makeDaemonService = Effect.fnUntraced(
             transient: resolved.transient,
           };
         }
-        const output = yield* runWorkspaceCommand(
+        const output = yield* runWorkspaceWithBehaviour(
           workspaceCommand,
           expectedRevision ?? cur.workspace.revision,
           ctx,
+          behaviour,
         );
         if (output.result === undefined) return { workspace: encodeJson(output.snapshot) };
         return { workspace: encodeJson(output.snapshot), result: output.result };
@@ -1672,7 +1692,7 @@ export const makeDaemonService = Effect.fnUntraced(
         return yield* Match.value(command).pipe(
           Match.tag("plugin.reload", (command) =>
             Effect.gen(function* () {
-              const live = yield* SubscriptionRef.get(pluginHostGeneration);
+              const live = yield* SubscriptionRef.get(pluginHostPublication);
               if (Option.isNone(live)) {
                 return yield* controlFail("plugin host not ready");
               }
@@ -1688,12 +1708,16 @@ export const makeDaemonService = Effect.fnUntraced(
                   })
                   .pipe(Effect.mapError((error) => new ControlError({ message: error.message }))),
               );
-              yield* SubscriptionRef.update(pluginHostGeneration, (current) =>
+              yield* SubscriptionRef.update(pluginHostPublication, (current) =>
                 Option.match(current, {
                   onNone: () => Option.none(),
-                  onSome: (generation) =>
-                    generation.client === client
-                      ? Option.some({ client, declarations: loaded.declarations })
+                  onSome: (publication) =>
+                    publication.client === client
+                      ? Option.some({
+                          client,
+                          revision: loaded.revision,
+                          declarations: loaded.declarations,
+                        })
                       : current,
                 }),
               );
@@ -1814,7 +1838,8 @@ export const makeDaemonService = Effect.fnUntraced(
           }),
         ),
 
-      PluginDeclarations: () => guard(pluginBehaviour.declarations),
+      PluginDeclarations: () =>
+        guard(bindBehaviour.pipe(Effect.flatMap((behaviour) => behaviour.declarations))),
 
       // The response must be written before shutdown closes the server that is
       // serving this very request, so the stop runs on a detached fiber.

@@ -17,6 +17,7 @@ import {
 } from "./agent-session.ts";
 import { ForeignHarnessPlanResumeError } from "./foreign-harness.ts";
 import { PluginBehaviour } from "./plugin-behaviour.ts";
+import { errorMessage } from "./error-message.ts";
 
 export const AgentResumePlanSchema = S.Struct({
   agent: S.String,
@@ -75,7 +76,7 @@ export const askPlanResume = (
       }),
       Effect.catch((error) =>
         Effect.logWarning(
-          `foreign harness planResume failed adapter=${adapterId} session=${ref.kind}:${ref.value}: ${error.message}`,
+          `foreign harness planResume failed adapter=${adapterId} session=${ref.kind}:${ref.value}: ${errorMessage(error)}`,
         ).pipe(Effect.as(Option.none())),
       ),
     );

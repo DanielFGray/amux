@@ -27,7 +27,11 @@ import {
 } from "effect";
 import { errorMessage } from "../error-message.ts";
 import { formatStderrTail, makeStderrTail } from "../stderr-tail.ts";
-import { type PluginHostClient, type PluginHostGeneration } from "./client.ts";
+import {
+  type PluginHostClient,
+  type PluginHostBehaviourCalls,
+  type PluginPublication,
+} from "./client.ts";
 import {
   PluginHostError,
   PluginHostRpcs,
@@ -58,8 +62,10 @@ export interface PluginHostSupervisorOptions {
   /** Capability socket path passed to the child as AMUX_PLUGIN_CAPABILITIES_SOCKET. */
   readonly capabilitiesSocketPath: string;
   readonly status: SubscriptionRef.SubscriptionRef<PluginHostStatus>;
-  /** Slot for the live generation; cleared by the generation release. */
-  readonly generation: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostGeneration>>;
+  /** Slot for the live publication; cleared by the generation release. */
+  readonly generation: SubscriptionRef.SubscriptionRef<
+    Option.Option<PluginPublication<PluginHostBehaviourCalls>>
+  >;
   /**
    * After Ping succeeds, load plugins for this generation. Failure fails the
    * generation (status failed + backoff restart).
@@ -216,9 +222,9 @@ const preferExitReason = (
  * Subscribes to slot changes; first `Some` within the ready window wins.
  */
 export const awaitPluginHostClient = (
-  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostGeneration>>,
+  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginPublication<PluginHostBehaviourCalls>>>,
   readyTimeoutMs = PLUGIN_HOST_READY_TIMEOUT_MS,
-): Effect.Effect<PluginHostClient, PluginHostConnectError> =>
+): Effect.Effect<PluginHostBehaviourCalls, PluginHostConnectError> =>
   SubscriptionRef.changes(slot).pipe(
     Stream.filterMap((value) => Result.fromOption(value, () => undefined)),
     Stream.take(1),
@@ -228,7 +234,7 @@ export const awaitPluginHostClient = (
     Effect.flatMap(
       Option.match({
         onNone: () => Effect.fail(notReadyError()),
-        onSome: (generation) => Effect.succeed(generation.client),
+        onSome: (publication) => Effect.succeed(publication.client),
       }),
     ),
   );
@@ -238,9 +244,9 @@ export const awaitPluginHostClient = (
  * after the first `ready`/`failed` event, reads the generation slot.
  */
 export const awaitFirstPluginHostOutcome = (
-  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostGeneration>>,
+  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginPublication<PluginHostBehaviourCalls>>>,
   status: SubscriptionRef.SubscriptionRef<PluginHostStatus>,
-): Effect.Effect<Option.Option<PluginHostGeneration>> =>
+): Effect.Effect<Option.Option<PluginPublication<PluginHostBehaviourCalls>>> =>
   Effect.gen(function* () {
     const current = yield* SubscriptionRef.get(status);
     if (current.state === "ready") return yield* SubscriptionRef.get(slot);
@@ -410,7 +416,11 @@ const runGeneration = (
 
         yield* SubscriptionRef.set(
           options.generation,
-          Option.some({ client, declarations: loaded.success.declarations }),
+          Option.some({
+            client,
+            revision: loaded.success.revision,
+            declarations: loaded.success.declarations,
+          }),
         );
         yield* setStatus(options.status, { state: "ready", restarts, pid: child.pid });
         yield* Ref.set(reachedReady, true);
@@ -455,8 +465,8 @@ const runGeneration = (
         const live = yield* SubscriptionRef.get(options.generation);
         yield* Option.match(live, {
           onNone: () => Effect.void,
-          onSome: (generation) =>
-            generation.client
+          onSome: (publication) =>
+            publication.client
               .Stop()
               .pipe(Effect.timeoutOption(Duration.millis(STOP_RPC_TIMEOUT_MS)), Effect.ignore),
         });

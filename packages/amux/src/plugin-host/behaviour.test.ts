@@ -2,7 +2,17 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
-import { ConfigProvider, Effect, Layer, Option, Path, Scope } from "effect";
+import {
+  ConfigProvider,
+  Cause,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Path,
+  Scope,
+  Schema as S,
+} from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "../daemon.ts";
@@ -13,6 +23,7 @@ import { DEFAULT_CONFIG, type Config } from "../config.ts";
 import { waitFor } from "../test-wait.ts";
 import { registerCleanup, tempDir } from "../test-tmp.ts";
 import { PluginHostRpcs, PluginHostSerialization } from "./rpc.ts";
+import { PluginPublicationChanged } from "../plugin-behaviour.ts";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
@@ -183,6 +194,7 @@ test("host answers RunTiling for niri and PlanResume for continuity", async () =
             (message) => new Error(message),
           );
           const tiling = yield* client.RunTiling({
+            revision: 1,
             algorithmId: "niri",
             operation: {
               _tag: "init",
@@ -191,6 +203,7 @@ test("host answers RunTiling for niri and PlanResume for continuity", async () =
             },
           });
           const plan = yield* client.PlanResume({
+            revision: 1,
             adapterId: "claude",
             ref: { kind: "id", value: "sess-1" },
           });
@@ -206,6 +219,72 @@ test("host answers RunTiling for niri and PlanResume for continuity", async () =
       expect(answer.plan.value.agent).toBe("claude");
       expect(answer.plan.value.argv).toContain("--resume");
     }
+  } finally {
+    await Effect.runPromise(daemon.stop);
+  }
+}, 60_000);
+
+test("behaviour RPC revision must match the host publication over the wire", async () => {
+  const { daemon, env, pluginConfig, configHome } = await started("hb-rev");
+  try {
+    await waitReady(daemon, env);
+
+    const niriInit = {
+      _tag: "init" as const,
+      panes: [{ id: "a", content: { kind: "pty" as const, session: "a" } }],
+      size: { cols: 80, rows: 24 },
+    };
+
+    const overWire = await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* connectRpcPath(
+            daemon.paths.pluginHost,
+            PluginHostRpcs,
+            PluginHostSerialization,
+            (message) => new Error(message),
+          );
+          const stale = yield* client
+            .RunTiling({ revision: 0, algorithmId: "niri", operation: niriInit })
+            .pipe(Effect.exit);
+          const loaded = yield* client.Load({
+            plugins: pluginConfig.plugins,
+            configDirectory: configHome,
+          });
+          const staleAfterReload = yield* client
+            .RunTiling({ revision: 1, algorithmId: "niri", operation: niriInit })
+            .pipe(Effect.exit);
+          const current = yield* client.RunTiling({
+            revision: loaded.revision,
+            algorithmId: "niri",
+            operation: niriInit,
+          });
+          return { stale, loaded, staleAfterReload, current };
+        }),
+      ),
+      env,
+    );
+
+    expect(Exit.isFailure(overWire.stale)).toBe(true);
+    if (Exit.isFailure(overWire.stale)) {
+      const error = Cause.squash(overWire.stale.cause);
+      expect(S.is(PluginPublicationChanged)(error)).toBe(true);
+      if (S.is(PluginPublicationChanged)(error)) {
+        expect(error.expected).toBe(0);
+        expect(error.current).toBe(1);
+      }
+    }
+    expect(overWire.loaded.revision).toBe(2);
+    expect(Exit.isFailure(overWire.staleAfterReload)).toBe(true);
+    if (Exit.isFailure(overWire.staleAfterReload)) {
+      const error = Cause.squash(overWire.staleAfterReload.cause);
+      expect(S.is(PluginPublicationChanged)(error)).toBe(true);
+      if (S.is(PluginPublicationChanged)(error)) {
+        expect(error.expected).toBe(1);
+        expect(error.current).toBe(2);
+      }
+    }
+    expect(overWire.current._tag).toBe("ok");
   } finally {
     await Effect.runPromise(daemon.stop);
   }

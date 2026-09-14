@@ -1,5 +1,17 @@
 import { expect } from "bun:test";
-import { Duration, Effect, Exit, Fiber, Layer, Queue, Schema as S, Stream } from "effect";
+import {
+  Cause,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Queue,
+  Schema as S,
+  Stream,
+  SubscriptionRef,
+} from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { testEffect } from "./test-effect.ts";
 import { toJsonSchemaDocument, type JsonSchemaDocumentError } from "./command-cli.ts";
@@ -10,10 +22,17 @@ import { definePluginAction } from "./effect/WorkspaceTransaction.ts";
 import {
   PLUGIN_SESSION_RUN_TIMEOUT_MS,
   PluginBehaviour,
+  PluginBehaviourError,
   PluginDeclarationsSchema,
+  bindPluginBehaviour,
+  emptyPluginDeclarations,
   buildPluginBehaviour,
   runPluginSessionCommand,
 } from "./plugin-behaviour.ts";
+import type { PluginHostBehaviourCalls, PluginPublication } from "./plugin-host/client.ts";
+import type { PluginPublicationRevision } from "./plugin-behaviour.ts";
+import { PluginReducerError } from "./workspace-changes.ts";
+import { TilingAlgorithmError } from "./tiling-algorithm.ts";
 import {
   adapterLookupWith,
   emptyAdapterLookup,
@@ -468,4 +487,98 @@ testEffect(
       const declarations = yield* behaviour.declarations;
       expect(declarations.commands.map((entry) => entry.tag)).toEqual(["probe.good"]);
     }),
+);
+
+testEffect("bindPluginBehaviour fixes client and revision across slot changes", () =>
+  Effect.gen(function* () {
+    const calls: Array<{ readonly id: string; readonly revision: PluginPublicationRevision }> = [];
+    const makeClient = (id: string): PluginHostBehaviourCalls => ({
+      Reduce: (payload) => {
+        calls.push({ id, revision: payload.revision });
+        return Effect.succeed({ changes: [] });
+      },
+      CheckDescriptor: ({ revision, descriptor }) => {
+        calls.push({ id, revision });
+        return Effect.succeed(descriptor);
+      },
+      RunAction: ({ revision }) => {
+        calls.push({ id, revision });
+        return Effect.void;
+      },
+      RunSession: ({ revision }) => {
+        calls.push({ id, revision });
+        return Effect.succeed(Option.none());
+      },
+      RunTiling: ({ revision, algorithmId }) => {
+        calls.push({ id, revision });
+        return Effect.fail(new TilingAlgorithmError({ algorithm: algorithmId, message: "unused" }));
+      },
+      PlanResume: ({ revision }) => {
+        calls.push({ id, revision });
+        return Effect.succeed(Option.none());
+      },
+      Load: () =>
+        Effect.succeed({
+          declarations: emptyPluginDeclarations,
+          failures: [],
+          revision: 1,
+        }),
+      Stop: () => Effect.void,
+    });
+
+    const first: PluginPublication<PluginHostBehaviourCalls> = {
+      client: makeClient("first"),
+      revision: 3,
+      declarations: emptyPluginDeclarations,
+    };
+    const second: PluginPublication<PluginHostBehaviourCalls> = {
+      client: makeClient("second"),
+      revision: 4,
+      declarations: emptyPluginDeclarations,
+    };
+    const workspace = yield* workspaceFromSession(baseState());
+    const reads = buildWorkspaceReadPackage(workspace, context);
+    const slot = yield* SubscriptionRef.make(Option.some(first));
+    const binding = yield* bindPluginBehaviour(slot);
+    yield* SubscriptionRef.set(slot, Option.some(second));
+
+    yield* binding.reduce(runtimeCommand("probe.x", {}), context, reads);
+    yield* binding.runAction({ _tag: "a", payload: null });
+    expect(calls).toEqual([
+      { id: "first", revision: 3 },
+      { id: "first", revision: 3 },
+    ]);
+  }),
+);
+
+testEffect("bindPluginBehaviour on an empty slot fails every method as not ready", () =>
+  Effect.gen(function* () {
+    const workspace = yield* workspaceFromSession(baseState());
+    const reads = buildWorkspaceReadPackage(workspace, context);
+    const emptySlot = yield* SubscriptionRef.make(
+      Option.none<PluginPublication<PluginHostBehaviourCalls>>(),
+    );
+    const binding = yield* bindPluginBehaviour(emptySlot);
+    expect(yield* binding.declarations).toEqual(emptyPluginDeclarations);
+    const reduce = yield* Effect.exit(
+      binding.reduce(runtimeCommand("probe.x", {}), context, reads),
+    );
+    expect(reduce._tag).toBe("Failure");
+    if (reduce._tag === "Failure") {
+      const error = Cause.squash(reduce.cause);
+      expect(S.is(PluginReducerError)(error)).toBe(true);
+      if (S.is(PluginReducerError)(error)) {
+        expect(error.message).toBe("plugin host not ready");
+      }
+    }
+    const action = yield* Effect.exit(binding.runAction({ _tag: "a", payload: null }));
+    expect(action._tag).toBe("Failure");
+    if (action._tag === "Failure") {
+      const error = Cause.squash(action.cause);
+      expect(S.is(PluginBehaviourError)(error)).toBe(true);
+      if (S.is(PluginBehaviourError)(error)) {
+        expect(error.message).toBe("plugin host not ready");
+      }
+    }
+  }),
 );

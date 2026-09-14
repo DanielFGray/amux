@@ -29,6 +29,7 @@ import {
   type WorkspaceSpace,
 } from "../workspace.ts";
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
+import { TilingAlgorithmError } from "../tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "../tiling-algorithm-default.ts";
 import {
   PLUGIN_REDUCE_TIMEOUT_MS,
@@ -294,7 +295,16 @@ const algorithmForDeclaration = (
     if (declaration.id === defaultTilingAlgorithm.id) {
       return defaultTilingAlgorithm.run(operation);
     }
-    return behaviour.runTiling(declaration.id, operation);
+    return behaviour.runTiling(declaration.id, operation).pipe(
+      Effect.mapError((error) =>
+        S.is(TilingAlgorithmError)(error)
+          ? error
+          : new TilingAlgorithmError({
+              algorithm: declaration.id,
+              message: errorMessage(error),
+            }),
+      ),
+    );
   },
 });
 
@@ -376,6 +386,7 @@ export interface WorkspaceTransactionService {
     value: Command | RuntimeCommand,
     expectedRevision: number,
     context: WorkspaceCommandContext,
+    behaviour: PluginBehaviourService,
   ) => Effect.Effect<WorkspaceTransactionResult, WorkspaceTransactionError>;
   readonly onSessionExit: (
     sid: string,
@@ -398,7 +409,6 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
       const persistence = yield* WorkspaceTransactionPersistence;
       const events = yield* WorkspaceTransactionEvents;
       const lifecycle = yield* Effect.serviceOption(WorkspaceTransactionLifecycle);
-      const behaviour = yield* PluginBehaviour;
       const closeIfEmpty = lifecycle.pipe(
         Option.match({
           onNone: () => Effect.void,
@@ -436,6 +446,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
         value: Command | RuntimeCommand,
         expectedRevision: number,
         context: WorkspaceCommandContext,
+        behaviour: PluginBehaviourService,
       ): Effect.Effect<WorkspaceTransactionResult, WorkspaceTransactionError> =>
         model
           .enqueue(

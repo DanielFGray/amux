@@ -4,7 +4,7 @@
  * contracts. Declarations are derived on read from committed table entries
  * (fields documents were converted once at register).
  */
-import { Context, Duration, Effect, Layer, Option, Schema as S, SubscriptionRef } from "effect";
+import { Context, Duration, Effect, Option, Schema as S, SubscriptionRef } from "effect";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import type { AgentResumePlan } from "./agent-resume.ts";
 import type { AgentSessionRef } from "./agent-session.ts";
@@ -36,10 +36,26 @@ import {
   type WorkspaceReducerAnswer,
 } from "./workspace-changes.ts";
 import type { WorkspaceCommandContext } from "./workspace.ts";
-import type { PluginHostGeneration } from "./plugin-host/client.ts";
+import type { PluginHostBehaviourCalls, PluginPublication } from "./plugin-host/client.ts";
 
 /** Budget for one session-target plugin `run` (aligned with action execute). */
 export const PLUGIN_SESSION_RUN_TIMEOUT_MS = 30_000;
+
+/** Host-assigned publication id carried on every behaviour RPC. */
+export const PluginPublicationRevisionSchema = S.Int.pipe(S.check(S.isGreaterThanOrEqualTo(0)));
+export type PluginPublicationRevision = typeof PluginPublicationRevisionSchema.Type;
+
+/**
+ * Bound revision is not the host's current publication. Distinct from method
+ * errors so callers can keep mapping each method's own failure type.
+ */
+export class PluginPublicationChanged extends S.TaggedError<PluginPublicationChanged>()(
+  "PluginPublicationChanged",
+  {
+    expected: PluginPublicationRevisionSchema,
+    current: PluginPublicationRevisionSchema,
+  },
+) {}
 
 export const QueuedPluginActionSchema = S.Struct({
   _tag: S.String,
@@ -121,29 +137,34 @@ export interface PluginBehaviourService {
     command: RuntimeCommand,
     context: WorkspaceCommandContext,
     reads: WorkspaceReadPackage,
-  ) => Effect.Effect<WorkspaceReducerAnswer, PluginReducerError>;
+  ) => Effect.Effect<WorkspaceReducerAnswer, PluginReducerError | PluginPublicationChanged>;
 
   readonly checkDescriptor: (
     type: string,
     descriptor: JsonValue,
-  ) => Effect.Effect<JsonValue, PluginReducerError>;
+  ) => Effect.Effect<JsonValue, PluginReducerError | PluginPublicationChanged>;
 
-  readonly runAction: (action: QueuedPluginAction) => Effect.Effect<void, PluginBehaviourError>;
+  readonly runAction: (
+    action: QueuedPluginAction,
+  ) => Effect.Effect<void, PluginBehaviourError | PluginPublicationChanged>;
 
   readonly runSession: (
     command: RuntimeCommand,
     context: DaemonSessionCommandContext,
-  ) => Effect.Effect<JsonValue | undefined, CommandError>;
+  ) => Effect.Effect<JsonValue | undefined, CommandError | PluginPublicationChanged>;
 
   readonly runTiling: (
     algorithmId: string,
     operation: TilingOperation,
-  ) => Effect.Effect<TilingAnswer, TilingAlgorithmError>;
+  ) => Effect.Effect<TilingAnswer, TilingAlgorithmError | PluginPublicationChanged>;
 
   readonly planResume: (
     adapterId: string,
     ref: AgentSessionRef,
-  ) => Effect.Effect<Option.Option<AgentResumePlan>, ForeignHarnessPlanResumeError>;
+  ) => Effect.Effect<
+    Option.Option<AgentResumePlan>,
+    ForeignHarnessPlanResumeError | PluginPublicationChanged
+  >;
 }
 
 export class PluginBehaviour extends Context.Service<PluginBehaviour, PluginBehaviourService>()(
@@ -377,6 +398,9 @@ export const runPluginSessionCommand = (
   Effect.gen(function* () {
     const behaviour = yield* PluginBehaviour;
     return yield* behaviour.runSession(command, context).pipe(
+      Effect.mapError((error) =>
+        S.is(CommandError)(error) ? error : new CommandError({ message: errorMessage(error) }),
+      ),
       Effect.timeoutOrElse({
         duration: Duration.millis(PLUGIN_SESSION_RUN_TIMEOUT_MS),
         orElse: () =>
@@ -390,123 +414,100 @@ export const runPluginSessionCommand = (
   });
 
 export const asHostFailure = <A, E extends { readonly message: string }>(
-  guard: (error: E | RpcClientError) => error is E,
+  guard: (error: E | RpcClientError | PluginPublicationChanged) => error is E,
   toError: (message: string) => E,
-  effect: Effect.Effect<A, E | RpcClientError>,
-): Effect.Effect<A, E> =>
+  effect: Effect.Effect<A, E | RpcClientError | PluginPublicationChanged>,
+): Effect.Effect<A, E | PluginPublicationChanged> =>
   effect.pipe(
-    Effect.mapError((error) => (guard(error) ? error : toError(errorMessage(error)))),
+    Effect.mapError((error) => {
+      if (S.is(PluginPublicationChanged)(error)) return error;
+      return guard(error) ? error : toError(errorMessage(error));
+    }),
     Effect.catchDefect((defect) => Effect.fail(toError(errorMessage(defect)))),
   );
 
 const HOST_NOT_READY = "plugin host not ready";
 
+/** Fixed not-ready service: empty declarations; every method fails HOST_NOT_READY. */
+const notReadyPluginBehaviour: PluginBehaviourService = {
+  declarations: Effect.succeed(emptyPluginDeclarations),
+  reduce: () => Effect.fail(new PluginReducerError({ message: HOST_NOT_READY })),
+  checkDescriptor: () => Effect.fail(new PluginReducerError({ message: HOST_NOT_READY })),
+  runAction: () => Effect.fail(new PluginBehaviourError({ message: HOST_NOT_READY })),
+  runSession: () => Effect.fail(new CommandError({ message: HOST_NOT_READY })),
+  runTiling: (algorithmId) =>
+    Effect.fail(new TilingAlgorithmError({ algorithm: algorithmId, message: HOST_NOT_READY })),
+  planResume: (adapterId) =>
+    Effect.fail(new ForeignHarnessPlanResumeError({ adapter: adapterId, message: HOST_NOT_READY })),
+};
+
 /**
- * One slot read + Option match for host RPC methods. `notReady` runs when the
- * generation is empty; `call` receives the live generation.
+ * PluginBehaviour fixed to one publication. Never reads the slot again; a dead
+ * host client fails with that client's error, never a restarted host.
  */
-const withHostGeneration = <A, E>(
-  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostGeneration>>,
-  notReady: Effect.Effect<A, E>,
-  call: (generation: PluginHostGeneration) => Effect.Effect<A, E>,
-): Effect.Effect<A, E> =>
+export const pluginBehaviourFromPublication = (
+  publication: PluginPublication<PluginHostBehaviourCalls>,
+): PluginBehaviourService => {
+  const { client, revision, declarations } = publication;
+  return {
+    declarations: Effect.succeed(declarations),
+    reduce: (command, context, reads) =>
+      asHostFailure(
+        S.is(PluginReducerError),
+        (message) => new PluginReducerError({ message }),
+        client.Reduce({ revision, command, context, reads }),
+      ),
+    checkDescriptor: (type, descriptor) =>
+      asHostFailure(
+        S.is(PluginReducerError),
+        (message) => new PluginReducerError({ message }),
+        client.CheckDescriptor({ revision, type, descriptor }),
+      ),
+    runAction: (action) =>
+      asHostFailure(
+        S.is(PluginBehaviourError),
+        (message) => new PluginBehaviourError({ message }),
+        client.RunAction({ revision, action }),
+      ),
+    runSession: (command, context) =>
+      asHostFailure(
+        S.is(CommandError),
+        (message) => new CommandError({ message }),
+        client.RunSession({ revision, command, context }).pipe(
+          // NDJSON collapses `undefined` to JSON null; Option restores absence.
+          Effect.map(Option.getOrUndefined),
+        ),
+      ),
+    runTiling: (algorithmId, operation) =>
+      asHostFailure(
+        S.is(TilingAlgorithmError),
+        (message) => new TilingAlgorithmError({ algorithm: algorithmId, message }),
+        client.RunTiling({ revision, algorithmId, operation }),
+      ),
+    planResume: (adapterId, ref) =>
+      asHostFailure(
+        S.is(ForeignHarnessPlanResumeError),
+        (message) => new ForeignHarnessPlanResumeError({ adapter: adapterId, message }),
+        client.PlanResume({ revision, adapterId, ref }),
+      ),
+  };
+};
+
+/**
+ * Read the publication slot once and return a PluginBehaviour fixed to that
+ * publication. Empty slot → the not-ready service.
+ */
+export const bindPluginBehaviour = (
+  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginPublication<PluginHostBehaviourCalls>>>,
+): Effect.Effect<PluginBehaviourService> =>
   SubscriptionRef.get(slot).pipe(
-    Effect.flatMap(
+    Effect.map(
       Option.match({
-        onNone: () => notReady,
-        onSome: call,
+        onNone: () => notReadyPluginBehaviour,
+        onSome: (publication) => pluginBehaviourFromPublication(publication),
       }),
     ),
   );
-
-/**
- * PluginBehaviour over the supervised host generation slot. Empty slot → empty
- * declarations / each method's typed "plugin host not ready" error.
- */
-export const pluginBehaviourFromHostSlot = (
-  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostGeneration>>,
-): Layer.Layer<PluginBehaviour> =>
-  Layer.succeed(PluginBehaviour, {
-    declarations: SubscriptionRef.get(slot).pipe(
-      Effect.map(
-        Option.match({
-          onNone: () => emptyPluginDeclarations,
-          onSome: (generation) => generation.declarations,
-        }),
-      ),
-    ),
-    reduce: (command, context, reads) =>
-      withHostGeneration(
-        slot,
-        Effect.fail(new PluginReducerError({ message: HOST_NOT_READY })),
-        (generation) =>
-          asHostFailure(
-            S.is(PluginReducerError),
-            (message) => new PluginReducerError({ message }),
-            generation.client.Reduce({ command, context, reads }),
-          ),
-      ),
-    checkDescriptor: (type, descriptor) =>
-      withHostGeneration(
-        slot,
-        Effect.fail(new PluginReducerError({ message: HOST_NOT_READY })),
-        (generation) =>
-          asHostFailure(
-            S.is(PluginReducerError),
-            (message) => new PluginReducerError({ message }),
-            generation.client.CheckDescriptor({ type, descriptor }),
-          ),
-      ),
-    runAction: (action) =>
-      withHostGeneration(
-        slot,
-        Effect.fail(new PluginBehaviourError({ message: HOST_NOT_READY })),
-        (generation) =>
-          asHostFailure(
-            S.is(PluginBehaviourError),
-            (message) => new PluginBehaviourError({ message }),
-            generation.client.RunAction(action),
-          ),
-      ),
-    runSession: (command, context) =>
-      withHostGeneration(
-        slot,
-        Effect.fail(new CommandError({ message: HOST_NOT_READY })),
-        (generation) =>
-          asHostFailure(
-            S.is(CommandError),
-            (message) => new CommandError({ message }),
-            generation.client.RunSession({ command, context }).pipe(
-              // NDJSON collapses `undefined` to JSON null; Option restores absence.
-              Effect.map(Option.getOrUndefined),
-            ),
-          ),
-      ),
-    runTiling: (algorithmId, operation) =>
-      withHostGeneration(
-        slot,
-        Effect.fail(new TilingAlgorithmError({ algorithm: algorithmId, message: HOST_NOT_READY })),
-        (generation) =>
-          asHostFailure(
-            S.is(TilingAlgorithmError),
-            (message) => new TilingAlgorithmError({ algorithm: algorithmId, message }),
-            generation.client.RunTiling({ algorithmId, operation }),
-          ),
-      ),
-    planResume: (adapterId, ref) =>
-      withHostGeneration(
-        slot,
-        Effect.fail(
-          new ForeignHarnessPlanResumeError({ adapter: adapterId, message: HOST_NOT_READY }),
-        ),
-        (generation) =>
-          asHostFailure(
-            S.is(ForeignHarnessPlanResumeError),
-            (message) => new ForeignHarnessPlanResumeError({ adapter: adapterId, message }),
-            generation.client.PlanResume({ adapterId, ref }),
-          ),
-      ),
-  });
 
 /** Apply facts assembled from declarations for one command tag. */
 export type PluginApplyFacts = {

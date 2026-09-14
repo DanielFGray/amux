@@ -6,7 +6,7 @@
  */
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Config, Effect, Option, SubscriptionRef } from "effect";
-import type { PluginHostGeneration } from "./client.ts";
+import type { PluginHostBehaviourCalls, PluginPublication } from "./client.ts";
 import { PluginHostError, type PluginHostStatus } from "./rpc.ts";
 import { awaitPluginHostClient, supervisePluginHost } from "./supervisor.ts";
 
@@ -17,7 +17,9 @@ const program = Effect.gen(function* () {
     state: "starting",
     restarts: 0,
   });
-  const generation = yield* SubscriptionRef.make(Option.none<PluginHostGeneration>());
+  const generation = yield* SubscriptionRef.make(
+    Option.none<PluginPublication<PluginHostBehaviourCalls>>(),
+  );
   const configDirectory = yield* Config.string("HOME").pipe(Effect.orElseSucceed(() => "/tmp"));
 
   yield* Effect.forkScoped(

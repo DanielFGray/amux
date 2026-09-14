@@ -21,6 +21,8 @@ import {
   PluginBehaviourError,
   PluginDeclarationsSchema,
   PluginLoadFailureSchema,
+  PluginPublicationChanged,
+  PluginPublicationRevisionSchema,
   QueuedPluginActionSchema,
 } from "../plugin-behaviour.ts";
 import { DaemonSessionCommandContextSchema } from "../plugin/services.ts";
@@ -54,6 +56,8 @@ export type PluginHostStatus = typeof PluginHostStatusSchema.Type;
 export const PluginHostLoadResultSchema = S.Struct({
   declarations: PluginDeclarationsSchema,
   failures: S.Array(PluginLoadFailureSchema),
+  /** Host-assigned publication id; increases on each successful Load in that process. */
+  revision: PluginPublicationRevisionSchema,
 });
 export type PluginHostLoadResult = typeof PluginHostLoadResultSchema.Type;
 
@@ -67,41 +71,58 @@ export class PluginHostRpcs extends RpcGroup.make(
   }),
   Rpc.make("Reduce", {
     payload: {
+      revision: PluginPublicationRevisionSchema,
       command: RuntimeCommandSchema,
       context: WorkspaceCommandContextSchema,
       reads: WorkspaceReadPackageSchema,
     },
     success: WorkspaceReducerAnswerSchema,
-    error: PluginReducerError,
+    error: S.Union([PluginReducerError, PluginPublicationChanged]),
   }),
   Rpc.make("CheckDescriptor", {
-    payload: { type: S.String, descriptor: JsonValueSchema },
+    payload: {
+      revision: PluginPublicationRevisionSchema,
+      type: S.String,
+      descriptor: JsonValueSchema,
+    },
     success: JsonValueSchema,
-    error: PluginReducerError,
+    error: S.Union([PluginReducerError, PluginPublicationChanged]),
   }),
   Rpc.make("RunAction", {
-    payload: QueuedPluginActionSchema,
+    payload: {
+      revision: PluginPublicationRevisionSchema,
+      action: QueuedPluginActionSchema,
+    },
     success: S.Void,
-    error: PluginBehaviourError,
+    error: S.Union([PluginBehaviourError, PluginPublicationChanged]),
   }),
   Rpc.make("RunSession", {
     payload: {
+      revision: PluginPublicationRevisionSchema,
       command: RuntimeCommandSchema,
       context: DaemonSessionCommandContextSchema,
     },
     // Option: NDJSON cannot round-trip `undefined` (becomes JSON null).
     success: S.Option(JsonValueSchema),
-    error: CommandError,
+    error: S.Union([CommandError, PluginPublicationChanged]),
   }),
   Rpc.make("RunTiling", {
-    payload: { algorithmId: S.String, operation: TilingOperationSchema },
+    payload: {
+      revision: PluginPublicationRevisionSchema,
+      algorithmId: S.String,
+      operation: TilingOperationSchema,
+    },
     success: TilingAnswerSchema,
-    error: TilingAlgorithmError,
+    error: S.Union([TilingAlgorithmError, PluginPublicationChanged]),
   }),
   Rpc.make("PlanResume", {
-    payload: { adapterId: S.String, ref: AgentSessionRefSchema },
+    payload: {
+      revision: PluginPublicationRevisionSchema,
+      adapterId: S.String,
+      ref: AgentSessionRefSchema,
+    },
     success: S.Option(AgentResumePlanSchema),
-    error: ForeignHarnessPlanResumeError,
+    error: S.Union([ForeignHarnessPlanResumeError, PluginPublicationChanged]),
   }),
 ) {}
 
