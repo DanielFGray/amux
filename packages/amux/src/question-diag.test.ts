@@ -27,7 +27,10 @@ test("diag: prefix? chord match variants", async () => {
         timeoutlenMs: 5000,
       },
     );
-    console.log("strokes", bindings.chords.activeBindings().map((b) => b.strokes));
+    console.log(
+      "strokes",
+      bindings.chords.activeBindings().map((b) => b.strokes),
+    );
     t.mockInput.pressKey("a", { ctrl: true });
     await Bun.sleep(10);
     console.log("after prefix", bindings.chords.pending());

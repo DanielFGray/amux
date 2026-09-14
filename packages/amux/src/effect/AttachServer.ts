@@ -271,11 +271,10 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
               terminate(socket, { _tag: "error", message: "hello is required first" });
               return;
             }
-            yield* options.onFrame?.(
-              socket.data.client,
-              socket.data.connection,
-              clientFrame,
-            ) ?? Effect.void;
+            yield* (
+              options.onFrame?.(socket.data.client, socket.data.connection, clientFrame) ??
+                Effect.void
+            );
           }),
         ),
       );

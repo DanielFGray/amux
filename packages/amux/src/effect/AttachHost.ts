@@ -148,9 +148,7 @@ export interface AttachHostOptions<
    * A trusted foreign-agent session ref was accepted. The daemon persists it
    * onto the pane in the layout snapshot; AttachHost only owns the live table.
    */
-  readonly onAgentSession?: (
-    record: AgentSessionRecord,
-  ) => Effect.Effect<void, never>;
+  readonly onAgentSession?: (record: AgentSessionRecord) => Effect.Effect<void, never>;
   /**
    * A resize named a session that is not live yet. Foreign-agent restore parks
    * the resume plan until the first client size arrives — return true if this
@@ -431,14 +429,13 @@ export const makeAttachHost = <
                 const reply = options.onClientCommand
                   ? yield* Effect.exit(options.onClientCommand(client, connection, request))
                   : Exit.fail("daemon is not accepting attach commands");
-                const frame =
-                  Exit.isFailure(reply)
-                    ? {
-                        _tag: "run.response" as const,
-                        id: request.id,
-                        error: errorMessage(Cause.squash(reply.cause)),
-                      }
-                    : { _tag: "run.response" as const, id: request.id, ...reply.value };
+                const frame = Exit.isFailure(reply)
+                  ? {
+                      _tag: "run.response" as const,
+                      id: request.id,
+                      error: errorMessage(Cause.squash(reply.cause)),
+                    }
+                  : { _tag: "run.response" as const, id: request.id, ...reply.value };
                 yield* hub.publishTo(client, connection, frame);
               }),
               host,
@@ -457,11 +454,13 @@ export const makeAttachHost = <
                   if (started) return;
                 }
               }
-              yield* supervisor.handle(resize).pipe(
-                Effect.catchTag("PtyError", (error) =>
-                  Effect.logDebug(`attach frame ignored: ${error.operation}: ${error.message}`),
-                ),
-              );
+              yield* supervisor
+                .handle(resize)
+                .pipe(
+                  Effect.catchTag("PtyError", (error) =>
+                    Effect.logDebug(`attach frame ignored: ${error.operation}: ${error.message}`),
+                  ),
+                );
             }),
           ),
           Match.orElse((frame) =>

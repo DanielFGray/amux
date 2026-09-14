@@ -142,10 +142,7 @@ function refuseNomodifiable(before: EditorState, after: EditorState): EditorStat
   if (after.buffer !== before.buffer) {
     return { ...before, message: NOMODIFIABLE_MSG, request: null };
   }
-  if (
-    (after.mode === "insert" || after.mode === "replace") &&
-    after.mode !== before.mode
-  ) {
+  if ((after.mode === "insert" || after.mode === "replace") && after.mode !== before.mode) {
     return { ...before, message: NOMODIFIABLE_MSG, request: null };
   }
   if (after.pending?.kind === "delete" || after.pending?.kind === "change") {
@@ -1665,10 +1662,7 @@ function resolveMotion(
 
   const motionName = motionKeyName(key);
   // `cw`/`cW` → `ce`/`cE` when not on whitespace (neovim `nv_wordcmd`).
-  if (
-    (motionName === "w" || motionName === "W") &&
-    pending.kind === "change"
-  ) {
+  if ((motionName === "w" || motionName === "W") && pending.kind === "change") {
     const bigword = motionName === "W";
     const line = lineAtRow(state.buffer, state.cursor.row);
     const ch = line[state.cursor.col];
@@ -1862,22 +1856,25 @@ const QUOTE_PAIRS = {
 
 function quote(state: EditorState, symbol: string, inner: boolean): MotionRange | null {
   // Prefer surround's nested/multi-line finder (open or close form).
-  const fromPair = Option.map(findPairAround(linesOf(state.buffer), state.cursor, symbol), (match) => {
-    if (inner) {
+  const fromPair = Option.map(
+    findPairAround(linesOf(state.buffer), state.cursor, symbol),
+    (match) => {
+      if (inner) {
+        return {
+          from: { row: match.openPos.row, col: match.openPos.col + 1 },
+          to: match.closePos,
+          linewise: false,
+          inclusive: false,
+        } satisfies MotionRange;
+      }
       return {
-        from: { row: match.openPos.row, col: match.openPos.col + 1 },
-        to: match.closePos,
+        from: match.openPos,
+        to: { row: match.closePos.row, col: match.closePos.col + 1 },
         linewise: false,
         inclusive: false,
       } satisfies MotionRange;
-    }
-    return {
-      from: match.openPos,
-      to: { row: match.closePos.row, col: match.closePos.col + 1 },
-      linewise: false,
-      inclusive: false,
-    } satisfies MotionRange;
-  });
+    },
+  );
   const paired = Option.getOrNull(fromPair);
   if (paired !== null) return paired;
 
@@ -2395,9 +2392,7 @@ function insertKeyBody(
       case "k":
         return insertClearLineEnd(state);
       case "r":
-        return opts.vimInsertOnly
-          ? { ...state, pendingInsertReg: true, message: null }
-          : state;
+        return opts.vimInsertOnly ? { ...state, pendingInsertReg: true, message: null } : state;
       case "w":
         return insertDeleteWord(state);
       case "u":
@@ -3352,14 +3347,14 @@ export function applySurround(state: EditorState, target: string): EditorState {
   const trimmed = target.trim();
   const char = trimmed.length === 0 ? "" : trimmed[0]!;
   if (char.length === 0) {
-    return { ...state, message: "Surround: need a delimiter (e.g. ) \" b)" };
+    return { ...state, message: 'Surround: need a delimiter (e.g. ) " b)' };
   }
   const range = surroundRange(state);
   const mode = state.options.keyProfile === "cua" ? ("insert" as const) : ("normal" as const);
-  const armed = startChange(
-    { ...state, mode, visual: null, pendingSurround: null },
-    ["surround", char],
-  );
+  const armed = startChange({ ...state, mode, visual: null, pendingSurround: null }, [
+    "surround",
+    char,
+  ]);
   return applySurroundEdit(
     armed,
     addSurround(linesOf(armed.buffer), range, char),

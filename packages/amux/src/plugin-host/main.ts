@@ -12,20 +12,18 @@ import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import * as Socket from "effect/unstable/socket/Socket";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
 import { isSameUserPeer, socketFd } from "../peer-credentials.ts";
-import {
-  PluginHostRpcs,
-  PluginHostSerialization,
-  type PluginHostHandlers,
-} from "./rpc.ts";
+import { PluginHostRpcs, PluginHostSerialization, type PluginHostHandlers } from "./rpc.ts";
 
 const removeStaleSocket = (path: string): Effect.Effect<void, never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.remove(path).pipe(
-      Effect.catchTag("PlatformError", (e) =>
-        e.reason._tag === "NotFound" ? Effect.void : Effect.die(e),
-      ),
-    );
+    yield* fs
+      .remove(path)
+      .pipe(
+        Effect.catchTag("PlatformError", (e) =>
+          e.reason._tag === "NotFound" ? Effect.void : Effect.die(e),
+        ),
+      );
   });
 
 /**
@@ -79,17 +77,13 @@ export const runPluginHost = (
   );
 
 /** Default Ping/Stop handlers; Stop completes `stopped`. */
-export const defaultPluginHostHandlers = (
-  stopped: Deferred.Deferred<void>,
-): PluginHostHandlers =>
+export const defaultPluginHostHandlers = (stopped: Deferred.Deferred<void>): PluginHostHandlers =>
   PluginHostRpcs.toLayer({
     Ping: () => Effect.void,
     Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
   });
 
-export type PluginHostHandlerFactory = (
-  stopped: Deferred.Deferred<void>,
-) => PluginHostHandlers;
+export type PluginHostHandlerFactory = (stopped: Deferred.Deferred<void>) => PluginHostHandlers;
 
 /**
  * Completes when the supervisor's stdin write end closes (daemon process gone)

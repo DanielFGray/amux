@@ -168,10 +168,7 @@ export function Transcript(props: TranscriptProps) {
       contentOptions={{ paddingRight: 1 }}
       style={{ height: 0, flexGrow: 1, flexShrink: 1, backgroundColor: theme.base }}
     >
-      <Show
-        when={blocks().length > 0}
-        fallback={<text style={{ fg: theme.overlay1 }}>…</text>}
-      >
+      <Show when={blocks().length > 0} fallback={<text style={{ fg: theme.overlay1 }}>…</text>}>
         <Show
           when={props.view === "raw"}
           fallback={
@@ -352,9 +349,7 @@ function ChatCard(props: {
     return (
       <box style={{ width: "100%", flexShrink: 0, flexDirection: "column", marginTop: 1 }}>
         <For each={lines()}>
-          {(line) => (
-            <text style={{ wrapMode: "word", width: "100%", fg: theme.red }}>{line}</text>
-          )}
+          {(line) => <text style={{ wrapMode: "word", width: "100%", fg: theme.red }}>{line}</text>}
         </For>
       </box>
     );

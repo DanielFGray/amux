@@ -29,9 +29,7 @@ test("each invocation source reaches Commands.run with the right record", () => 
   for (const source of ["key", "socket", "cli"] as const) {
     Effect.runSync(commands.run(command("pane.zoom"), commandInvocation(source, "s1:p1")));
   }
-  Effect.runSync(
-    commands.run(command("pane.zoom"), commandInvocation("cli", "s1:p1", "agent-1")),
-  );
+  Effect.runSync(commands.run(command("pane.zoom"), commandInvocation("cli", "s1:p1", "agent-1")));
 
   expect(seen).toEqual([
     { source: "key", pane: "s1:p1" },

@@ -358,9 +358,7 @@ export const agentToolkit = Effect.fnUntraced(function* (
         const fs = yield* FileSystem.FileSystem;
         const target = fromWorkspace(workspace, input.path);
         const exists = yield* fs.exists(target);
-        const before = exists
-          ? yield* readTextPreferringStore(instructions.session, target)
-          : "";
+        const before = exists ? yield* readTextPreferringStore(instructions.session, target) : "";
         const diff = conciseDiff(input.path, before, input.content);
         return yield* gated(
           "write",
@@ -372,16 +370,16 @@ export const agentToolkit = Effect.fnUntraced(function* (
             const directory = path.dirname(target);
             yield* fs.makeDirectory(directory, { recursive: true });
             yield* persistText(instructions.session, target, input.content);
-            const written = yield* withNested(
-              directory,
-              `Wrote ${target}\n\n${diff}`,
-            );
+            const written = yield* withNested(directory, `Wrote ${target}\n\n${diff}`);
             if (!options.lsp) return written;
             return `${written}${yield* drainDiagnostics(options.lsp, workspace, input.path)}`;
           }),
           { call: context.toolCallId, diff },
         );
-      }).pipe(Effect.provide(fileServices), Effect.mapError((error) => String(error))),
+      }).pipe(
+        Effect.provide(fileServices),
+        Effect.mapError((error) => String(error)),
+      ),
     edit: (
       input: { path: string; edits: readonly { oldText: string; newText: string }[] },
       context: { toolCallId?: string } = {},
@@ -424,7 +422,10 @@ export const agentToolkit = Effect.fnUntraced(function* (
           ),
           { call: context.toolCallId, diff },
         );
-      }).pipe(Effect.provide(fileServices), Effect.mapError((error) => String(error))),
+      }).pipe(
+        Effect.provide(fileServices),
+        Effect.mapError((error) => String(error)),
+      ),
     apply_patch: (input: { patchText: string }, context: { toolCallId?: string } = {}) =>
       Effect.gen(function* () {
         const parsed = parsePatch(input.patchText);
@@ -474,9 +475,7 @@ export const agentToolkit = Effect.fnUntraced(function* (
                 const exists = yield* fs.exists(target);
                 latest.set(
                   hunk.path,
-                  exists
-                    ? yield* readTextPreferringStore(instructions.session, target)
-                    : undefined,
+                  exists ? yield* readTextPreferringStore(instructions.session, target) : undefined,
                 );
               }
               const again = planPatch(hunks, latest);
@@ -507,7 +506,10 @@ export const agentToolkit = Effect.fnUntraced(function* (
           ),
           { call: context.toolCallId, diff },
         );
-      }).pipe(Effect.provide(fileServices), Effect.mapError((error) => String(error))),
+      }).pipe(
+        Effect.provide(fileServices),
+        Effect.mapError((error) => String(error)),
+      ),
     glob: (
       input: { pattern: string; path?: string; limit?: number },
       context: { toolCallId?: string } = {},

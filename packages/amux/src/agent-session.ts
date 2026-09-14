@@ -245,7 +245,12 @@ export const applyAgentSessionReport = (
   }
 
   const sessionRef = Option.getOrUndefined(
-    sessionRefFromReport(report.source, report.agent, report.agentSessionId, report.agentSessionPath),
+    sessionRefFromReport(
+      report.source,
+      report.agent,
+      report.agentSessionId,
+      report.agentSessionPath,
+    ),
   );
   if (!sessionRef) return { _tag: "rejected", reason: "invalid_ref" };
 
@@ -263,8 +268,7 @@ export const applyAgentSessionReport = (
   };
   const withLifecycle =
     report.lifecycle === undefined ? record : { ...record, lifecycle: report.lifecycle };
-  const accepted =
-    report.pid === undefined ? withLifecycle : { ...withLifecycle, pid: report.pid };
+  const accepted = report.pid === undefined ? withLifecycle : { ...withLifecycle, pid: report.pid };
   return { _tag: "accepted", record: accepted };
 };
 

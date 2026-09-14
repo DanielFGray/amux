@@ -64,10 +64,7 @@ export interface ProjectionSurface<Payload, Pin> {
 }
 
 /** Plain text under a range — yank/search fodder. Inclusive endpoints. */
-export const textInRange = (
-  projection: TextProjection,
-  range: TextRange,
-): string => {
+export const textInRange = (projection: TextProjection, range: TextRange): string => {
   const start =
     range.anchor.row < range.head.row ||
     (range.anchor.row === range.head.row && range.anchor.col <= range.head.col)

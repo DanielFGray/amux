@@ -89,8 +89,10 @@ export const invokeProcessPluginAction = (
       ...(Option.isSome(processStateSocket)
         ? { processStateSocket: processStateSocket.value }
         : {}),
-      context:
-        options.context ?? { invocationSource: "cli", correlationId: "process-plugin-action" },
+      context: options.context ?? {
+        invocationSource: "cli",
+        correlationId: "process-plugin-action",
+      },
     });
     const child = Bun.spawn([...resolved.argv], {
       cwd: resolved.cwd,

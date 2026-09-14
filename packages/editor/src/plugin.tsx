@@ -29,7 +29,13 @@ import type { OptionSpec } from "@danielfgray/amux";
 import { EditorControllerTag, EditorPane, type EditorController } from "./EditorPane.tsx";
 import { EditorIo, listEntriesWith, runShellCommand, type EditorIoService } from "./io.ts";
 import { BUILTIN_MAPS, type BuiltinMapId, type MapScope } from "./maps.ts";
-import { applySurround, beginSearch, beginSubstitute, beginSurround, runBuiltinMap } from "./vim-core.ts";
+import {
+  applySurround,
+  beginSearch,
+  beginSubstitute,
+  beginSurround,
+  runBuiltinMap,
+} from "./vim-core.ts";
 import { showcmdStrokes } from "./showcmd.ts";
 import { registerLspUi, type LspUi } from "./lsp-ui.tsx";
 import { registerFileUi, type FileUi } from "./file-ui.tsx";
@@ -102,11 +108,7 @@ function settingValue<N extends EditorSettingName>(
 }
 
 /** Cycle an enum setting; return true if the event was claimed. */
-function cycleEnumSetting(
-  panel: PanelContext,
-  name: EditorSettingName,
-  by: 1 | -1,
-): void {
+function cycleEnumSetting(panel: PanelContext, name: EditorSettingName, by: 1 | -1): void {
   const spec = EDITOR_SETTINGS[name];
   if (spec.kind !== "enum") return;
   const values = spec.values;
@@ -269,9 +271,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
         role: "grammar",
         strokes: () => {
           const focused = focusedEditor();
-          return focused !== null && focused.active()
-            ? showcmdStrokes(focused.state())
-            : [];
+          return focused !== null && focused.active() ? showcmdStrokes(focused.state()) : [];
         },
       });
       const registerController = (paneId: string, controller: EditorController) => {
@@ -412,11 +412,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
         active: active((controller) => {
           const state = controller.state();
           const pending = state.pending;
-          return (
-            pending !== null &&
-            !("textObject" in pending) &&
-            state.pendingFind === null
-          );
+          return pending !== null && !("textObject" in pending) && state.pendingFind === null;
         }),
         priority: CONTEXT_PRIORITY.PANE + 2,
         rebindable: false,
@@ -1088,21 +1084,17 @@ export const editorPlugin: PluginDefinition = definePlugin({
             Effect.map((entries) =>
               entries
                 .filter((entry) => entry.kind === "file")
-                .map(
-                  (entry): import("@danielfgray/amux-plugin-completion").CompletionItem => ({
-                    id: `${dir}/${entry.name}`,
-                    label: entry.name,
-                    detail: "sibling",
-                    replacement: `${dir}/${entry.name}`,
-                  }),
-                ),
+                .map((entry): import("@danielfgray/amux-plugin-completion").CompletionItem => ({
+                  id: `${dir}/${entry.name}`,
+                  label: entry.name,
+                  detail: "sibling",
+                  replacement: `${dir}/${entry.name}`,
+                })),
             ),
             Effect.tap((items) =>
               Effect.sync(() => fileUi.pickFile("sibling files", items, openPicked)),
             ),
-            Effect.catch((error) =>
-              Effect.sync(() => panel.reportError(String(error))),
-            ),
+            Effect.catch((error) => Effect.sync(() => panel.reportError(String(error)))),
           ),
         );
       };

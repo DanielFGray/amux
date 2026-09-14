@@ -124,9 +124,7 @@ export const workspaceEditPreview = (
   }
 
   if (others.length > 0) {
-    chunks.push(
-      `(${others.length} other file${others.length === 1 ? "" : "s"} not shown)`,
-    );
+    chunks.push(`(${others.length} other file${others.length === 1 ? "" : "s"} not shown)`);
   }
   return chunks.join("\n");
 };

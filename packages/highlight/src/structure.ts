@@ -85,8 +85,7 @@ const loading = new Map<string, Promise<boolean>>();
 let initPromise: Promise<void> | null = null;
 let parser: Parser | null = null;
 
-const languagesDir = (): string =>
-  join(getDataPaths().globalDataPath, "tree-sitter", "languages");
+const languagesDir = (): string => join(getDataPaths().globalDataPath, "tree-sitter", "languages");
 
 export const grammarForFiletype = (filetype: string): string => {
   if (Object.hasOwn(GRAMMAR_BY_FILETYPE, filetype)) {

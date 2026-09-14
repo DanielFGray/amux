@@ -45,14 +45,14 @@ if (import.meta.main) {
   // the daemon creates its lease. Normal daemon launches never set it.
   // Read through Config inside the Effect — not Effect.runSync at module load.
   const boot = Effect.gen(function* () {
-    const barrier = Option.getOrUndefined(yield* Config.option(Config.string("AMUX_DAEMON_START_BARRIER")));
+    const barrier = Option.getOrUndefined(
+      yield* Config.option(Config.string("AMUX_DAEMON_START_BARRIER")),
+    );
     if (barrier) {
       while (!(yield* Effect.promise(() => Bun.file(barrier).exists()))) {
         yield* Effect.promise(() => Bun.sleep(10));
       }
     }
-  }).pipe(
-    Effect.andThen(Effect.sync(() => runDaemonMain(process.argv[2]))),
-  );
+  }).pipe(Effect.andThen(Effect.sync(() => runDaemonMain(process.argv[2]))));
   Effect.runPromise(boot);
 }

@@ -111,9 +111,7 @@ export const locationSnippetPreview = (
   const header = locationLabel(location, opts.workspace ?? Option.none());
   const context = opts.context ?? 3;
   const sameFile =
-    opts.currentUri !== undefined &&
-    opts.lines !== undefined &&
-    location.uri === opts.currentUri;
+    opts.currentUri !== undefined && opts.lines !== undefined && location.uri === opts.currentUri;
   if (!sameFile) {
     return `${header}\n(cross-file preview deferred)`;
   }
@@ -122,8 +120,7 @@ export const locationSnippetPreview = (
   const end = Math.min(lines.length, location.range.end.line + context + 1);
   const body = lines.slice(start, end).map((line, idx) => {
     const row = start + idx;
-    const mark =
-      row >= location.range.start.line && row <= location.range.end.line ? ">" : " ";
+    const mark = row >= location.range.start.line && row <= location.range.end.line ? ">" : " ";
     return `${mark}${String(row + 1).padStart(4, " ")} ${line}`;
   });
   return [header, ...body].join("\n");
@@ -309,12 +306,7 @@ export const registerLspUi: Effect.Effect<
   };
 
   yield* contexts.register(
-    pickerOverlayContext(
-      "amux.editor.lsp-ui",
-      CONTEXT_PRIORITY.OVERLAY + 16,
-      open,
-      keys,
-    ),
+    pickerOverlayContext("amux.editor.lsp-ui", CONTEXT_PRIORITY.OVERLAY + 16, open, keys),
   );
 
   let overlayReady = false;

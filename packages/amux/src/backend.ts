@@ -307,7 +307,8 @@ export function daemonBackend(
       sessionId: () => foregroundSid,
       foregroundArgv: () => foregroundArgv,
       processState: () =>
-        processState !== null && runSync(Clock.currentTimeMillis) - processStateAt <= SELF_REPORT_TTL_MS
+        processState !== null &&
+        runSync(Clock.currentTimeMillis) - processStateAt <= SELF_REPORT_TTL_MS
           ? processState
           : null,
     };

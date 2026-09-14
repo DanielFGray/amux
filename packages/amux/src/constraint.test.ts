@@ -97,9 +97,7 @@ test("constraint ranks concatenate in fixed order, not registration order", () =
 
 test("withdrawing one constraint source does not disturb the others", () => {
   const table = createConstraintTable();
-  const dropConfig = table.register(
-    source("config", "config", [rule("bash", "curl *", "deny")]),
-  );
+  const dropConfig = table.register(source("config", "config", [rule("bash", "curl *", "deny")]));
   table.register(source("project", "project", [rule("bash", "*", "allow")]));
 
   expect(table.decide("bash", "curl example.com")).toBe("deny");
@@ -119,9 +117,9 @@ test("a second source at the same rank is rejected", () => {
   expect(() => table.register(source("b", "config", [rule("*", "*", "deny")]))).toThrow(
     /constraint rank 'config' is already registered by 'a'/,
   );
-  expect(() =>
-    table.register(source("other", "defaults", [rule("*", "*", "deny")])),
-  ).toThrow(/constraint rank 'defaults' is already registered by 'amux.constraints.defaults'/);
+  expect(() => table.register(source("other", "defaults", [rule("*", "*", "deny")]))).toThrow(
+    /constraint rank 'defaults' is already registered by 'amux.constraints.defaults'/,
+  );
 });
 
 test("permission semantics map onto the substrate without migrating permission.ts", () => {
@@ -154,17 +152,13 @@ test("permission semantics map onto the substrate without migrating permission.t
     ["webfetch", "https://example.com"],
   ];
   for (const [action, resource] of cases) {
-    expect(combineConstraintRules(ranked, action, resource)).toBe(
-      evaluate(action, resource, flat),
-    );
+    expect(combineConstraintRules(ranked, action, resource)).toBe(evaluate(action, resource, flat));
   }
 });
 
 test("factory seeds defaults-rank allow; higher ranks outrank it", () => {
   const table = createConstraintTable();
-  expect(table.sources()).toEqual([
-    { id: DEFAULT_CONSTRAINT_SOURCE.id, rank: "defaults" },
-  ]);
+  expect(table.sources()).toEqual([{ id: DEFAULT_CONSTRAINT_SOURCE.id, rank: "defaults" }]);
   // No user rules → every call allowed.
   expect(table.decide("pane.split", "*")).toBe("allow");
   expect(table.decide("bash", "rm -rf /")).toBe("allow");
@@ -222,9 +216,7 @@ test("invoke refuses a command when constraints decide deny", async () => {
         onError: (message) => errors.push(message),
       },
     );
-    bindings.constraints.register(
-      source("runtime", "runtime", [rule("t.danger", "*", "deny")]),
-    );
+    bindings.constraints.register(source("runtime", "runtime", [rule("t.danger", "*", "deny")]));
 
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("x");
@@ -253,7 +245,12 @@ test("combineConstraintRulesAll: resource-scoped rules match declared resources"
   expect(combineConstraintRulesAll(ranked, "pane.close", ["term-1"])).toBe("allow");
   expect(combineConstraintRulesAll(ranked, "pane.close", ["shell-1", "editor-2"])).toBe("deny");
   // Same as permission.evaluateAll for each resource.
-  for (const resources of [["editor-1"], ["shell-1"], ["term-1"], ["shell-1", "editor-2"]] as const) {
+  for (const resources of [
+    ["editor-1"],
+    ["shell-1"],
+    ["term-1"],
+    ["shell-1", "editor-2"],
+  ] as const) {
     expect(combineConstraintRulesAll(ranked, "pane.close", resources)).toBe(
       evaluateAll("pane.close", resources, ranked[0]!.rules),
     );

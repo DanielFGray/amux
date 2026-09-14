@@ -1,7 +1,9 @@
 {
   "name": "@danielfgray/amux-plugin-agent-continuity",
   "version": "0.1.0",
-  "keywords": ["amux-plugin"],
+  "keywords": [
+    "amux-plugin"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",

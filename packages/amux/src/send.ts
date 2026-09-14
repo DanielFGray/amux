@@ -111,9 +111,7 @@ interface RawToken {
 }
 
 /** Tokenizer cursor: between tokens, or accumulating an unquoted one. */
-type Acc =
-  | { readonly _tag: "idle" }
-  | { readonly _tag: "token"; readonly text: string };
+type Acc = { readonly _tag: "idle" } | { readonly _tag: "token"; readonly text: string };
 
 /**
  * Split a send-keys input into tokens, honouring the quoting rules.

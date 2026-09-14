@@ -37,7 +37,11 @@ import {
   Schema as S,
 } from "effect";
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts";
-import { parseWorkspaceJson, type WorkspaceCommandContext, type WorkspaceSnapshot } from "./workspace.ts";
+import {
+  parseWorkspaceJson,
+  type WorkspaceCommandContext,
+  type WorkspaceSnapshot,
+} from "./workspace.ts";
 import { captureRootRuntime, type RootRuntimeContext, defaultRootRuntime } from "./env.ts";
 
 /**
@@ -135,10 +139,7 @@ export interface AttachClientContract {
       readonly expectedRevision?: number;
       readonly context?: WorkspaceCommandContext;
     },
-  ): Effect.Effect<
-    { readonly result?: JsonValue; readonly workspace?: string },
-    AttachError
-  >;
+  ): Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, AttachError>;
   input(session: string, data: string | Uint8Array): void;
   resize(session: string, cols: number, rows: number): void;
   sync(session: string, after?: number): void;
@@ -207,7 +208,7 @@ class AttachClientConnection {
   private readonly _pendingRuns = new Map<
     string,
     Deferred.Deferred<{ readonly result?: JsonValue; readonly workspace?: string }, AttachError>
-  >;
+  >();
   private _onClose: ((error: Error | null) => void) | undefined;
   private _onError: ((message: string) => void) | undefined;
   private readonly _socket: Bun.Socket<undefined>;
@@ -321,14 +322,12 @@ class AttachClientConnection {
     },
   ): Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, AttachError> {
     return Effect.gen({ self: this }, function* () {
-      if (this._closed)
-        return yield* new AttachError({ message: "attach client is closed" });
+      if (this._closed) return yield* new AttachError({ message: "attach client is closed" });
       const id = `run-${(yield* Random.next).toString(36).slice(2)}`;
-      const done =
-        yield* Deferred.make<
-          { readonly result?: JsonValue; readonly workspace?: string },
-          AttachError
-        >();
+      const done = yield* Deferred.make<
+        { readonly result?: JsonValue; readonly workspace?: string },
+        AttachError
+      >();
       this._pendingRuns.set(id, done);
       this._send({
         _tag: "run.request" as const,
@@ -696,11 +695,9 @@ const makeScoped = (
         );
 
         // Release receives the acquired client — no fill-later slot needed.
-        return Effect.acquireRelease(
-          acquire,
-          (client) => Effect.sync(() => client.close()),
-          { interruptible: true },
-        ).pipe(
+        return Effect.acquireRelease(acquire, (client) => Effect.sync(() => client.close()), {
+          interruptible: true,
+        }).pipe(
           Effect.tap((client) =>
             client._heartbeatEffect(options.pingSeconds ?? PING_SECONDS).pipe(Effect.forkScoped),
           ),

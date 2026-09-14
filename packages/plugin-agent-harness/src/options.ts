@@ -1,8 +1,5 @@
 import type { OptionSpec } from "@danielfgray/amux";
-import {
-  COMPACTION_STRATEGIES,
-  DEFAULT_COMPACTION_STRATEGY,
-} from "./compaction-strategies.ts";
+import { COMPACTION_STRATEGIES, DEFAULT_COMPACTION_STRATEGY } from "./compaction-strategies.ts";
 
 /**
  * The native harness's own option declarations, registered through

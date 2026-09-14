@@ -128,11 +128,11 @@ export const evalScratch = (
     const dir = scratchDir ?? (yield* pluginScratchDir);
     const entryUrl = yield* materializeScratch(id, source, dir);
     if (reloader.reloadable().includes(id)) {
-      yield* reloader.reload(id, { disk: true }).pipe(
-        Effect.mapError(
-          (error) => `${error} (last good generation of '${id}' kept running)`,
-        ),
-      );
+      yield* reloader
+        .reload(id, { disk: true })
+        .pipe(
+          Effect.mapError((error) => `${error} (last good generation of '${id}' kept running)`),
+        );
       const current = reloader.get(id);
       if (!current) return yield* Effect.fail(`plugin '${id}' vanished after reload`);
       return current;
@@ -146,9 +146,9 @@ export const evalScratch = (
       );
     }
     const entry: PluginEntry = { id, source: entryUrl, definition };
-    yield* reloader.adopt(entry).pipe(
-      Effect.mapError((error) => `scratch '${id}' did not activate: ${error}`),
-    );
+    yield* reloader
+      .adopt(entry)
+      .pipe(Effect.mapError((error) => `scratch '${id}' did not activate: ${error}`));
     return entry;
   });
 
@@ -198,9 +198,9 @@ export const promoteScratch = (
     }
     const source =
       options.source ??
-      (yield* fs.readFileString(fileURLToPath(entry!.source)).pipe(
-        Effect.mapError((error) => `cannot read scratch '${id}': ${String(error)}`),
-      ));
+      (yield* fs
+        .readFileString(fileURLToPath(entry!.source))
+        .pipe(Effect.mapError((error) => `cannot read scratch '${id}': ${String(error)}`)));
     const pluginsDir = join(options.configDir, "plugins");
     yield* fs
       .makeDirectory(pluginsDir, { recursive: true })

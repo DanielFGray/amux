@@ -555,10 +555,7 @@ test("composer reclaim does not steal focus released by another component pane",
         </box>
         <box id="other-pane" style={{ width: 40, height: "100%" }}>
           <box id="other-pane-content" style={{ width: "100%", height: "100%" }}>
-            <textarea
-              ref={(value) => (foreign = value)}
-              style={{ width: "100%", height: 2 }}
-            />
+            <textarea ref={(value) => (foreign = value)} style={{ width: "100%", height: 2 }} />
           </box>
         </box>
       </box>
@@ -609,10 +606,7 @@ test("composer reclaim still takes focus back after a non-pane overlay releases 
             />
           </box>
         </box>
-        <textarea
-          ref={(value) => (overlay = value)}
-          style={{ width: "100%", height: 2 }}
-        />
+        <textarea ref={(value) => (overlay = value)} style={{ width: "100%", height: 2 }} />
       </box>
     ),
     t.renderer,

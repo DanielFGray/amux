@@ -1,11 +1,7 @@
 import { Match } from "effect";
 import type { TerminalPane } from "./pane.ts";
 import { captureRows } from "./capture.ts";
-import {
-  cellColumnOf,
-  rowCells,
-  stringIndexOf,
-} from "./cell-width.ts";
+import { cellColumnOf, rowCells, stringIndexOf } from "./cell-width.ts";
 import { ScrollTo, captureRange, clearSelection, scrollViewport, setSelection } from "./shim.ts";
 
 /**

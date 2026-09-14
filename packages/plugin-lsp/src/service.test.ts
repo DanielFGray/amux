@@ -103,8 +103,7 @@ const makeFake = (notifications: Stream.Stream<LspNotification> = Stream.empty) 
                   },
                   data: { id: 1 },
                 };
-              if (method === "workspace/executeCommand")
-                return { ok: true };
+              if (method === "workspace/executeCommand") return { ok: true };
               if (method === "textDocument/references")
                 return [{ uri: "file:///workspace/ref.ts", range }];
               if (method === "textDocument/rename")
@@ -361,11 +360,7 @@ tests.live(
     ];
     expect(
       Option.getOrUndefined(
-        decodeShowReferencesArgs([
-          "file:///workspace/a.ts",
-          { line: 1, character: 2 },
-          locations,
-        ]),
+        decodeShowReferencesArgs(["file:///workspace/a.ts", { line: 1, character: 2 }, locations]),
       ),
     ).toEqual(locations);
     expect(Option.getOrUndefined(decodeShowReferencesArgs(["not", "a", "tuple"]))).toBeUndefined();

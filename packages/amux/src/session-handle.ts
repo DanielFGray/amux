@@ -201,9 +201,15 @@ export class SessionHandle {
         const rows = opts.rows ?? 24;
         const scope = Scope.makeUnsafe();
         const term = new Terminal(cols, rows);
-        yield* Scope.addFinalizer(scope, Effect.sync(() => term.free()));
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => term.free()),
+        );
         const detect = new RenderState();
-        yield* Scope.addFinalizer(scope, Effect.sync(() => detect.free()));
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => detect.free()),
+        );
 
         return new SessionHandle({
           opts,

@@ -34,8 +34,7 @@ export const parseIntegrationVersion = (content: string): number | undefined => 
 export const isManagedHookContent = (content: string): boolean =>
   content.includes(MANAGED_MARKER) || content.includes(INTEGRATION_ID_MARKER);
 
-export const shellSingleQuote = (value: string): string =>
-  `'${value.replaceAll("'", `'"'"'`)}'`;
+export const shellSingleQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 export const hookCommand = (hookPath: string, action?: string): string => {
   const base = `bash ${shellSingleQuote(hookPath)}`;
@@ -132,7 +131,11 @@ export const ensureNestedCommandHook = (
     hooks[event] = entriesAsJson(entries);
     return;
   }
-  const hook = { type: "command", command, timeout } as const satisfies typeof HookCommandSchema.Type;
+  const hook = {
+    type: "command",
+    command,
+    timeout,
+  } as const satisfies typeof HookCommandSchema.Type;
   const entry =
     matcher === undefined
       ? ({ hooks: [hook] } as const satisfies typeof NestedHookEntrySchema.Type)

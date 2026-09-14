@@ -346,10 +346,12 @@ else {
                     gate.resolve(permission.request, permission.decision, permission.feedback),
                   ),
                   Match.tag("agent.compact", (compact) =>
-                    worker.compact({
-                      instructions: compact.instructions,
-                      force: true,
-                    }).pipe(Effect.asVoid),
+                    worker
+                      .compact({
+                        instructions: compact.instructions,
+                        force: true,
+                      })
+                      .pipe(Effect.asVoid),
                   ),
                   Match.exhaustive,
                 ),

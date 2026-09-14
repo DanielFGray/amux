@@ -51,9 +51,8 @@ const markedStringText = (marked: MarkedString | { readonly value: string }): st
     Match.orElse((obj) => obj.value),
   );
 
-const isMarkedStringList = (
-  contents: LspHover["contents"],
-): contents is readonly MarkedString[] => Arr.isArray(contents);
+const isMarkedStringList = (contents: LspHover["contents"]): contents is readonly MarkedString[] =>
+  Arr.isArray(contents);
 
 /** Flatten already-decoded hover contents for the floating popup. */
 export const hoverText = (contents: LspHover["contents"]): string =>

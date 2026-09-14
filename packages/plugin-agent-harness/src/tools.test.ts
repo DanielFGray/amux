@@ -46,10 +46,13 @@ const noInstructions = () => {
 
 it.live("agent toolkit exposes coding tools rather than amux commands", () =>
   Effect.gen(function* () {
-    const toolkit = yield* withGate(allowAll().gate, agentToolkit(process.cwd(), {
-      session: "agent-1",
-      store: noInstructions(),
-    }));
+    const toolkit = yield* withGate(
+      allowAll().gate,
+      agentToolkit(process.cwd(), {
+        session: "agent-1",
+        store: noInstructions(),
+      }),
+    );
     expect(Object.keys(toolkit.tools)).toEqual([
       "read",
       "write",
@@ -68,10 +71,13 @@ it.live("agent toolkit exposes coding tools rather than amux commands", () =>
 
 it.live("read uses workspace-relative paths and line numbers", () =>
   Effect.gen(function* () {
-    const toolkit = yield* withGate(allowAll().gate, agentToolkit(process.cwd(), {
-      session: "agent-1",
-      store: noInstructions(),
-    }));
+    const toolkit = yield* withGate(
+      allowAll().gate,
+      agentToolkit(process.cwd(), {
+        session: "agent-1",
+        store: noInstructions(),
+      }),
+    );
     const output = yield* runHandle(
       toolkit.handle("read", {
         path: "package.json",
@@ -91,10 +97,13 @@ it.live("unconstrained read of a large file returns an outline, not the full dum
     lines[10] = "export function landmark() {}";
     yield* fs.writeFileString(`${workspace}/big.ts`, `${lines.join("\n")}\n`);
     try {
-      const toolkit = yield* withGate(allowAll().gate, agentToolkit(workspace, {
-        session: "agent-1",
-        store: noInstructions(),
-      }));
+      const toolkit = yield* withGate(
+        allowAll().gate,
+        agentToolkit(workspace, {
+          session: "agent-1",
+          store: noInstructions(),
+        }),
+      );
       const outlined = yield* runHandle(toolkit.handle("read", { path: "big.ts" }));
       const text = (outlined as { result: string }).result;
       expect(text).toContain("lines");
@@ -115,10 +124,13 @@ it.live("unconstrained read of a large file returns an outline, not the full dum
 it.live("every tool declares its action, tier, and what it would touch", () =>
   Effect.gen(function* () {
     const { gate, seen } = allowAll();
-    const toolkit = yield* withGate(gate, agentToolkit(process.cwd(), {
-      session: "agent-1",
-      store: noInstructions(),
-    }));
+    const toolkit = yield* withGate(
+      gate,
+      agentToolkit(process.cwd(), {
+        session: "agent-1",
+        store: noInstructions(),
+      }),
+    );
     yield* runHandle(toolkit.handle("read", { path: "package.json", offset: 1, limit: 1 }));
     yield* runHandle(toolkit.handle("bash", { command: "true && echo hi" }));
     expect(
@@ -133,11 +145,14 @@ it.live("every tool declares its action, tier, and what it would touch", () =>
 it.live("bash interceptor blocks cat when read exists, leaves unmatched commands alone", () =>
   Effect.gen(function* () {
     const { gate, seen } = allowAll();
-    const toolkit = yield* withGate(gate, agentToolkit(
-      process.cwd(),
-      { session: "agent-1", store: noInstructions() },
-      { bashInterceptor: true },
-    ));
+    const toolkit = yield* withGate(
+      gate,
+      agentToolkit(
+        process.cwd(),
+        { session: "agent-1", store: noInstructions() },
+        { bashInterceptor: true },
+      ),
+    );
     const blocked = yield* runHandle(toolkit.handle("bash", { command: "cat package.json" }));
     expect(blocked).toMatchObject({ isFailure: true });
     expect(String((blocked as { result: string }).result)).toContain("Blocked:");
@@ -153,11 +168,14 @@ it.live("bash interceptor blocks cat when read exists, leaves unmatched commands
 it.live("bash interceptor can be disabled", () =>
   Effect.gen(function* () {
     const { gate, seen } = allowAll();
-    const toolkit = yield* withGate(gate, agentToolkit(
-      process.cwd(),
-      { session: "agent-1", store: noInstructions() },
-      { bashInterceptor: false },
-    ));
+    const toolkit = yield* withGate(
+      gate,
+      agentToolkit(
+        process.cwd(),
+        { session: "agent-1", store: noInstructions() },
+        { bashInterceptor: false },
+      ),
+    );
     yield* runHandle(toolkit.handle("bash", { command: "cat /dev/null" }));
     expect(seen).toHaveLength(1);
     expect(seen[0]?.resources).toEqual(["cat /dev/null"]);
@@ -167,10 +185,13 @@ it.live("bash interceptor can be disabled", () =>
 it.live("a refusal reaches the model as the tool's failure, and nothing runs", () =>
   Effect.gen(function* () {
     const { gate } = recording(() => Effect.fail("Denied by the user: not this time"));
-    const toolkit = yield* withGate(gate, agentToolkit(process.cwd(), {
-      session: "agent-1",
-      store: noInstructions(),
-    }));
+    const toolkit = yield* withGate(
+      gate,
+      agentToolkit(process.cwd(), {
+        session: "agent-1",
+        store: noInstructions(),
+      }),
+    );
     const target = `${process.cwd()}/.amux-gate-test-file`;
     // failureMode "return" is what makes a refusal readable by the model: the
     // turn continues carrying the reason instead of dying.
@@ -192,10 +213,13 @@ it.live("a tool entering a subtree attaches its instructions once", () =>
     yield* fs.writeFileString(`${workspace}/lib/notes.md`, "hi\n");
     try {
       const store = noInstructions();
-      const toolkit = yield* withGate(allowAll().gate, agentToolkit(workspace, {
-        session: "agent-1",
-        store,
-      }));
+      const toolkit = yield* withGate(
+        allowAll().gate,
+        agentToolkit(workspace, {
+          session: "agent-1",
+          store,
+        }),
+      );
       const first = yield* runHandle(toolkit.handle("read", { path: "lib/notes.md" }));
       expect((first as { result: string }).result).toContain("lib rules");
       expect((first as { result: string }).result).toContain("1: hi");
@@ -213,10 +237,13 @@ it.live("edit applies unique replacements and refuses ambiguous ones without wri
     const workspace = yield* fs.makeTempDirectory({ prefix: "amux-edit-" });
     yield* fs.writeFileString(`${workspace}/note.ts`, "aaa bbb aaa\n");
     try {
-      const toolkit = yield* withGate(allowAll().gate, agentToolkit(workspace, {
-        session: "offline",
-        store: noInstructions(),
-      }));
+      const toolkit = yield* withGate(
+        allowAll().gate,
+        agentToolkit(workspace, {
+          session: "offline",
+          store: noInstructions(),
+        }),
+      );
       const ambiguous = yield* runHandle(
         toolkit.handle("edit", {
           path: "note.ts",
@@ -254,10 +281,13 @@ it.live(
       yield* fs.writeFileString(`${workspace}/old.ts`, "const y = 1\n");
       yield* fs.writeFileString(`${workspace}/gone.ts`, "bye\n");
       try {
-        const toolkit = yield* withGate(allowAll().gate, agentToolkit(workspace, {
-          session: "offline",
-          store: noInstructions(),
-        }));
+        const toolkit = yield* withGate(
+          allowAll().gate,
+          agentToolkit(workspace, {
+            session: "offline",
+            store: noInstructions(),
+          }),
+        );
 
         const stale = yield* runHandle(
           toolkit.handle("apply_patch", {
@@ -312,10 +342,13 @@ it.live("edit is gated as an edit action", () =>
     const workspace = yield* fs.makeTempDirectory({ prefix: "amux-edit-gate-" });
     yield* fs.writeFileString(`${workspace}/a.ts`, "one\n");
     try {
-      const toolkit = yield* withGate(gate, agentToolkit(workspace, {
-        session: "offline",
-        store: noInstructions(),
-      }));
+      const toolkit = yield* withGate(
+        gate,
+        agentToolkit(workspace, {
+          session: "offline",
+          store: noInstructions(),
+        }),
+      );
       yield* runHandle(
         toolkit.handle("edit", { path: "a.ts", edits: [{ oldText: "one", newText: "two" }] }),
       );

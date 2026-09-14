@@ -56,9 +56,7 @@ testEffect("pluginDirFor flattens scoped names and stays inside the store", () =
   Effect.gen(function* () {
     const store = yield* pluginStoreDir;
     expect(pluginDirFor("example-plugin", store)).toBe(join(store, "example-plugin"));
-    expect(pluginDirFor("@scope/example-plugin", store)).toBe(
-      join(store, "scope__example-plugin"),
-    );
+    expect(pluginDirFor("@scope/example-plugin", store)).toBe(join(store, "scope__example-plugin"));
   }),
 );
 

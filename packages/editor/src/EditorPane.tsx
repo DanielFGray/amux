@@ -133,10 +133,7 @@ export interface EditorViewProps extends PaneViewProps {
    *  only exercise builtins — reduceEditor then uses the builtin table. */
   readonly editor?: EditorService;
   /** Publish this pane's controller to the plugin's mode contexts. */
-  readonly registerController?: (
-    paneId: string,
-    controller: EditorController,
-  ) => () => void;
+  readonly registerController?: (paneId: string, controller: EditorController) => () => void;
   /** Re-publish grammar showcmd when focus or state changes (ts-9e2f54). */
   readonly onShowcmdSync?: () => void;
   /** Tree-sitter highlight provider, built by the plugin activation. Absent
@@ -167,10 +164,9 @@ export interface EditorViewProps extends PaneViewProps {
  * `Realm` resolves it to the pane its keystroke was typed into, which is what
  * replaces each command body hunting for the focused controller itself.
  */
-export class EditorControllerTag extends Context.Service<
-  EditorControllerTag,
-  EditorController
->()("amux.editor/Controller") {}
+export class EditorControllerTag extends Context.Service<EditorControllerTag, EditorController>()(
+  "amux.editor/Controller",
+) {}
 
 export interface EditorController {
   readonly active: () => boolean;
@@ -248,7 +244,8 @@ export function EditorPane(props: EditorViewProps) {
     if (s.mode !== "visual" && s.options.keyProfile !== "cua") return null;
     const anchor = s.visual.anchor;
     const cursor = s.cursor;
-    const forward = anchor.row < cursor.row || (anchor.row === cursor.row && anchor.col <= cursor.col);
+    const forward =
+      anchor.row < cursor.row || (anchor.row === cursor.row && anchor.col <= cursor.col);
     const from = forward ? anchor : cursor;
     const to = forward ? cursor : anchor;
     // CUA: half-open [from, to). Vim visual: inclusive endpoints.
@@ -581,9 +578,7 @@ function createEditorBuffer(props: EditorViewProps) {
         );
         if (Exit.isFailure(exit)) {
           const message = Cause.squash(exit.cause);
-          setMessage(
-            `LSP: ${message instanceof Error ? message.message : String(message)}`,
-          );
+          setMessage(`LSP: ${message instanceof Error ? message.message : String(message)}`);
           return;
         }
         setLspClient(exit.value);
@@ -1004,7 +999,8 @@ function createEditorBuffer(props: EditorViewProps) {
     }
     if (action.edit !== undefined) applyRename(action.edit);
     if (action.command !== undefined) runLspCommand(client, action.command);
-    else if (action.edit === undefined) setMessage(`code action has no edit or command: ${action.title}`);
+    else if (action.edit === undefined)
+      setMessage(`code action has no edit or command: ${action.title}`);
     else setMessage(action.title);
   };
 
@@ -1081,11 +1077,13 @@ function createEditorBuffer(props: EditorViewProps) {
     const ensure = Option.match(Option.fromNullishOr(lens.command), {
       onSome: (command) => Effect.succeed(Option.some(command)),
       onNone: () =>
-        client.resolveCodeLens(lens).pipe(
-          Effect.map((resolved) =>
-            Option.flatMap(resolved, (next) => Option.fromNullishOr(next.command)),
+        client
+          .resolveCodeLens(lens)
+          .pipe(
+            Effect.map((resolved) =>
+              Option.flatMap(resolved, (next) => Option.fromNullishOr(next.command)),
+            ),
           ),
-        ),
     });
     runFork(
       ensure.pipe(
@@ -1765,7 +1763,11 @@ type SelectionView = {
   readonly inclusive: boolean;
 };
 
-type LinePart = { readonly text: string; readonly fg?: TextChunk["fg"]; readonly selected: boolean };
+type LinePart = {
+  readonly text: string;
+  readonly fg?: TextChunk["fg"];
+  readonly selected: boolean;
+};
 
 function selectedParts(
   text: string,

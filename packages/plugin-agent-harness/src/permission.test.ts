@@ -8,7 +8,7 @@ import {
   layer as projectStoreLayer,
   Service as ProjectStore,
 } from "@danielfgray/amux/project-store.ts";
-import { 
+import {
   bashResources,
   checkBashInterception,
   isOpaque,
@@ -374,7 +374,10 @@ testEffect("an approved write runs, is remembered on disk, and does not ask agai
             store,
             emit: (frame) => Effect.sync(() => void frames.push(frame)),
           });
-          const toolkit = yield* withGate(gate, agentToolkit(workspace, { session: "agent-1", store }));
+          const toolkit = yield* withGate(
+            gate,
+            agentToolkit(workspace, { session: "agent-1", store }),
+          );
           const first = yield* Effect.forkChild(
             handle(toolkit.handle("write", { path: "notes.md", content: "hello" })),
           );
@@ -418,10 +421,13 @@ testEffect("the second answer to a resolved request is dropped", () =>
     try {
       yield* Effect.gen(function* () {
         const gate = yield* world.gate;
-        const toolkit = yield* withGate(gate, agentToolkit(workspace, {
-          session: "agent-1",
-          store: world.store,
-        }));
+        const toolkit = yield* withGate(
+          gate,
+          agentToolkit(workspace, {
+            session: "agent-1",
+            store: world.store,
+          }),
+        );
         const running = yield* Effect.forkChild(
           handle(toolkit.handle("write", { path: "answer.txt", content: "first" })),
         );
@@ -481,10 +487,13 @@ testEffect(
       try {
         const result = yield* Effect.gen(function* () {
           const gate = yield* world.gate;
-          const toolkit = yield* withGate(gate, agentToolkit(workspace, {
-            session: "agent-1",
-            store: world.store,
-          }));
+          const toolkit = yield* withGate(
+            gate,
+            agentToolkit(workspace, {
+              session: "agent-1",
+              store: world.store,
+            }),
+          );
           const running = yield* Effect.forkChild(
             handle(toolkit.handle("write", { path: "rejected.txt", content: "must not exist" })),
           );

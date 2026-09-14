@@ -354,9 +354,7 @@ export function makeAgentWorker<E = never>(options: {
         // Auto-compact after a successful turn when the gauge says so.
         // Manual /compact uses force:true and skips the threshold.
         Effect.andThen(
-          outcome === "completed"
-            ? runCompact({ force: false }).pipe(Effect.asVoid)
-            : Effect.void,
+          outcome === "completed" ? runCompact({ force: false }).pipe(Effect.asVoid) : Effect.void,
         ),
       );
     };

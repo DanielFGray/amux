@@ -62,10 +62,7 @@ export type ApprovalPromptProps = {
  */
 export function ApprovalPrompt(props: ApprovalPromptProps) {
   return (
-    <Show
-      when={props.framed}
-      fallback={<ApprovalPromptInner {...props} />}
-    >
+    <Show when={props.framed} fallback={<ApprovalPromptInner {...props} />}>
       <box
         style={{
           width: "100%",
@@ -100,9 +97,7 @@ function ApprovalChoicesBody(props: ApprovalPromptProps) {
       label: string;
       color: RGBA;
       run: () => void;
-    }[] = [
-      { key: "o", label: "once", color: theme.green, run: () => props.onDecide("once") },
-    ];
+    }[] = [{ key: "o", label: "once", color: theme.green, run: () => props.onDecide("once") }];
     if (props.request.save.length > 0) {
       rows.push({
         key: "a",
@@ -154,9 +149,7 @@ function ApprovalChoicesBody(props: ApprovalPromptProps) {
         {props.request.summary}
       </text>
       <Show when={matchedRule}>
-        <text style={{ wrapMode: "word", width: "100%", fg: theme.overlay1 }}>
-          {matchedRule}
-        </text>
+        <text style={{ wrapMode: "word", width: "100%", fg: theme.overlay1 }}>{matchedRule}</text>
       </Show>
       <Show when={alwaysRule}>
         <text style={{ wrapMode: "word", width: "100%", fg: theme.overlay1 }}>

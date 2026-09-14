@@ -35,18 +35,20 @@ export function processPluginInvocationContextFromWorkspace(
   options: ProcessPluginContextOptions,
 ): ProcessPluginInvocationContext {
   const { workspace, commandContext, invocationSource, correlationId } = options;
-  const target = resolveTarget(workspace, {}, {
-    agent: commandContext.agent,
-    pane: commandContext.pane,
-  });
+  const target = resolveTarget(
+    workspace,
+    {},
+    {
+      agent: commandContext.agent,
+      pane: commandContext.pane,
+    },
+  );
   const space = target?.window.space;
   const window = target?.window.window;
   const pane = target?.pane;
   const sessionId = pane !== undefined ? paneSession(pane.content) : undefined;
   const session =
-    sessionId !== undefined
-      ? window?.sessions.find((entry) => entry.id === sessionId)
-      : undefined;
+    sessionId !== undefined ? window?.sessions.find((entry) => entry.id === sessionId) : undefined;
 
   const context: ContextDraft = { invocationSource };
   if (space !== undefined) {

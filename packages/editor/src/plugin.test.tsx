@@ -10,7 +10,13 @@ import {
   testPluginEnvironment,
   waitFor,
 } from "@danielfgray/amux/testing";
-import { BindingsTag, ContextsTag, OptionsTag, resolveOptions, SettingsTag } from "@danielfgray/amux";
+import {
+  BindingsTag,
+  ContextsTag,
+  OptionsTag,
+  resolveOptions,
+  SettingsTag,
+} from "@danielfgray/amux";
 import type { Command, JsonValue, PaneViewProps } from "@danielfgray/amux";
 import { theme } from "@danielfgray/amux";
 import { createPluginHost, type PluginHost } from "@danielfgray/amux/plugin/host.ts";
@@ -235,9 +241,9 @@ testEffect(
     expect(seenBindings.includes("editor.operator.map.gg")).toBe(true);
     // Test host stubs bindings.register (records names only), so hidden flags
     // are not on Bindings.commands() here — covered by the registration source.
-    expect(Duration.toMillis(Option.getOrThrow(host.get(BindingsTag)).chords.timeoutlen())).toBeGreaterThan(
-      0,
-    );
+    expect(
+      Duration.toMillis(Option.getOrThrow(host.get(BindingsTag)).chords.timeoutlen()),
+    ).toBeGreaterThan(0);
     expect(seenBindings.includes("editor.operator.key.w")).toBe(true);
     expect(seenBindings.includes("editor.insert.key.escape")).toBe(true);
     expect(
@@ -262,9 +268,11 @@ testEffect(
       "editor.focused",
     ]);
     expect(Option.isSome(host.get(Editor))).toBe(true);
-    expect(Option.getOrThrow(host.get(Editor)).command.list().map((c) => c.name)).toContain(
-      "Surround",
-    );
+    expect(
+      Option.getOrThrow(host.get(Editor))
+        .command.list()
+        .map((c) => c.name),
+    ).toContain("Surround");
     expect(sent).toEqual([]);
   }),
 );

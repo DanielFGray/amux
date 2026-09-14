@@ -303,9 +303,7 @@ const make = (
             accept(parsed);
           }
           return output.result;
-        }).pipe(
-          Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
-        ),
+        }).pipe(Effect.mapError((error) => new ControlError({ message: errorMessage(error) }))),
       resumeAgent: (input) =>
         Effect.sync(() => {
           const resumeInput = { ...input, env: input.env, stripEnv: input.stripEnv };

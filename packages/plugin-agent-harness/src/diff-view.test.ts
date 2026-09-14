@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  pathFromUnifiedDiff,
-  splitUnifiedDiffs,
-  stripUnifiedDiffs,
-} from "./diff-view.ts";
+import { pathFromUnifiedDiff, splitUnifiedDiffs, stripUnifiedDiffs } from "./diff-view.ts";
 import { conciseDiff } from "./edit-core.ts";
 
 describe("diff-view", () => {

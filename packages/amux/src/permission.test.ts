@@ -81,10 +81,14 @@ test("an empty resource list is verb-only: only rules whose resource is '*' appl
     "ask",
   );
   expect(
-    evaluateAll("bash", [], [
-      { action: "*", resource: "*", effect: "ask" },
-      { action: "bash", resource: "*", effect: "deny" },
-    ]),
+    evaluateAll(
+      "bash",
+      [],
+      [
+        { action: "*", resource: "*", effect: "ask" },
+        { action: "bash", resource: "*", effect: "deny" },
+      ],
+    ),
   ).toBe("deny");
 });
 

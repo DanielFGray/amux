@@ -91,10 +91,12 @@ test("chord feed accumulates count while prefix ctrl+w is pending", async () => 
     expect(bindings.chords.pending()).toEqual(["<prefix>", "ctrl+w"]);
     expect(bindings.chords.activeMode()?.id).toBe("amux.window");
     expect(
-      nextKeys(bindings, bindings.commands(), [], [
-        { display: "<prefix>" },
-        { display: "ctrl+w" },
-      ]).flatMap((g) => g.entries.map((e) => e.keys.join(""))),
+      nextKeys(
+        bindings,
+        bindings.commands(),
+        [],
+        [{ display: "<prefix>" }, { display: "ctrl+w" }],
+      ).flatMap((g) => g.entries.map((e) => e.keys.join(""))),
     ).toContain("|");
 
     t.mockInput.pressKey("8");

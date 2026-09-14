@@ -9,10 +9,8 @@ const environment = (name: string, fallback: string): string =>
   );
 
 /** Vendor zig-out, relative to this package — not process.cwd(). */
-const defaultLibDir = new URL(
-  "../../../vendor/libghostty-vt/zig-out/lib",
-  import.meta.url,
-).pathname;
+const defaultLibDir = new URL("../../../vendor/libghostty-vt/zig-out/lib", import.meta.url)
+  .pathname;
 
 export const LIB_DIR = environment("GHOSTTY_VT_LIB_DIR", defaultLibDir);
 

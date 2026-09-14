@@ -88,12 +88,7 @@ export const readInstalledManifest = (
 ): Effect.Effect<{ version: string; enginesAmux?: string }, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const root = storeDir ?? (yield* pluginStoreDir);
-    const path = join(
-      pluginDirFor(packageName, root),
-      "node_modules",
-      packageName,
-      "package.json",
-    );
+    const path = join(pluginDirFor(packageName, root), "node_modules", packageName, "package.json");
     return yield* readJsonFile(path).pipe(
       Effect.flatMap((value) => decodeManifest(path, value)),
       Effect.map((manifest) => {
@@ -112,12 +107,7 @@ export const installedHasDaemonExport = (
 ): Effect.Effect<boolean, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const root = storeDir ?? (yield* pluginStoreDir);
-    const path = join(
-      pluginDirFor(packageName, root),
-      "node_modules",
-      packageName,
-      "package.json",
-    );
+    const path = join(pluginDirFor(packageName, root), "node_modules", packageName, "package.json");
     const value = yield* readJsonFile(path);
     const manifest = yield* S.decodeUnknownEffect(S.Struct({ exports: S.optionalKey(S.Unknown) }))(
       value,

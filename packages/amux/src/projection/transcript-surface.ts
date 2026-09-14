@@ -39,7 +39,10 @@ const projectLine = (block: TranscriptBlock): string =>
     Match.exhaustive,
   );
 
-export class TranscriptSurface implements ProjectionSurface<readonly TranscriptBlock[], TranscriptPin> {
+export class TranscriptSurface implements ProjectionSurface<
+  readonly TranscriptBlock[],
+  TranscriptPin
+> {
   readonly uri: SurfaceUri;
   #blocks: TranscriptBlock[];
 

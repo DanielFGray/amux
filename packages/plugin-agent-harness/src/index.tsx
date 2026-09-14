@@ -371,13 +371,12 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
                 return true;
               }
               if (command === "/compact" || command.startsWith("/compact ")) {
-                const instructions = command === "/compact" ? undefined : command.slice("/compact ".length).trim();
+                const instructions =
+                  command === "/compact" ? undefined : command.slice("/compact ".length).trim();
                 run(
                   runtimeCommand("agent.compact", {
                     target: props.sessionId,
-                    ...(instructions !== undefined && instructions !== ""
-                      ? { instructions }
-                      : {}),
+                    ...(instructions !== undefined && instructions !== "" ? { instructions } : {}),
                   }),
                 );
                 return true;

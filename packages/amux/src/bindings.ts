@@ -12,7 +12,13 @@ import {
 import type { CommandContext, Keymap } from "@opentui/keymap";
 import { reactiveMatcherFromSignal } from "@opentui/keymap/solid";
 import type { KeyStroke } from "./keys.ts";
-import { runDetached, CurrentInvocation, type CommandError, type CommandInvocation, type Commands } from "./commands.ts";
+import {
+  runDetached,
+  CurrentInvocation,
+  type CommandError,
+  type CommandInvocation,
+  type Commands,
+} from "./commands.ts";
 import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
 import {
   createCountAccumulator,
@@ -322,10 +328,8 @@ export interface PendingTable {
 }
 
 /** Read one role's strokes from the table (tests / diagnostics). */
-export const pendingStrokes = (
-  table: PendingTable,
-  role: PendingRole,
-): readonly string[] => table.current().find((entry) => entry.role === role)?.strokes ?? [];
+export const pendingStrokes = (table: PendingTable, role: PendingRole): readonly string[] =>
+  table.current().find((entry) => entry.role === role)?.strokes ?? [];
 
 export function createPendingTable(): PendingTable {
   const byRole = new Map<PendingRole, PendingSource>();
@@ -337,9 +341,7 @@ export function createPendingTable(): PendingTable {
     register(source) {
       const taken = byRole.get(source.role);
       if (taken !== undefined) {
-        throw new Error(
-          `pending role '${source.role}' is already registered by '${taken.id}'`,
-        );
+        throw new Error(`pending role '${source.role}' is already registered by '${taken.id}'`);
       }
       byRole.set(source.role, source);
       notify();
@@ -657,8 +659,7 @@ export function createBindings(
         }
       }
 
-      const chordStroke =
-        stroke === prefix ? "<prefix>" : stroke === leader ? "<leader>" : stroke;
+      const chordStroke = stroke === prefix ? "<prefix>" : stroke === leader ? "<leader>" : stroke;
       chordEvent = input.event;
       // OpenTUI getData is unknown at the I/O boundary — decode here, not via a
       // helper that would re-accept unknown.

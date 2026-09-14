@@ -22,9 +22,7 @@ import { MANAGED_MARKER, parseIntegrationVersion } from "./hooks-install.ts";
 
 const SimpleHooksProbe = S.Struct({
   version: S.optionalKey(S.Finite),
-  hooks: S.optionalKey(
-    S.Record(S.String, S.Array(S.Struct({ command: S.optionalKey(S.String) }))),
-  ),
+  hooks: S.optionalKey(S.Record(S.String, S.Array(S.Struct({ command: S.optionalKey(S.String) })))),
 });
 
 const simpleHookCommand = (root: JsonValue, event: string, index: number): string => {
@@ -39,7 +37,10 @@ const simpleHookCommand = (root: JsonValue, event: string, index: number): strin
 
 const simpleHookLength = (root: JsonValue, event: string): number =>
   Option.getOrElse(
-    Option.map(S.decodeUnknownOption(SimpleHooksProbe)(root), (value) => value.hooks?.[event]?.length ?? 0),
+    Option.map(
+      S.decodeUnknownOption(SimpleHooksProbe)(root),
+      (value) => value.hooks?.[event]?.length ?? 0,
+    ),
     () => 0,
   );
 
@@ -73,7 +74,10 @@ const nestedHookCommand = (root: JsonValue, event: string, index: number): strin
 
 const sessionStartLength = (root: JsonValue): number =>
   Option.getOrElse(
-    Option.map(S.decodeUnknownOption(NestedHookProbe)(root), (value) => value.hooks?.SessionStart?.length ?? 0),
+    Option.map(
+      S.decodeUnknownOption(NestedHookProbe)(root),
+      (value) => value.hooks?.SessionStart?.length ?? 0,
+    ),
     () => 0,
   );
 
@@ -183,9 +187,7 @@ testEffect("installs claude hook and leaves user SessionStart hooks alone", () =
         join(home, ".claude/settings.json"),
         encodeJson({
           hooks: {
-            SessionStart: [
-              { matcher: "", hooks: [{ type: "command", command: "prog prime" }] },
-            ],
+            SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "prog prime" }] }],
           },
         }),
       );
@@ -247,7 +249,12 @@ testEffect("installs cursor hook into hooks.json and leaves unrelated stop hooks
       expect(simpleHookCommand(hooksFile, "stop", 0)).toBe("echo keep-me");
 
       yield* cursorAdapter.hooks.install(home);
-      expect(simpleHookLength(decodeJson(yield* fs.readFileString(join(home, ".cursor/hooks.json"))), "sessionStart")).toBe(1);
+      expect(
+        simpleHookLength(
+          decodeJson(yield* fs.readFileString(join(home, ".cursor/hooks.json"))),
+          "sessionStart",
+        ),
+      ).toBe(1);
 
       expect(yield* cursorAdapter.hooks.uninstall(home)).toBe(true);
       const after = decodeJson(yield* fs.readFileString(join(home, ".cursor/hooks.json")));

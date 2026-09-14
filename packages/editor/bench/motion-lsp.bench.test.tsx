@@ -42,7 +42,10 @@ const percentile = (sorted: readonly number[], fraction: number): number =>
   sorted[Math.ceil(sorted.length * fraction) - 1]!;
 
 const median = (samples: readonly number[]): number =>
-  percentile([...samples].sort((a, b) => a - b), 0.5);
+  percentile(
+    [...samples].sort((a, b) => a - b),
+    0.5,
+  );
 
 const buildBenchIo: Effect.Effect<EditorIoService> = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -259,7 +262,9 @@ test("hold motions publish zero LSP changes; edit still publishes", () =>
         contributions.commit(owner);
         const dispose = _render(
           () => (
-            <RendererContext.Provider value={renderer}>{views.view(props)}</RendererContext.Provider>
+            <RendererContext.Provider value={renderer}>
+              {views.view(props)}
+            </RendererContext.Provider>
           ),
           content,
         );
@@ -353,5 +358,4 @@ test("hold motions publish zero LSP changes; edit still publishes", () =>
         }
       }),
     ).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer))),
-  ),
-);
+  ));

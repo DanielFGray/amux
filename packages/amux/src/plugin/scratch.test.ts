@@ -8,7 +8,13 @@ import { Effect, Scope } from "effect";
 import { createTestRenderer } from "@opentui/core/testing";
 import { createPluginHost, type PluginHost } from "./host.ts";
 import { createReloader, type PluginReloader } from "./reloader.ts";
-import { evalScratch, managedPluginEntryPath, promoteScratch, sendSelectionScratchSource, sendTopBufferToPane } from "./scratch.ts";
+import {
+  evalScratch,
+  managedPluginEntryPath,
+  promoteScratch,
+  sendSelectionScratchSource,
+  sendTopBufferToPane,
+} from "./scratch.ts";
 import { loadPluginsFromConfig } from "./loader.ts";
 import { DEFAULT_CONFIG, loadConfig, type Config } from "../config.ts";
 import { testPluginEnvironment } from "./test-environment.ts";
@@ -77,7 +83,8 @@ const start = (): Effect.Effect<World, string, Scope.Scope> =>
         commands: (_owner, registration) => {
           commands.set(registration.verb, registration);
           return () => {
-            if (commands.get(registration.verb) === registration) commands.delete(registration.verb);
+            if (commands.get(registration.verb) === registration)
+              commands.delete(registration.verb);
           };
         },
       },
@@ -99,7 +106,9 @@ const start = (): Effect.Effect<World, string, Scope.Scope> =>
   });
 
 const evalIn = (world: World, id: string, source: string) =>
-  evalScratch(world.reloader, id, source, world.scratchDir).pipe(Effect.provide(BunFileSystem.layer));
+  evalScratch(world.reloader, id, source, world.scratchDir).pipe(
+    Effect.provide(BunFileSystem.layer),
+  );
 
 testEffect("scratch eval adopts a plugin and registers its command", () =>
   Effect.gen(function* () {
@@ -249,9 +258,9 @@ testEffect("promoteScratch writes managed path + config so a fresh load picks it
       ...environment.registryEntries,
     ]);
     expect(loaded.entries.some((entry) => entry.id === id)).toBe(true);
-    expect(
-      freshHost.status().some((status) => status.id === id && status.phase === "active"),
-    ).toBe(true);
+    expect(freshHost.status().some((status) => status.id === id && status.phase === "active")).toBe(
+      true,
+    );
   }),
 );
 

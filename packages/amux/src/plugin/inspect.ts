@@ -274,7 +274,9 @@ const coreProvenance = (): PluginProvenance => ({
   phase: "active",
 });
 
-const exactlyOne = (query: InspectQuery): { kind: InspectResult["kind"]; name: string } | string => {
+const exactlyOne = (
+  query: InspectQuery,
+): { kind: InspectResult["kind"]; name: string } | string => {
   const entries = (
     [
       ["command", query.command],
@@ -283,7 +285,9 @@ const exactlyOne = (query: InspectQuery): { kind: InspectResult["kind"]; name: s
       ["pane", query.pane],
       ["plugin", query.plugin],
     ] as const
-  ).filter((entry): entry is [InspectResult["kind"], string] => entry[1] !== undefined && entry[1] !== "");
+  ).filter(
+    (entry): entry is [InspectResult["kind"], string] => entry[1] !== undefined && entry[1] !== "",
+  );
   if (entries.length === 0)
     return "plugin.inspect needs one of: command, binding, key, pane, plugin";
   if (entries.length > 1) return "plugin.inspect accepts exactly one subject field";

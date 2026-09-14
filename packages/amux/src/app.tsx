@@ -10,7 +10,18 @@ import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { ValidComponent } from "solid-js";
-import { Context, Duration, Effect, Exit, FiberMap, Layer, Option, Path, Scope, Stream } from "effect";
+import {
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  FiberMap,
+  Layer,
+  Option,
+  Path,
+  Scope,
+  Stream,
+} from "effect";
 import { theme, setTheme } from "./ui/theme.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- path access is part of the plain render-tree boundary.
 import { basename, dirname, join } from "node:path";
@@ -152,7 +163,12 @@ import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { formatText } from "./format.ts";
 import { type PromptRequest } from "./ui/Prompt.tsx";
 import { hintVisibility } from "./ui/Hints.tsx";
-import { settingsFields, keybindTargets, LEADER_TARGET, type SettingsSection } from "./ui/Settings.tsx";
+import {
+  settingsFields,
+  keybindTargets,
+  LEADER_TARGET,
+  type SettingsSection,
+} from "./ui/Settings.tsx";
 import {
   captureFrameRect,
   captureSpan,
@@ -309,9 +325,7 @@ export type Overlay = OverlayKind;
  * is a callback: exiting is a request, and the teardown that follows is the
  * caller's, in one place, on every path including a signal.
  */
-export function createApp(
-  options: AppOptions,
-): Effect.Effect<AppHandle, never, Scope.Scope> {
+export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, Scope.Scope> {
   // The one mutable Options object this workspace's panes, windows and
   // dividers all read at render/event time; see OptionsRuntime in env.ts.
   // Kept in step by the reactive effect below via applyOptions.
@@ -523,55 +537,60 @@ export function createApp(
     // `commands.run`, exactly as a keybinding would.
     runFiber(
       "command-requests",
-      Stream.runForEach(options.session.commandRequests, ({ id, command: raw, source, pane, agent }) => {
-        const tag = (raw as RuntimeCommand)._tag;
-        if (tag === "plugin.reload") {
-          const command = raw as {
-            readonly _tag: "plugin.reload";
-            readonly plugin?: string;
-            readonly disk?: boolean;
-          };
-          if (!reloader)
-            return Effect.sync(() =>
-              options.session.respondCommand(id, undefined, "plugin runtime is still starting"),
+      Stream.runForEach(
+        options.session.commandRequests,
+        ({ id, command: raw, source, pane, agent }) => {
+          const tag = (raw as RuntimeCommand)._tag;
+          if (tag === "plugin.reload") {
+            const command = raw as {
+              readonly _tag: "plugin.reload";
+              readonly plugin?: string;
+              readonly disk?: boolean;
+            };
+            if (!reloader)
+              return Effect.sync(() =>
+                options.session.respondCommand(id, undefined, "plugin runtime is still starting"),
+              );
+            const ids = command.plugin === undefined ? reloader.reloadable() : [command.plugin];
+            return Effect.forEach(ids, (plugin) =>
+              reloader!.reload(plugin, { disk: command.disk }),
+            ).pipe(
+              Effect.map(() => options.session.respondCommand(id, { reloaded: [...ids] })),
+              Effect.catch((error) =>
+                Effect.sync(() => {
+                  const message = errorMessage(error);
+                  app.panel.reportError(message);
+                  options.session.respondCommand(id, undefined, message);
+                }),
+              ),
             );
-          const ids = command.plugin === undefined ? reloader.reloadable() : [command.plugin];
-          return Effect.forEach(ids, (plugin) =>
-            reloader!.reload(plugin, { disk: command.disk }),
-          ).pipe(
-            Effect.map(() => options.session.respondCommand(id, { reloaded: [...ids] })),
-            Effect.catch((error) =>
-              Effect.sync(() => {
-                const message = errorMessage(error);
-                app.panel.reportError(message);
-                options.session.respondCommand(id, undefined, message);
-              }),
-            ),
-          );
-        }
-        // The daemon cannot know a plugin verb's `target` — it holds no
-        // registry of its own — so a request reaching a client is where
-        // "view commands never run remotely" actually gets enforced, using
-        // the same check a core command's CLI invocation already goes through.
-        if (!app.commands.isRemoteCommand(tag))
-          return Effect.sync(() =>
-            options.session.respondCommand(
-              id,
-              undefined,
-              `command '${tag}' is a view command, not remotely invocable`,
-            ),
-          );
-        return app.commands
-          .run(raw as RuntimeCommand, commandInvocation(source, pane, agent))
-          .pipe(
-            Effect.map((result) =>
-              options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined),
-            ),
-            Effect.catch((error) =>
-              Effect.sync(() => options.session.respondCommand(id, undefined, errorMessage(error))),
-            ),
-          );
-      }),
+          }
+          // The daemon cannot know a plugin verb's `target` — it holds no
+          // registry of its own — so a request reaching a client is where
+          // "view commands never run remotely" actually gets enforced, using
+          // the same check a core command's CLI invocation already goes through.
+          if (!app.commands.isRemoteCommand(tag))
+            return Effect.sync(() =>
+              options.session.respondCommand(
+                id,
+                undefined,
+                `command '${tag}' is a view command, not remotely invocable`,
+              ),
+            );
+          return app.commands
+            .run(raw as RuntimeCommand, commandInvocation(source, pane, agent))
+            .pipe(
+              Effect.map((result) =>
+                options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined),
+              ),
+              Effect.catch((error) =>
+                Effect.sync(() =>
+                  options.session.respondCommand(id, undefined, errorMessage(error)),
+                ),
+              ),
+            );
+        },
+      ),
     );
     return { ...app, pluginHost };
   });
@@ -772,9 +791,7 @@ function buildApp(
     // changed, not the workspace.
     projection = projection
       .then(() =>
-        Effect.runPromiseWith(rootRuntime)(
-          projectWorkspace(spaces, model, session.backend()),
-        ),
+        Effect.runPromiseWith(rootRuntime)(projectWorkspace(spaces, model, session.backend())),
       )
       .then(() => {
         projectedRevision = Math.max(projectedRevision, model.revision);
@@ -1213,7 +1230,10 @@ function buildApp(
     if (!space) return;
     const answers = yield* ask("Rename space", [{ label: "Name", value: space.name }]);
     if (!answers) return;
-    yield* commands.run(command("space.rename", { space: space.id, name: answers[0] ?? "" }), keyInvocation());
+    yield* commands.run(
+      command("space.rename", { space: space.id, name: answers[0] ?? "" }),
+      keyInvocation(),
+    );
   });
 
   const promptMovePane = Effect.gen(function* () {
@@ -1393,8 +1413,14 @@ function buildApp(
       const keys = configState().keys;
       const spec = registeredBindings().find((candidate) => candidate.name === command);
       if (!spec) return;
-      const defaults = keysFor(spec, { prefix: DEFAULT_PREFIX, leader: DEFAULT_LEADER, bindings: {} });
-      const token = defaults.some((binding) => binding.startsWith("<leader>")) ? "<leader>" : "<prefix>";
+      const defaults = keysFor(spec, {
+        prefix: DEFAULT_PREFIX,
+        leader: DEFAULT_LEADER,
+        bindings: {},
+      });
+      const token = defaults.some((binding) => binding.startsWith("<leader>"))
+        ? "<leader>"
+        : "<prefix>";
       const next = `${token}${key}`;
       const compiled = bindings.keymap.parseKeySequence(next);
       const display = formatSequence(compiled, bindings.leaders());

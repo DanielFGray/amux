@@ -48,11 +48,7 @@ const clipChunks = (chunks: readonly TextChunk[], width: number): readonly TextC
   return out;
 };
 
-const StyledLine = (props: {
-  line: string;
-  width: number;
-  chunks?: readonly TextChunk[];
-}) => {
+const StyledLine = (props: { line: string; width: number; chunks?: readonly TextChunk[] }) => {
   const line = () =>
     props.line.length > props.width ? props.line.slice(0, props.width) : props.line;
   const chunks = () =>
@@ -161,11 +157,7 @@ export function HoverPopupBox(props: {
 }) {
   const contentWidth = () => hoverContentWidth(props.view.place.width);
   const fitted = createMemo(() =>
-    fitHoverSegments(
-      props.view.text,
-      contentWidth(),
-      hoverContentRows(props.view.place.maxHeight),
-    ),
+    fitHoverSegments(props.view.text, contentWidth(), hoverContentRows(props.view.place.maxHeight)),
   );
   // Explicit height — maxHeight alone paints through the border (InlinePicker).
   const height = () => fitted().rows + 2;
@@ -189,11 +181,7 @@ export function HoverPopupBox(props: {
     >
       <For each={fitted().segments}>
         {(segment) => (
-          <HoverSegmentView
-            segment={segment}
-            width={contentWidth()}
-            highlight={props.highlight}
-          />
+          <HoverSegmentView segment={segment} width={contentWidth()} highlight={props.highlight} />
         )}
       </For>
     </box>

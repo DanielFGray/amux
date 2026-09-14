@@ -10,11 +10,7 @@
  */
 import { Match, Option } from "effect";
 import { Schema as S } from "effect";
-import {
-  cellColumnOf,
-  rowCells,
-  stringIndexAtCell,
-} from "@danielfgray/amux/cell-width.ts";
+import { cellColumnOf, rowCells, stringIndexAtCell } from "@danielfgray/amux/cell-width.ts";
 import type { Cursor } from "./schema.ts";
 
 export const MotionRange = S.Struct({
@@ -157,10 +153,7 @@ function classAt(line: string, col: number, bigword = false): CharClass {
 /** Advance one char; cross the line boundary like neovim `inc_cursor`.
  *  A line's `length` column is the EOL NUL (blank class) — matching vim's
  *  cursor-on-NUL before `adjust_cursor` pulls it back onto the last char. */
-const stepForward = (
-  lines: readonly string[],
-  pos: { row: number; col: number },
-): boolean => {
+const stepForward = (lines: readonly string[], pos: { row: number; col: number }): boolean => {
   const line = lines[pos.row]!;
   // Still on a real character (including the last): step onto the next
   // char or onto the EOL NUL at `line.length`.
@@ -176,10 +169,7 @@ const stepForward = (
 };
 
 /** Retreat one char; cross the line boundary like neovim `dec_cursor`. */
-const stepBack = (
-  lines: readonly string[],
-  pos: { row: number; col: number },
-): boolean => {
+const stepBack = (lines: readonly string[], pos: { row: number; col: number }): boolean => {
   if (pos.col > 0) {
     pos.col -= 1;
     return true;
@@ -197,10 +187,7 @@ const stepBack = (
  * the last character and mark the motion inclusive (so `yw` covers the word).
  * Cite: neovim normal.c `adjust_cursor`.
  */
-export function adjustCursorPastEol(
-  range: MotionRange,
-  lines: readonly string[],
-): MotionRange {
+export function adjustCursorPastEol(range: MotionRange, lines: readonly string[]): MotionRange {
   const line = lines[range.to.row] ?? "";
   if (range.to.col > 0 && range.to.col >= line.length && line.length > 0) {
     return {
@@ -221,8 +208,7 @@ export const wordForward =
   (bigword: boolean): Motion =>
   ({ lines, cursor, eol }) => {
     const pos = { row: cursor.row, col: cursor.col };
-    const klassOf = (r: number, c: number): CharClass =>
-      classAt(lines[r] ?? "", c, bigword);
+    const klassOf = (r: number, c: number): CharClass => classAt(lines[r] ?? "", c, bigword);
 
     const step = (): "ok" | "stop" | "fail" => {
       const before = { row: pos.row, col: pos.col };
@@ -264,8 +250,7 @@ export const wordBackward =
   (bigword: boolean): Motion =>
   ({ lines, cursor }) => {
     const pos = { row: cursor.row, col: cursor.col };
-    const klassOf = (r: number, c: number): CharClass =>
-      classAt(lines[r] ?? "", c, bigword);
+    const klassOf = (r: number, c: number): CharClass => classAt(lines[r] ?? "", c, bigword);
 
     if (!stepBack(lines, pos)) return cursor;
 
@@ -297,8 +282,7 @@ export const wordEnd =
   (bigword: boolean): Motion =>
   ({ lines, cursor }) => {
     const pos = { row: cursor.row, col: cursor.col };
-    const klassOf = (r: number, c: number): CharClass =>
-      classAt(lines[r] ?? "", c, bigword);
+    const klassOf = (r: number, c: number): CharClass => classAt(lines[r] ?? "", c, bigword);
 
     const sclass = klassOf(pos.row, pos.col);
     if (!stepForward(lines, pos)) return cursor;
@@ -334,8 +318,7 @@ export const wordEndBack =
   (bigword: boolean): Motion =>
   ({ lines, cursor }) => {
     const pos = { row: cursor.row, col: cursor.col };
-    const klassOf = (r: number, c: number): CharClass =>
-      classAt(lines[r] ?? "", c, bigword);
+    const klassOf = (r: number, c: number): CharClass => classAt(lines[r] ?? "", c, bigword);
 
     const sclass = klassOf(pos.row, pos.col);
     if (!stepBack(lines, pos)) return cursor;
@@ -516,9 +499,7 @@ export const nextCurswant = (
 ): CurswantUpdate => {
   // Vertical: optionally sync from the cursor first (deferred update), then keep.
   if (motionName !== undefined && CURSWANT_PRESERVE.has(motionName)) {
-    const synced = setCurswant
-      ? cellColumnOf(rowCells(cursorLine), cursorCol)
-      : prev;
+    const synced = setCurswant ? cellColumnOf(rowCells(cursorLine), cursorCol) : prev;
     return { curswant: synced, setCurswant: false };
   }
   if (motionName === "$") return { curswant: MAXCOL, setCurswant: false };
@@ -615,8 +596,7 @@ export const firstLine: Motion = ({ lines }) => firstNonBlankOn(lines, 0);
  * Cite: neovim `nv_goto` → `beginline(BL_SOL | BL_FIX)`.
  */
 export const lastLine: Motion = ({ lines, count }) => {
-  const row =
-    count <= 1 ? lines.length - 1 : Math.min(count - 1, lines.length - 1);
+  const row = count <= 1 ? lines.length - 1 : Math.min(count - 1, lines.length - 1);
   return firstNonBlankOn(lines, row);
 };
 

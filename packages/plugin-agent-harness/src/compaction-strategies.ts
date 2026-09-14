@@ -47,7 +47,7 @@ export const CLAUDE_COMPACTION_INSTRUCTION = [
   "[brief notes on what to preserve vs drop — do not include in the resume surface]",
   "</analysis>",
   "<summary>",
-  "Then fill EVERY section below, in order. Use terse bullets. Write \"(none)\" for an empty section — never drop a section.",
+  'Then fill EVERY section below, in order. Use terse bullets. Write "(none)" for an empty section — never drop a section.',
   "",
   "1. Primary Request and Intent",
   "- [the user's original and evolving goals; quote verbatim where exact wording matters]",
@@ -75,7 +75,7 @@ export const CLAUDE_COMPACTION_INSTRUCTION = [
   "- [precisely what was in progress in the most recent messages — filenames, snippets]",
   "",
   "9. Optional Next Step",
-  "- [single next action aligned with the most recent request, with a verbatim quote from the tail when possible, or \"(none)\"]",
+  '- [single next action aligned with the most recent request, with a verbatim quote from the tail when possible, or "(none)"]',
   "</summary>",
   "",
   "Rules:",
@@ -96,7 +96,7 @@ export const PI_COMPACTION_INSTRUCTION = [
   "",
   "## Constraints & Preferences",
   "- [Any constraints, preferences, or requirements mentioned by user]",
-  "- [Or \"(none)\" if none were mentioned]",
+  '- [Or "(none)" if none were mentioned]',
   "",
   "## Progress",
   "### Done",
@@ -116,7 +116,7 @@ export const PI_COMPACTION_INSTRUCTION = [
   "",
   "## Critical Context",
   "- [Any data, examples, or references needed to continue]",
-  "- [Or \"(none)\" if not applicable]",
+  '- [Or "(none)" if not applicable]',
   "",
   "Keep each section concise. Preserve exact file paths, function names, and error messages.",
   TEXT_ONLY_RULE,
@@ -129,8 +129,8 @@ export const PI_UPDATE_COMPACTION_INSTRUCTION = [
   "Update the existing structured summary with new information. RULES:",
   "- PRESERVE all existing information from the previous summary",
   "- ADD new progress, decisions, and context from the new messages",
-  "- UPDATE the Progress section: move items from \"In Progress\" to \"Done\" when completed",
-  "- UPDATE \"Next Steps\" based on what was accomplished",
+  '- UPDATE the Progress section: move items from "In Progress" to "Done" when completed',
+  '- UPDATE "Next Steps" based on what was accomplished',
   "- PRESERVE exact file paths, function names, and error messages",
   "- If something is no longer relevant, you may remove it",
   "",
@@ -180,10 +180,7 @@ export const CODEX_COMPACTION_INSTRUCTION = [
 ].join("\n");
 
 export const resolveCompactionStrategy = (value: unknown): CompactionStrategy => {
-  if (
-    typeof value === "string" &&
-    (COMPACTION_STRATEGIES as readonly string[]).includes(value)
-  ) {
+  if (typeof value === "string" && (COMPACTION_STRATEGIES as readonly string[]).includes(value)) {
     return value as CompactionStrategy;
   }
   return DEFAULT_COMPACTION_STRATEGY;

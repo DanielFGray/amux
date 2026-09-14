@@ -51,14 +51,10 @@ const run = <A, E>(
 ) => Effect.runPromise(Effect.scoped(provideEnv(effect, e)));
 
 const hangFixture = fileURLToPath(new URL("./hang-fixture.ts", import.meta.url));
-const orphanParentFixture = fileURLToPath(
-  new URL("./orphan-parent-fixture.ts", import.meta.url),
-);
+const orphanParentFixture = fileURLToPath(new URL("./orphan-parent-fixture.ts", import.meta.url));
 
 /** Read `HOST_PID=<n>` from a fixture's stdout before the process exits. */
-const readHostPid = (
-  stdout: ReadableStream<Uint8Array>,
-): Effect.Effect<number, Error> =>
+const readHostPid = (stdout: ReadableStream<Uint8Array>): Effect.Effect<number, Error> =>
   Stream.fromAsyncIterable(stdout, (error) =>
     error instanceof Error ? error : new Error(String(error)),
   ).pipe(
@@ -142,7 +138,10 @@ const open = (
 };
 
 const status = (d: SessionDaemonService, e: NodeJS.ProcessEnv) =>
-  run(controlCall(d.id, (c) => c.Status()), e);
+  run(
+    controlCall(d.id, (c) => c.Status()),
+    e,
+  );
 
 const waitReady = async (d: SessionDaemonService, e: NodeJS.ProcessEnv) => {
   let report = await status(d, e);
@@ -323,64 +322,65 @@ test("Status reports plugin-host restart with stable fields", async () => {
   await Effect.runPromise(daemon.stop);
 }, 30_000);
 
-test("the host exits when its daemon dies without a Stop", () =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const home = tempDir("plugin-host-orphan");
-      const socketPath = join(home, "plugin-host.sock");
-      const parent = Bun.spawn([process.execPath, orphanParentFixture], {
-        env: {
-          ...process.env,
-          AMUX_PLUGIN_HOST_SOCKET: socketPath,
-        },
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+test(
+  "the host exits when its daemon dies without a Stop",
+  () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const home = tempDir("plugin-host-orphan");
+        const socketPath = join(home, "plugin-host.sock");
+        const parent = Bun.spawn([process.execPath, orphanParentFixture], {
+          env: {
+            ...process.env,
+            AMUX_PLUGIN_HOST_SOCKET: socketPath,
+          },
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        });
 
-      const hostPid = yield* readHostPid(parent.stdout).pipe(
-        Effect.timeout(Duration.millis(15_000)),
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            const stderr = yield* Effect.promise(() => new Response(parent.stderr).text());
-            parent.kill("SIGKILL");
-            yield* Effect.promise(() => parent.exited);
-            return yield* Effect.fail(
-              new Error(`${error instanceof Error ? error.message : String(error)}; stderr=${stderr}`),
-            );
-          }),
-        ),
-      );
+        const hostPid = yield* readHostPid(parent.stdout).pipe(
+          Effect.timeout(Duration.millis(15_000)),
+          Effect.catch((error) =>
+            Effect.gen(function* () {
+              const stderr = yield* Effect.promise(() => new Response(parent.stderr).text());
+              parent.kill("SIGKILL");
+              yield* Effect.promise(() => parent.exited);
+              return yield* Effect.fail(
+                new Error(
+                  `${error instanceof Error ? error.message : String(error)}; stderr=${stderr}`,
+                ),
+              );
+            }),
+          ),
+        );
 
-      yield* Effect.sync(() => {
-        expect(hostPid).toBeGreaterThan(0);
-      });
-      expect(yield* processAlive(hostPid)).toBe(true);
+        yield* Effect.sync(() => {
+          expect(hostPid).toBeGreaterThan(0);
+        });
+        expect(yield* processAlive(hostPid)).toBe(true);
 
-      yield* Effect.sync(() => {
-        process.kill(parent.pid, "SIGKILL");
-      });
-      yield* Effect.promise(() => parent.exited);
+        yield* Effect.sync(() => {
+          process.kill(parent.pid, "SIGKILL");
+        });
+        yield* Effect.promise(() => parent.exited);
 
-      yield* processAlive(hostPid).pipe(
-        Effect.filterOrFail(
-          (alive) => !alive,
-          () => new Error("plugin-host still alive after daemon SIGKILL"),
-        ),
-        Effect.retry(
-          Schedule.spaced("50 millis").pipe(Schedule.upTo({ duration: "5 seconds" })),
-        ),
-      );
+        yield* processAlive(hostPid).pipe(
+          Effect.filterOrFail(
+            (alive) => !alive,
+            () => new Error("plugin-host still alive after daemon SIGKILL"),
+          ),
+          Effect.retry(Schedule.spaced("50 millis").pipe(Schedule.upTo({ duration: "5 seconds" }))),
+        );
 
-      yield* Effect.promise(() => Bun.file(socketPath).exists()).pipe(
-        Effect.filterOrFail(
-          (exists) => !exists,
-          () => new Error("plugin-host socket still present after daemon SIGKILL"),
-        ),
-        Effect.retry(
-          Schedule.spaced("50 millis").pipe(Schedule.upTo({ duration: "5 seconds" })),
-        ),
-      );
-    }),
-  ),
-  30_000);
+        yield* Effect.promise(() => Bun.file(socketPath).exists()).pipe(
+          Effect.filterOrFail(
+            (exists) => !exists,
+            () => new Error("plugin-host socket still present after daemon SIGKILL"),
+          ),
+          Effect.retry(Schedule.spaced("50 millis").pipe(Schedule.upTo({ duration: "5 seconds" }))),
+        );
+      }),
+    ),
+  30_000,
+);

@@ -137,10 +137,7 @@ export const hasOpenToolCalls = (prompt: Prompt.Prompt): boolean => {
   return open.size > 0;
 };
 
-export const shouldAutoCompact = (
-  tokens: number,
-  policy: CompactionPolicy,
-): boolean => {
+export const shouldAutoCompact = (tokens: number, policy: CompactionPolicy): boolean => {
   if (!policy.auto) return false;
   if (policy.contextLimit === undefined || policy.contextLimit <= 0) return false;
   const threshold = Math.floor((policy.contextLimit * policy.atPercent) / 100);
@@ -253,7 +250,9 @@ export const rebuildAfterCompaction = (
   Prompt.make([
     ...system,
     Prompt.makeMessage("user", {
-      content: [Prompt.makePart("text", { text: frameSummary(summaryText, extraInstructions, strategy) })],
+      content: [
+        Prompt.makePart("text", { text: frameSummary(summaryText, extraInstructions, strategy) }),
+      ],
     }),
     ...keep,
   ]);
@@ -289,29 +288,18 @@ export const compactChatHistory = (options: {
     }
 
     const strategy = options.policy.strategy;
-    const request = buildSummarizationPrompt(
-      system,
-      toSummarize,
-      options.instructions,
-      strategy,
-    );
+    const request = buildSummarizationPrompt(system, toSummarize, options.instructions, strategy);
     const response = yield* LanguageModel.generateText({
       prompt: request,
       toolChoice: "none",
-    }).pipe(Effect.orElseSucceed(() => ({ text: "" } as { readonly text: string })));
+    }).pipe(Effect.orElseSucceed(() => ({ text: "" }) as { readonly text: string }));
 
     const summary = response.text?.trim() ?? "";
     if (summary === "") {
       return { _tag: "refused", reason: "empty-summary" } as const;
     }
 
-    const next = rebuildAfterCompaction(
-      system,
-      summary,
-      keep,
-      options.instructions,
-      strategy,
-    );
+    const next = rebuildAfterCompaction(system, summary, keep, options.instructions, strategy);
     yield* Ref.set(options.history, next);
     return {
       _tag: "compacted",

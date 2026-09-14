@@ -102,9 +102,7 @@ export function createConstraintTable(): ConstraintTable {
     register(source) {
       const taken = byRank.get(source.rank);
       if (taken !== undefined) {
-        throw new Error(
-          `constraint rank '${source.rank}' is already registered by '${taken.id}'`,
-        );
+        throw new Error(`constraint rank '${source.rank}' is already registered by '${taken.id}'`);
       }
       byRank.set(source.rank, source);
       return () => {
@@ -114,9 +112,7 @@ export function createConstraintTable(): ConstraintTable {
     decide(action, resource) {
       const ranked = CONSTRAINT_RANKS.flatMap((rank) => {
         const source = byRank.get(rank);
-        return source === undefined
-          ? []
-          : [{ rank, rules: source.rules() }];
+        return source === undefined ? [] : [{ rank, rules: source.rules() }];
       });
       return combineConstraintRules(ranked, action, resource);
     },

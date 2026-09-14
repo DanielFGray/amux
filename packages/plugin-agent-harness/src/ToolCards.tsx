@@ -7,23 +7,10 @@
  * tool-specific (bash preview, mutation diffs, headline-only reads). Raw
  * `transcriptLine` is unchanged.
  */
-import {
-  For,
-  Match,
-  Show,
-  Switch,
-  createMemo,
-  type Accessor,
-  type JSX,
-} from "solid-js";
+import { For, Match, Show, Switch, createMemo, type Accessor, type JSX } from "solid-js";
 import { ApprovalPrompt, theme } from "@danielfgray/amux";
 import type { PermissionDecision } from "@danielfgray/amux/permission.ts";
-import {
-  permissionSummary,
-  toolOutput,
-  toolSummary,
-  type TranscriptBlock,
-} from "./transcript.ts";
+import { permissionSummary, toolOutput, toolSummary, type TranscriptBlock } from "./transcript.ts";
 import { DiffBlock } from "./DiffBlock.tsx";
 import { splitUnifiedDiffs } from "./diff-view.ts";
 
@@ -161,11 +148,7 @@ function ToolCardFrame(
         {headline()}
       </text>
       {props.body}
-      <Show
-        when={
-          props.permission !== undefined && props.permission.decision === undefined
-        }
-      >
+      <Show when={props.permission !== undefined && props.permission.decision === undefined}>
         <HarnessApprovalPrompt
           request={props.permission!}
           width={props.width}

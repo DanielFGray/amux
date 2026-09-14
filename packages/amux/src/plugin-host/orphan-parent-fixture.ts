@@ -7,11 +7,7 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Config, Effect, Option, Ref, SubscriptionRef } from "effect";
 import type { PluginHostStatus } from "./rpc.ts";
-import {
-  awaitPluginHostClient,
-  supervisePluginHost,
-  type PluginHostClient,
-} from "./supervisor.ts";
+import { awaitPluginHostClient, supervisePluginHost, type PluginHostClient } from "./supervisor.ts";
 
 const program = Effect.gen(function* () {
   const socketPath = yield* Config.string("AMUX_PLUGIN_HOST_SOCKET");

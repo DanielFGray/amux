@@ -1,10 +1,8 @@
 import { expect, test } from "bun:test";
 import { LIB, LIB_DIR } from "./ghostty-library.ts";
 
-const expectedLibDir = new URL(
-  "../../../vendor/libghostty-vt/zig-out/lib",
-  import.meta.url,
-).pathname;
+const expectedLibDir = new URL("../../../vendor/libghostty-vt/zig-out/lib", import.meta.url)
+  .pathname;
 
 function envWithoutGhostty(overrides: { GHOSTTY_VT_LIB_DIR?: string } = {}) {
   const { GHOSTTY_VT_LIB_DIR: _dir, GHOSTTY_VT_LIB: _lib, ...rest } = process.env;

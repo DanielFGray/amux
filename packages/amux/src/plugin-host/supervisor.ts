@@ -29,11 +29,7 @@ import {
 } from "effect";
 import { errorMessage } from "../error-message.ts";
 import { formatStderrTail, makeStderrTail } from "../stderr-tail.ts";
-import {
-  PluginHostRpcs,
-  PluginHostSerialization,
-  type PluginHostStatus,
-} from "./rpc.ts";
+import { PluginHostRpcs, PluginHostSerialization, type PluginHostStatus } from "./rpc.ts";
 
 /** How often the daemon asks the host whether it is still answering. */
 export const PLUGIN_HOST_PING_INTERVAL_MS = 1_000;
@@ -74,8 +70,7 @@ class PluginHostConnectError extends S.TaggedError<PluginHostConnectError>()(
   { message: S.String },
 ) {}
 
-const notReadyError = () =>
-  new PluginHostConnectError({ message: "plugin-host client not ready" });
+const notReadyError = () => new PluginHostConnectError({ message: "plugin-host client not ready" });
 
 const defaultArgv = (): readonly string[] => {
   const cli = fileURLToPath(new URL("../cli.ts", import.meta.url));
@@ -335,9 +330,7 @@ const runGeneration = (
         yield* Effect.forkIn(
           Effect.forever(
             Effect.sleep(Duration.millis(pingIntervalMs)).pipe(
-              Effect.andThen(
-                client.Ping().pipe(Effect.timeout(Duration.millis(pingTimeoutMs))),
-              ),
+              Effect.andThen(client.Ping().pipe(Effect.timeout(Duration.millis(pingTimeoutMs)))),
             ),
           ).pipe(
             Effect.catch((error) =>
@@ -370,10 +363,9 @@ const runGeneration = (
         yield* Option.match(client, {
           onNone: () => Effect.void,
           onSome: (live) =>
-            live.Stop().pipe(
-              Effect.timeoutOption(Duration.millis(STOP_RPC_TIMEOUT_MS)),
-              Effect.ignore,
-            ),
+            live
+              .Stop()
+              .pipe(Effect.timeoutOption(Duration.millis(STOP_RPC_TIMEOUT_MS)), Effect.ignore),
         });
         child.kill("SIGTERM");
         const afterTerm = yield* waitExited(child, EXIT_WAIT_MS);

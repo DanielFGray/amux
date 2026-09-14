@@ -2,11 +2,7 @@ import { Effect } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { processPluginLaunchEnv, type ProcessPluginInvocationContext } from "./env.ts";
-import {
-  getProcessPlugin,
-  type LinkedProcessPlugin,
-  type ProcessPluginRoots,
-} from "./registry.ts";
+import { getProcessPlugin, type LinkedProcessPlugin, type ProcessPluginRoots } from "./registry.ts";
 import type { ProcessPluginPlacement } from "./manifest.ts";
 
 type Fs = FileSystem.FileSystem | Path.Path;

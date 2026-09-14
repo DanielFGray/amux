@@ -101,13 +101,7 @@ const GROUPS: HelpGroup[] = [
  * keymap: both prefixes are edited in the same place as the bindings.
  */
 test("the editor enumerates the prefixes and every rebindable command", () => {
-  expect(keybindTargets(GROUPS)).toEqual([
-    null,
-    "$leader",
-    "pane.zoom",
-    "pane.close",
-    "app.quit",
-  ]);
+  expect(keybindTargets(GROUPS)).toEqual([null, "$leader", "pane.zoom", "pane.close", "app.quit"]);
 });
 
 test("the editor hides unbound actions from the keybind list", () => {

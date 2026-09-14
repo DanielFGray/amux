@@ -75,9 +75,11 @@ export const registerSessionPicker: Effect.Effect<
     }
     if (entry.kind === "exited") {
       report(
-        panel.run(command("session.restart", { target: entry.value })).pipe(
-          Effect.andThen(() => panel.run(command("session.reveal", { target: entry.value }))),
-        ),
+        panel
+          .run(command("session.restart", { target: entry.value }))
+          .pipe(
+            Effect.andThen(() => panel.run(command("session.reveal", { target: entry.value }))),
+          ),
       );
       return;
     }
@@ -218,14 +220,17 @@ export function sessionEntries(
   return [...byId.values()].sort((a, b) => {
     // Newest conversations first; unknown dates sink below dated rows.
     if (a.updated !== b.updated) return b.updated - a.updated;
-    const rank = (kind: SessionPickerKind) =>
-      kind === "live" ? 0 : kind === "exited" ? 1 : 2;
+    const rank = (kind: SessionPickerKind) => (kind === "live" ? 0 : kind === "exited" ? 1 : 2);
     return rank(a.kind) - rank(b.kind) || a.label.localeCompare(b.label);
   });
 }
 
 export function filterEntries(view: SessionPickerView, query: string): SessionPickerView {
-  return filterPickerEntries(view, query, (entry) => `${entry.label} ${entry.detail} ${entry.value}`);
+  return filterPickerEntries(
+    view,
+    query,
+    (entry) => `${entry.label} ${entry.detail} ${entry.value}`,
+  );
 }
 
 const sessionPickerView = (view: SessionPickerView) => ({

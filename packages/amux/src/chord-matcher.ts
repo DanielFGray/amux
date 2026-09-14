@@ -97,16 +97,10 @@ export interface ChordMatcher {
 const strokesEqual = (a: readonly ChordStroke[], b: readonly ChordStroke[]): boolean =>
   a.length === b.length && a.every((stroke, i) => stroke === b[i]);
 
-const isStrictPrefix = (
-  prefix: readonly ChordStroke[],
-  full: readonly ChordStroke[],
-): boolean =>
+const isStrictPrefix = (prefix: readonly ChordStroke[], full: readonly ChordStroke[]): boolean =>
   prefix.length < full.length && prefix.every((stroke, i) => stroke === full[i]);
 
-const startsWith = (
-  prefix: readonly ChordStroke[],
-  full: readonly ChordStroke[],
-): boolean =>
+const startsWith = (prefix: readonly ChordStroke[], full: readonly ChordStroke[]): boolean =>
   prefix.length <= full.length && prefix.every((stroke, i) => stroke === full[i]);
 
 /** Neovim default `'timeoutlen'` — room for which-key delay beneath the wait. */
@@ -117,8 +111,9 @@ export const DEFAULT_CHORD_TIMEOUTLEN_MS = 1000;
 
 export function createChordMatcher(opts: ChordMatcherOpts = {}): ChordMatcher {
   const runFork: ChordFork = opts.runFork ?? Effect.runFork;
-  let timeoutlen = Option.getOrElse(Duration.fromInput(opts.timeoutlen ?? DEFAULT_CHORD_TIMEOUTLEN), () =>
-    DEFAULT_CHORD_TIMEOUTLEN,
+  let timeoutlen = Option.getOrElse(
+    Duration.fromInput(opts.timeoutlen ?? DEFAULT_CHORD_TIMEOUTLEN),
+    () => DEFAULT_CHORD_TIMEOUTLEN,
   );
   let onAmbiguousTimeout = opts.onAmbiguousTimeout ?? null;
   const bindings = new Map<string, ChordBinding>();
@@ -278,11 +273,7 @@ export function createChordMatcher(opts: ChordMatcherOpts = {}): ChordMatcher {
 
       // Unbound key inside a minimode: stay in the mode (hydra), do not
       // map-fail into a bare key that would reach the PTY / editor.
-      if (
-        activeMode !== null &&
-        pending.length > 0 &&
-        startsWith(activeMode.strokes, pending)
-      ) {
+      if (activeMode !== null && pending.length > 0 && startsWith(activeMode.strokes, pending)) {
         pending = activeMode.strokes.slice();
         notify();
         armTimeout(pending);

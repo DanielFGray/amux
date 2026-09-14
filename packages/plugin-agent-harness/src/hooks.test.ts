@@ -3,8 +3,7 @@ import { Effect, Scope } from "effect";
 import { makeHarnessHooks } from "./hooks.ts";
 import { appendEntry, checkout, emptySessionTree, forkAt, pathToLeaf } from "./session-tree.ts";
 
-const withScope = <A, E>(effect: Effect.Effect<A, E, Scope.Scope>) =>
-  Effect.scoped(effect);
+const withScope = <A, E>(effect: Effect.Effect<A, E, Scope.Scope>) => Effect.scoped(effect);
 
 // @effect-diagnostics-next-line asyncFunction:off -- bun:test callback; body uses Effect.runPromise.
 test("tool_call handlers: first block wins", async () => {

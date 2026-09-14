@@ -95,9 +95,8 @@ type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.
  * Present string/number args that name what the verb touches. Absent optionals
  * are omitted — never invent the focused pane, active space, or similar.
  */
-const resourcesOf = (
-  ...values: ReadonlyArray<string | number | undefined>
-): readonly string[] => values.flatMap((value) => (value === undefined ? [] : [String(value)]));
+const resourcesOf = (...values: ReadonlyArray<string | number | undefined>): readonly string[] =>
+  values.flatMap((value) => (value === undefined ? [] : [String(value)]));
 
 /** A command whose decoded args name nothing a rule can scope. */
 const noResources = (): readonly string[] => [];
@@ -645,10 +644,8 @@ const BufferChoose = define(
 );
 
 // Windows.
-const windowTargetResources = (args: {
-  space?: string;
-  window?: number;
-}): readonly string[] => resourcesOf(args.space, args.window);
+const windowTargetResources = (args: { space?: string; window?: number }): readonly string[] =>
+  resourcesOf(args.space, args.window);
 
 const WindowNew = define(
   "window.new",
@@ -1475,9 +1472,7 @@ interface CommandEntry {
   readonly meta: CommandMeta;
   readonly schema: S.Codec<any>;
   readonly resources: (args: any) => readonly string[];
-  readonly handler: (
-    args: any,
-  ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>;
+  readonly handler: (args: any) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>;
 }
 
 export interface Commands {
@@ -1493,10 +1488,7 @@ export interface Commands {
       command: Command,
       invocation: CommandInvocation,
     ): Effect.Effect<AnyCommandResult, CommandError>;
-    (
-      command: RuntimeCommand,
-      invocation: CommandInvocation,
-    ): Effect.Effect<unknown, CommandError>;
+    (command: RuntimeCommand, invocation: CommandInvocation): Effect.Effect<unknown, CommandError>;
   };
   /**
    * Provide {@link Realm} (and {@link CurrentInvocation}) for a key-dispatched
@@ -1606,9 +1598,7 @@ export const makeCommands = (
     fields: S.Struct.Fields,
     meta: Meta,
     resources: (args: any) => readonly string[],
-    handler: (
-      args: any,
-    ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
+    handler: (args: any) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
   ): (() => void) => {
     if (metaFor(tag)) throw new Error(`command already registered: ${tag}`);
     const schema = S.TaggedStruct(tag, fields).annotate({

@@ -104,14 +104,12 @@ export const registerFileUi: Effect.Effect<
     Effect.runForkWith(runtime)(
       search.searchFiles(query, { pageSize: 80 }).pipe(
         Effect.map((result) =>
-          result.items.map(
-            (item): CompletionItem => ({
-              id: item.relativePath,
-              label: item.relativePath,
-              detail: item.gitStatus,
-              replacement: item.relativePath,
-            }),
-          ),
+          result.items.map((item): CompletionItem => ({
+            id: item.relativePath,
+            label: item.relativePath,
+            detail: item.gitStatus,
+            replacement: item.relativePath,
+          })),
         ),
         Effect.catch(() => Effect.succeed([] as readonly CompletionItem[])),
         Effect.tap((items) =>

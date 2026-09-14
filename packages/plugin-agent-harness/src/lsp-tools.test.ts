@@ -111,11 +111,10 @@ it.live("lsp tools appear when AgentLsp is provided", () =>
   withDocs(
     Effect.gen(function* () {
       const lsp = yield* makeAgentLsp();
-      const toolkit = yield* withGate(allowAll(), agentToolkit(
-        process.cwd(),
-        { session: "agent-1", store: noInstructions() },
-        { lsp },
-      ));
+      const toolkit = yield* withGate(
+        allowAll(),
+        agentToolkit(process.cwd(), { session: "agent-1", store: noInstructions() }, { lsp }),
+      );
       expect(Object.keys(toolkit.tools).sort()).toEqual(
         [
           "apply_patch",
@@ -152,11 +151,10 @@ it.live("lsp_hover is permission-gated and returns hover text", () =>
         resolve: () => Effect.void,
       };
       const lsp = yield* makeAgentLsp();
-      const toolkit = yield* withGate(gate, agentToolkit(
-        workspace,
-        { session: "agent-1", store: noInstructions() },
-        { lsp },
-      ));
+      const toolkit = yield* withGate(
+        gate,
+        agentToolkit(workspace, { session: "agent-1", store: noInstructions() }, { lsp }),
+      );
       const output = yield* runHandle(
         toolkit.handle("lsp_hover", {
           path: "main.ts",

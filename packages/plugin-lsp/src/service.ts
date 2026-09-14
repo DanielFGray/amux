@@ -447,9 +447,9 @@ const makeClient = (transport: LspTransport, uri: string): LspDocumentClient => 
           context: { diagnostics: context?.diagnostics ?? [] },
         } as JsonValue,
         (value) =>
-          nullableResponse((input) =>
-            S.decodeUnknownOption(S.Array(CodeActionItemSchema))(input),
-          )(value),
+          nullableResponse((input) => S.decodeUnknownOption(S.Array(CodeActionItemSchema))(input))(
+            value,
+          ),
       ).pipe(Effect.map((value) => Option.getOrElse(value, () => []))),
     resolveCodeAction: (action) =>
       optional("codeAction/resolve", action as unknown as JsonValue, (value) =>

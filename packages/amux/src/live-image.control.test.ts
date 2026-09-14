@@ -16,14 +16,7 @@ import { join } from "node:path";
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { BunFileSystem } from "@effect/platform-bun";
-import {
-  ConfigProvider,
-  Effect,
-  Exit,
-  Layer,
-  Path,
-  Scope,
-} from "effect";
+import { ConfigProvider, Effect, Exit, Layer, Path, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { createApp } from "./app.tsx";
 import { SessionClient, type SessionClientContract } from "./client.ts";
@@ -55,8 +48,7 @@ afterEach(async () => {
   for (const scope of scopes.splice(0))
     await Effect.runPromise(Scope.close(scope, Exit.void).pipe(Effect.ignore));
   for (const renderer of renderers.splice(0)) renderer.destroy();
-  for (const daemon of daemons.splice(0))
-    await Effect.runPromise(daemon.stop.pipe(Effect.ignore));
+  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop.pipe(Effect.ignore));
 });
 
 const run = <A, E>(
@@ -113,11 +105,7 @@ const socketContext = {
   source: "socket" as const,
 };
 
-const batch = (
-  id: string,
-  env: NodeJS.ProcessEnv,
-  value: ReturnType<typeof command>,
-) =>
+const batch = (id: string, env: NodeJS.ProcessEnv, value: ReturnType<typeof command>) =>
   ctl(id, env, (c) => c.Batch({ values: [value], context: socketContext })).then(
     (result) => result.outputs[0]!,
   );
@@ -160,7 +148,10 @@ const attachClient = (id: string, env: NodeJS.ProcessEnv) =>
     const scope = yield* Scope.make();
     scopes.push(scope);
     const client = yield* provideEnv(
-      Scope.provide(SessionClient.connect(id, { client: "live-image-ui", autostart: false }), scope),
+      Scope.provide(
+        SessionClient.connect(id, { client: "live-image-ui", autostart: false }),
+        scope,
+      ),
       env,
     );
     clients.push(client);
@@ -236,7 +227,9 @@ testEffect(
       const sessionId = "live-image-demo";
       const pluginId = `live.e2e.${Date.now()}`;
       const bindingName = `${DEMO_CONTEXT}.ping`;
-      const { daemon, env, configDir, configPath } = yield* Effect.promise(() => started(sessionId));
+      const { daemon, env, configDir, configPath } = yield* Effect.promise(() =>
+        started(sessionId),
+      );
       const client = yield* attachClient(daemon.id, env);
 
       // --- live client answers runOnClient ---
@@ -260,9 +253,9 @@ testEffect(
         ),
       );
       expect(describeKey._tag).toBe("Failure");
-      expect(
-        describeKey._tag === "Failure" ? errorMessage(describeKey.failure) : "",
-      ).toContain("view command");
+      expect(describeKey._tag === "Failure" ? errorMessage(describeKey.failure) : "").toContain(
+        "view command",
+      );
 
       const source = demoSource(pluginId);
       const evaluated = yield* Effect.promise(() =>

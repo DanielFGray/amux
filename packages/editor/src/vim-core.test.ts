@@ -101,11 +101,10 @@ test("hjkl move the cursor and clamp at the edges", () => {
 
 test("j/k preserve the preferred column across shorter lines", () => {
   // neovim curswant: col 5 → short line clamps → long line restores
-  const start = seedBuffer(
-    initialEditor(),
-    bufferFromLines(["abcdefghij", "ab", "abcdefghij"]),
-    { row: 0, col: 5 },
-  );
+  const start = seedBuffer(initialEditor(), bufferFromLines(["abcdefghij", "ab", "abcdefghij"]), {
+    row: 0,
+    col: 5,
+  });
   const mid = typeKeys(start, ["j"]);
   expect(mid.cursor).toEqual({ row: 1, col: 1 });
   const back = typeKeys(mid, ["j"]);
@@ -113,11 +112,10 @@ test("j/k preserve the preferred column across shorter lines", () => {
 });
 
 test("$ then j/k sticks to the end of each line", () => {
-  const start = seedBuffer(
-    initialEditor(),
-    bufferFromLines(["abcdefghij", "ab", "abcdefghij"]),
-    { row: 0, col: 0 },
-  );
+  const start = seedBuffer(initialEditor(), bufferFromLines(["abcdefghij", "ab", "abcdefghij"]), {
+    row: 0,
+    col: 0,
+  });
   const atEnd = typeKeys(start, ["$"]);
   expect(atEnd.cursor.col).toBe(9);
   expect(atEnd.curswant).toBeGreaterThan(atEnd.cursor.col);
@@ -130,11 +128,10 @@ test("$ then j/k sticks to the end of each line", () => {
 test("j/k preserve display-cell curswant across wide characters", () => {
   // "你好abc" cells: 你@0-1 好@2-3 a@4 b@5 c@6. Cursor on 'a' (string 2, cell 4).
   // Short line "xy" has cells 0,1 — clamp to 'y'. Long line restores cell 4 → 'a'.
-  const start = seedBuffer(
-    initialEditor(),
-    bufferFromLines(["你好abc", "xy", "你好abc"]),
-    { row: 0, col: 2 },
-  );
+  const start = seedBuffer(initialEditor(), bufferFromLines(["你好abc", "xy", "你好abc"]), {
+    row: 0,
+    col: 2,
+  });
   const mid = typeKeys(start, ["j"]);
   expect(mid.cursor).toEqual({ row: 1, col: 1 });
   const back = typeKeys(mid, ["j"]);
@@ -1853,9 +1850,7 @@ test("readline Ctrl-a/e/k work in vim insert; CUA uses Home + Ctrl-e/k", () => {
 });
 
 test("CUA Delete removes forward; Ctrl-z undoes", () => {
-  const start = withCua(
-    seedBuffer(initialEditor(), bufferFromLines(["abcd"]), { row: 0, col: 1 }),
-  );
+  const start = withCua(seedBuffer(initialEditor(), bufferFromLines(["abcd"]), { row: 0, col: 1 }));
   const deleted = typeKeys(start, ["delete"]);
   expect(text(deleted)).toBe("acd");
   const undone = typeKeys(deleted, [key("z", { ctrl: true })]);
@@ -1863,10 +1858,11 @@ test("CUA Delete removes forward; Ctrl-z undoes", () => {
 });
 
 test("CUA loaded file opens in insert mode", () => {
-  const loaded = reduceEditor(
-    withCua(initialEditor()),
-    { _tag: "loaded", file: "/tmp/x", lines: ["hi"] },
-  );
+  const loaded = reduceEditor(withCua(initialEditor()), {
+    _tag: "loaded",
+    file: "/tmp/x",
+    lines: ["hi"],
+  });
   expect(loaded.mode).toBe("insert");
   expect(text(loaded)).toBe("hi");
 });
@@ -1962,7 +1958,9 @@ test("beginSurround waits for a delimiter then wraps", () => {
 });
 
 test("beginSearch under CUA opens / and returns to insert", () => {
-  const start = withCua(seedBuffer(initialEditor(), bufferFromLines(["alpha", "beta"]), { row: 0, col: 0 }));
+  const start = withCua(
+    seedBuffer(initialEditor(), bufferFromLines(["alpha", "beta"]), { row: 0, col: 0 }),
+  );
   const searching = beginSearch(start, "forward");
   expect(searching.mode).toBe("search");
   const done = typeKeys(searching, ["b", "e", "t", "a", "return"]);
@@ -1972,7 +1970,9 @@ test("beginSearch under CUA opens / and returns to insert", () => {
 });
 
 test("beginSubstitute under CUA prefills :%s/ and runs :s", () => {
-  const start = withCua(seedBuffer(initialEditor(), bufferFromLines(["foo bar foo"]), { row: 0, col: 0 }));
+  const start = withCua(
+    seedBuffer(initialEditor(), bufferFromLines(["foo bar foo"]), { row: 0, col: 0 }),
+  );
   const cmd = beginSubstitute(start);
   expect(cmd.mode).toBe("command");
   expect(cmd.command).toBe("%s/");
@@ -2068,9 +2068,7 @@ test("nomodifiable still allows motions, search, visual, and yank", () => {
 });
 
 test("nomodifiable refuses visual delete but allows visual yank", () => {
-  const start = nomod(
-    seedBuffer(initialEditor(), bufferFromLines(["abcdef"]), { row: 0, col: 0 }),
-  );
+  const start = nomod(seedBuffer(initialEditor(), bufferFromLines(["abcdef"]), { row: 0, col: 0 }));
   const deleted = typeKeys(start, ["v", "l", "l", "d"]);
   expect(text(deleted)).toBe("abcdef");
   expect(deleted.message).toBe("E21: Cannot make changes, 'modifiable' is off");

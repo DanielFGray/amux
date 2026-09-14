@@ -14,7 +14,13 @@ import {
   type OptionSpec,
   type OptionValue,
 } from "../options.ts";
-import { formatKey, DEFAULT_LEADER, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts";
+import {
+  formatKey,
+  DEFAULT_LEADER,
+  type Conflict,
+  type HelpEntry,
+  type HelpGroup,
+} from "../bindings.ts";
 import type { PluginSettingsSection } from "../plugin/types.ts";
 import type { Contribution } from "../plugin/contributions.ts";
 

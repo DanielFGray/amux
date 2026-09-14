@@ -125,9 +125,7 @@ describe("hoverLines", () => {
 
 describe("splitHoverSegments", () => {
   test("splits fenced typescript from prose", () => {
-    expect(
-      splitHoverSegments("See docs\n```typescript\nfunction f(): void\n```\nmore"),
-    ).toEqual([
+    expect(splitHoverSegments("See docs\n```typescript\nfunction f(): void\n```\nmore")).toEqual([
       { kind: "text", text: "See docs" },
       { kind: "code", language: "typescript", code: "function f(): void" },
       { kind: "text", text: "more" },

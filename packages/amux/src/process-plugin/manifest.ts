@@ -29,18 +29,22 @@ const Argv = S.Array(NonEmpty).pipe(S.check(S.isMinLength(1)));
 
 /** Plugin ids: letters, digits, dot, colon, underscore, hyphen (herdr's set). */
 const PluginId = NonEmpty.pipe(
-  S.check(S.makeFilter((value) => /^[A-Za-z0-9.:_-]+$/.test(value), {
-    description: "plugin id",
-    message: "must match [A-Za-z0-9.:_-]+",
-  })),
+  S.check(
+    S.makeFilter((value) => /^[A-Za-z0-9.:_-]+$/.test(value), {
+      description: "plugin id",
+      message: "must match [A-Za-z0-9.:_-]+",
+    }),
+  ),
 );
 
 /** Entrypoint ids: no dots — herdr qualifies as `plugin.id.action`. */
 const EntrypointId = NonEmpty.pipe(
-  S.check(S.makeFilter((value) => /^[A-Za-z0-9:_-]+$/.test(value), {
-    description: "entrypoint id",
-    message: "must match [A-Za-z0-9:_-]+",
-  })),
+  S.check(
+    S.makeFilter((value) => /^[A-Za-z0-9:_-]+$/.test(value), {
+      description: "entrypoint id",
+      message: "must match [A-Za-z0-9:_-]+",
+    }),
+  ),
 );
 
 export const ProcessPluginActionSchema = S.Struct({

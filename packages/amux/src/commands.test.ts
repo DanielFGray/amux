@@ -356,9 +356,9 @@ test("built-in commands declare resources from decoded args", () => {
   expect(commands.resourcesFor(command("pane.zoom"))).toEqual([]);
   expect(commands.resourcesFor(command("pane.zoom", { pane: "editor-1" }))).toEqual(["editor-1"]);
   expect(commands.resourcesFor(command("window.select", { number: 3 }))).toEqual(["3"]);
-  expect(commands.resourcesFor(command("config.set", { name: "sidebar.open", value: true }))).toEqual(
-    ["sidebar.open"],
-  );
+  expect(
+    commands.resourcesFor(command("config.set", { name: "sidebar.open", value: true })),
+  ).toEqual(["sidebar.open"]);
   // Every core verb has a declaration — typecheck already requires it; this
   // proves the runtime table retained each one.
   for (const def of COMMAND_DEFS) {
@@ -388,14 +388,12 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
 
   expect(commands.list().map((m) => m.name)).toContain("plugin.agent-awareness.focus");
   expect(
-    Effect.runSync(
-      commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" }, inv),
-    ),
+    Effect.runSync(commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" }, inv)),
   ).toBe("focused");
   expect(seen).toEqual([{ _tag: "plugin.agent-awareness.focus", target: "pane-1" }]);
-  expect(commands.resourcesFor({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })).toEqual([
-    "pane-1",
-  ]);
+  expect(commands.resourcesFor({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })).toEqual(
+    ["pane-1"],
+  );
   expect(commands.resourcesFor({ _tag: "plugin.nobody.nothing" })).toBeUndefined();
 
   // Arguments are validated against the registered schema, not trusted as-is.
@@ -444,8 +442,12 @@ test("runtime core arguments are validated before reaching a handler", () => {
 test("a disposed command cannot remove its replacement and saved effects use the current owner", () => {
   const commands = makeCommands(recording().handlers);
   const meta = { desc: "test", group: "test", target: "view", exposure: "human" } as const;
-  const dispose = commands.registerFullCommand("custom.run", {}, meta, () => [], () =>
-    Effect.succeed("old"),
+  const dispose = commands.registerFullCommand(
+    "custom.run",
+    {},
+    meta,
+    () => [],
+    () => Effect.succeed("old"),
   );
   const saved = commands.run({ _tag: "custom.run" }, inv);
   expect(Effect.runSync(saved)).toBe("old");

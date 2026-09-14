@@ -173,9 +173,7 @@ testEffect("inspect pane resolves pty vs plugin view ownership", () =>
     const viewOwner = owner("amux.editor", 4);
     const pluginPane = inspect(
       catalog({
-        panes: new Map([
-          ["p2", { kind: "plugin", type: "editor", descriptor: {}, session: "s2" }],
-        ]),
+        panes: new Map([["p2", { kind: "plugin", type: "editor", descriptor: {}, session: "s2" }]]),
         paneViews: new Map([["editor", viewOwner]]),
         statuses: [{ id: "amux.editor", phase: "active", waitingFor: [] }],
         generations: new Map([["amux.editor", 4]]),
@@ -194,9 +192,7 @@ testEffect("inspect plugin reports waitingFor when inactive on deps", () =>
   Effect.sync(() => {
     const result = inspect(
       catalog({
-        statuses: [
-          { id: "amux.notifications", phase: "waiting", waitingFor: ["amux/Panel"] },
-        ],
+        statuses: [{ id: "amux.notifications", phase: "waiting", waitingFor: ["amux/Panel"] }],
         generations: new Map([["amux.notifications", 1]]),
       }),
       { plugin: "amux.notifications" },

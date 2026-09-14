@@ -25,8 +25,7 @@ const INTEGRATION_VERSION = 1;
 const INSTALL_NAME = "amux-agent-state.sh";
 const idOnly: ReadonlySet<AgentSessionRefKind> = new Set(["id"]);
 
-export const claudeHookPath = (home = homeDir()) =>
-  `${home}/.claude/hooks/${INSTALL_NAME}`;
+export const claudeHookPath = (home = homeDir()) => `${home}/.claude/hooks/${INSTALL_NAME}`;
 
 export const claudeSettingsPath = (home = homeDir()) => `${home}/.claude/settings.json`;
 

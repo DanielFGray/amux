@@ -57,9 +57,9 @@ const installCodexHook = (
     yield* writeJsonObject(hooksPath, value);
 
     const fs = yield* FileSystem.FileSystem;
-    const existingConfig = yield* fs.readFileString(configPath).pipe(
-      Effect.orElseSucceed(() => ""),
-    );
+    const existingConfig = yield* fs
+      .readFileString(configPath)
+      .pipe(Effect.orElseSucceed(() => ""));
     const nextConfig = buildCodexConfigWithHooks(existingConfig);
     if (nextConfig !== existingConfig) yield* writeManagedFile(configPath, nextConfig);
 

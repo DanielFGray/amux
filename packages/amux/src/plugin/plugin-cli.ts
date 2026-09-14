@@ -143,10 +143,7 @@ const addPlugin = (
       .pipe(Effect.mapError((error) => `cannot stat '${spec}': ${String(error)}`));
     if (known) {
       const config = yield* loadConfig(configPath);
-      yield* persist(
-        configPath,
-        upsertPluginSpec(config, { path: resolved, enabled: true }),
-      );
+      yield* persist(configPath, upsertPluginSpec(config, { path: resolved, enabled: true }));
       return `added ${resolved}`;
     }
     const parsed = parsePackageSpec(spec);

@@ -54,19 +54,26 @@ export const dispatchCliCommand = (
         (_owner, adapter) => harnessAdapters.register(adapter),
       );
       const host = yield* createPluginHost({ contributions });
-      const { refused } = yield* loadCliPluginsFromConfig(config, host, dirname(yield* configPath), [
-        definePlugin({
-          id: "amux.registry.cli-commands",
-          provide: [CliCommandsTag],
-          effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
-        }),
-        definePlugin({
-          id: "amux.registry.foreign-harness-adapters",
-          provide: [ForeignHarnessAdaptersTag],
-          effect: (ctx) =>
-            Effect.sync(() => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters)),
-        }),
-      ]);
+      const { refused } = yield* loadCliPluginsFromConfig(
+        config,
+        host,
+        dirname(yield* configPath),
+        [
+          definePlugin({
+            id: "amux.registry.cli-commands",
+            provide: [CliCommandsTag],
+            effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
+          }),
+          definePlugin({
+            id: "amux.registry.foreign-harness-adapters",
+            provide: [ForeignHarnessAdaptersTag],
+            effect: (ctx) =>
+              Effect.sync(
+                () => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters),
+              ),
+          }),
+        ],
+      );
       const match = table.all().find((entry) => entry.value.name === name);
       if (!match) return { refused };
       return { code: yield* match.value.handler(argv) };

@@ -91,19 +91,17 @@ const writeRegistry = (
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const dir = path.dirname(registryPath);
-    yield* fs
-      .makeDirectory(dir, { recursive: true })
-      .pipe(
-        Effect.mapError(
-          (error) =>
-            new ProcessPluginRegistryError({
-              message: `cannot create ${dir}: ${String(error)}`,
-            }),
-        ),
-      );
-    const encoded = yield* S.encodeEffect(S.fromJsonString(ProcessPluginRegistrySchema, { space: 2 }))(
-      registry,
-    ).pipe(
+    yield* fs.makeDirectory(dir, { recursive: true }).pipe(
+      Effect.mapError(
+        (error) =>
+          new ProcessPluginRegistryError({
+            message: `cannot create ${dir}: ${String(error)}`,
+          }),
+      ),
+    );
+    const encoded = yield* S.encodeEffect(
+      S.fromJsonString(ProcessPluginRegistrySchema, { space: 2 }),
+    )(registry).pipe(
       Effect.mapError(
         (error) =>
           new ProcessPluginRegistryError({
@@ -149,11 +147,7 @@ export const linkProcessPlugin = (
     readonly enabled?: boolean;
     readonly roots?: ProcessPluginRoots;
   } = {},
-): Effect.Effect<
-  LinkedProcessPluginInfo,
-  ProcessPluginError,
-  FileSystem.FileSystem | Path.Path
-> =>
+): Effect.Effect<LinkedProcessPluginInfo, ProcessPluginError, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const roots = options.roots ?? (yield* defaultProcessPluginRoots);
     const absolute = yield* resolveRoot(pluginRoot);
@@ -161,9 +155,7 @@ export const linkProcessPlugin = (
     yield* ensureProcessPluginUserDirs(manifest.id, {
       configRoot: roots.configRoot,
       stateRoot: roots.stateRoot,
-    }).pipe(
-      Effect.mapError((message) => new ProcessPluginRegistryError({ message })),
-    );
+    }).pipe(Effect.mapError((message) => new ProcessPluginRegistryError({ message })));
     const linkedAtUnixMs = yield* Clock.currentTimeMillis;
     const entry: LinkedProcessPlugin = {
       pluginId: manifest.id,
@@ -200,7 +192,11 @@ export const unlinkProcessPlugin = (
 /** List linked process plugins (registry rows only; manifests are not re-read). */
 export const listProcessPlugins = (
   options: { readonly roots?: ProcessPluginRoots } = {},
-): Effect.Effect<readonly LinkedProcessPlugin[], ProcessPluginRegistryError, FileSystem.FileSystem> =>
+): Effect.Effect<
+  readonly LinkedProcessPlugin[],
+  ProcessPluginRegistryError,
+  FileSystem.FileSystem
+> =>
   Effect.gen(function* () {
     const roots = options.roots ?? (yield* defaultProcessPluginRoots);
     const registry = yield* readRegistry(roots.registryPath);
@@ -211,11 +207,7 @@ export const listProcessPlugins = (
 export const getProcessPlugin = (
   pluginId: string,
   options: { readonly roots?: ProcessPluginRoots } = {},
-): Effect.Effect<
-  LinkedProcessPluginInfo,
-  ProcessPluginError,
-  FileSystem.FileSystem | Path.Path
-> =>
+): Effect.Effect<LinkedProcessPluginInfo, ProcessPluginError, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const roots = options.roots ?? (yield* defaultProcessPluginRoots);
     const registry = yield* readRegistry(roots.registryPath);

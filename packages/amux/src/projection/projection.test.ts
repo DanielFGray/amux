@@ -7,19 +7,12 @@
  */
 import { expect, test } from "bun:test";
 import { Option } from "effect";
-import {
-  applyMotion,
-  wordForwardSmall,
-  type MotionContext,
-} from "../../../editor/src/motions.ts";
+import { applyMotion, wordForwardSmall, type MotionContext } from "../../../editor/src/motions.ts";
 import { textInRange, type TextPoint, type TextRange } from "./contract.ts";
 import { ScrollbackSurface } from "./scrollback-surface.ts";
 import { TranscriptSurface } from "./transcript-surface.ts";
 
-const motionCtx = (
-  lines: readonly string[],
-  cursor: TextPoint,
-): MotionContext => ({
+const motionCtx = (lines: readonly string[], cursor: TextPoint): MotionContext => ({
   lines,
   cursor,
   count: 1,
@@ -31,10 +24,7 @@ const point = (row: number, col: number): TextPoint => ({ row, col });
 const rangeAt = (p: TextPoint): TextRange => ({ anchor: p, head: p });
 
 test("one engine: motions.ts word-forward drives scrollback and transcript projections", () => {
-  const scrollback = new ScrollbackSurface("pty://spike", [
-    "alpha beta gamma",
-    "delta epsilon",
-  ]);
+  const scrollback = new ScrollbackSurface("pty://spike", ["alpha beta gamma", "delta epsilon"]);
   const transcript = new TranscriptSurface("transcript://spike", [
     { kind: "user", turn: "t1", text: "alpha beta gamma" },
     { kind: "assistant", turn: "t1", text: "delta epsilon" },

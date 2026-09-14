@@ -64,7 +64,12 @@ export const strokeFromKey = (key: KeyEvent): string | null => {
 export const BUILTIN_MAPS: readonly BuiltinMap[] = [
   { id: "gg", strokes: ["g", "g"], bindingStrokes: ["g", "g"], scopes: ["normal", "operator"] },
   { id: "ge", strokes: ["g", "e"], bindingStrokes: ["g", "e"], scopes: ["normal", "operator"] },
-  { id: "gE", strokes: ["g", "E"], bindingStrokes: ["g", "shift+e"], scopes: ["normal", "operator"] },
+  {
+    id: "gE",
+    strokes: ["g", "E"],
+    bindingStrokes: ["g", "shift+e"],
+    scopes: ["normal", "operator"],
+  },
   { id: "g-", strokes: ["g", "-"], bindingStrokes: ["g", "-"], scopes: ["normal"] },
   { id: "g+", strokes: ["g", "+"], bindingStrokes: ["g", "+"], scopes: ["normal"] },
   { id: "g;", strokes: ["g", ";"], bindingStrokes: ["g", ";"], scopes: ["normal"] },

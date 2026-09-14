@@ -14,8 +14,18 @@ import { CommandsChromeTag } from "../plugin/chrome.ts";
 import { command, CurrentInvocation } from "../commands.ts";
 import { loadProcessPluginBindingSpecs } from "../process-plugin/index.ts";
 import { paletteOverlayKeys } from "./commands/keys.ts";
-import { errorOverlayKeys, inspectOverlayKeys, promptOverlayKeys } from "./commands/overlay-keys.ts";
-import { errorPanel, hintsPanel, inspectPanel, palettePanel, promptPanel } from "./commands/panel.tsx";
+import {
+  errorOverlayKeys,
+  inspectOverlayKeys,
+  promptOverlayKeys,
+} from "./commands/overlay-keys.ts";
+import {
+  errorPanel,
+  hintsPanel,
+  inspectPanel,
+  palettePanel,
+  promptPanel,
+} from "./commands/panel.tsx";
 
 /**
  * Command palette, prompt, which-key, and error snack. File-backed for
@@ -88,18 +98,12 @@ export default definePlugin({
         runAction: (plugin, action) =>
           Effect.gen(function* () {
             const inv = yield* CurrentInvocation;
-            yield* commands.run(
-              command("process-plugin.action.invoke", { plugin, action }),
-              inv,
-            );
+            yield* commands.run(command("process-plugin.action.invoke", { plugin, action }), inv);
           }),
         runPane: (plugin, entrypoint) =>
           Effect.gen(function* () {
             const inv = yield* CurrentInvocation;
-            yield* commands.run(
-              command("process-plugin.pane.open", { plugin, entrypoint }),
-              inv,
-            );
+            yield* commands.run(command("process-plugin.pane.open", { plugin, entrypoint }), inv);
           }),
       }).pipe(Effect.provide(BunServices.layer));
 

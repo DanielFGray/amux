@@ -69,24 +69,27 @@ test("id and path refs reject control chars, over-length, and relative paths", (
 
 test("pi/omp prefer a path ref; everyone else takes an id", () => {
   const path = abs("omp.jsonl");
-  expect(
-    Option.getOrNull(sessionRefFromReport("amux:omp", "omp", "id-fallback", path)),
-  ).toEqual({ kind: "path", value: path });
+  expect(Option.getOrNull(sessionRefFromReport("amux:omp", "omp", "id-fallback", path))).toEqual({
+    kind: "path",
+    value: path,
+  });
   expect(Option.getOrNull(sessionRefFromReport("amux:pi", "pi", "id-only", undefined))).toEqual({
     kind: "id",
     value: "id-only",
   });
-  expect(
-    Option.getOrNull(sessionRefFromReport("amux:claude", "claude", "c1", path)),
-  ).toEqual({ kind: "id", value: "c1" });
+  expect(Option.getOrNull(sessionRefFromReport("amux:claude", "claude", "c1", path))).toEqual({
+    kind: "id",
+    value: "c1",
+  });
   expect(Option.isNone(sessionRefFromReport("amux:claude", "claude", undefined, path))).toBe(true);
 });
 
 test("snapshot reload re-runs the allowlist and path rules", () => {
   const path = abs("pi.jsonl");
-  expect(
-    Option.getOrNull(sessionRefFromSnapshot("amux:pi", "pi", "path", path)),
-  ).toEqual({ kind: "path", value: path });
+  expect(Option.getOrNull(sessionRefFromSnapshot("amux:pi", "pi", "path", path))).toEqual({
+    kind: "path",
+    value: path,
+  });
   expect(Option.isNone(sessionRefFromSnapshot("amux:claude", "claude", "path", path))).toBe(true);
   expect(Option.isNone(sessionRefFromSnapshot("amux:pi", "pi", "path", "relative.jsonl"))).toBe(
     true,

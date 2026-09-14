@@ -668,10 +668,7 @@
                 "contains": ["waiting for approval", "run this command?"]
               },
               {
-                "any": [
-                  { "contains": ["run (once) (y)"] },
-                  { "contains": ["skip (esc or n)"] }
-                ]
+                "any": [{ "contains": ["run (once) (y)"] }, { "contains": ["skip (esc or n)"] }]
               }
             ]
           },
@@ -700,9 +697,7 @@
         "priority": 95,
         "region": "bottom_non_empty_lines(5)",
         "visible_working": true,
-        "line_regex": [
-          { "pattern": "\\b[1-9][0-9]*\\s+background\\s+tasks?\\b", "flags": "i" }
-        ]
+        "line_regex": [{ "pattern": "\\b[1-9][0-9]*\\s+background\\s+tasks?\\b", "flags": "i" }]
       },
       {
         "id": "spinner_working",

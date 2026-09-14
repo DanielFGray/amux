@@ -113,9 +113,7 @@ test("assistant markdown renders prose and fenced code without fence markers", a
     }),
   ]);
   await render(
-    () => (
-      <Transcript sessionId="native" frames={() => events} sync={() => {}} width={60} />
-    ),
+    () => <Transcript sessionId="native" frames={() => events} sync={() => {}} width={60} />,
     target.renderer,
   );
   await target.renderOnce();

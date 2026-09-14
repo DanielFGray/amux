@@ -96,7 +96,9 @@ export const makeTestEditorIo = (state: TestEditorIoState): EditorIoService => (
       );
     }
     const succeed = Effect.succeed({ file: resolved, lines: [...lines] });
-    return state.beforeRead === undefined ? succeed : state.beforeRead().pipe(Effect.andThen(succeed));
+    return state.beforeRead === undefined
+      ? succeed
+      : state.beforeRead().pipe(Effect.andThen(succeed));
   },
   write: (file, lines, spaceDir) => {
     const resolved = file.startsWith("/") ? file : `${spaceDir}/${file}`;
