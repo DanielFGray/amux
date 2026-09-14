@@ -51,6 +51,9 @@ const run = <A, E>(
 ) => Effect.runPromise(Effect.scoped(provideEnv(effect, e)));
 
 const hangFixture = fileURLToPath(new URL("./hang-fixture.ts", import.meta.url));
+const exitDuringLoadFixture = fileURLToPath(
+  new URL("./exit-during-load-fixture.ts", import.meta.url),
+);
 const orphanParentFixture = fileURLToPath(new URL("./orphan-parent-fixture.ts", import.meta.url));
 
 /** Read `HOST_PID=<n>` from a fixture's stdout before the process exits. */
@@ -318,6 +321,30 @@ test("Status reports plugin-host restart with stable fields", async () => {
   expect(final.pluginHost.lastError).toBeDefined();
   expect(final.pluginHost.pid).toBeGreaterThan(0);
   expect(final.pluginHost.pid).not.toBe(oldPid);
+
+  await Effect.runPromise(daemon.stop);
+}, 30_000);
+
+test("host that exits during Load fails the generation and starts the next", async () => {
+  const e = await env();
+  const daemon = await open("ph-exit-load", e, {
+    argv: [process.execPath, exitDuringLoadFixture],
+  });
+
+  // Fixture exits every Load, so every generation fails. A restart count of 1+
+  // means the first generation completed (failed) and the next one started;
+  // lastError is preserved across the restarting/starting transition.
+  await waitFor(
+    async () => {
+      const report = await status(daemon, e);
+      return report.pluginHost.restarts >= 1 && report.pluginHost.lastError !== undefined;
+    },
+    "plugin-host to fail Load and start the next generation",
+    15_000,
+  );
+  const report = await status(daemon, e);
+  expect(report.pluginHost.restarts).toBeGreaterThanOrEqual(1);
+  expect(report.pluginHost.lastError).toContain("plugin-host exited with code");
 
   await Effect.runPromise(daemon.stop);
 }, 30_000);

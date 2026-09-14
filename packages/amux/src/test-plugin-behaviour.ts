@@ -3,8 +3,14 @@
  */
 import { Effect } from "effect";
 import { toJsonSchemaDocument } from "./command-cli.ts";
+import { DaemonSessionsError, type DaemonSessionsService } from "./daemon-sessions.ts";
 import { buildPluginBehaviour, type PluginBehaviourService } from "./plugin-behaviour.ts";
-import type { ForeignHarnessAdapterLookup } from "./foreign-harness.ts";
+import {
+  makeForeignHarnessAdapters,
+  type ForeignHarnessAdapter,
+  type ForeignHarnessAdapterLookup,
+} from "./foreign-harness.ts";
+import { createPluginContributions } from "./plugin/contributions.ts";
 import { PluginActivateError } from "./plugin/activate-error.ts";
 import type {
   DaemonCommandRecord,
@@ -17,7 +23,20 @@ export const emptyAdapterLookup = (): ForeignHarnessAdapterLookup => ({
   bySource: () => undefined,
   byId: () => undefined,
   list: () => [],
+  all: () => [],
 });
+
+/** Contribution-table adapters with a committed test owner (visible to `all()`). */
+export const adapterLookupWith = (
+  adapters: readonly ForeignHarnessAdapter[],
+): ForeignHarnessAdapterLookup => {
+  const contributions = createPluginContributions();
+  const table = contributions.table<ForeignHarnessAdapter>();
+  const owner = { id: "test", generation: 0 };
+  for (const adapter of adapters) table.add(owner, adapter.id, adapter);
+  contributions.commit(owner);
+  return makeForeignHarnessAdapters(table);
+};
 
 export const emptyAlgorithms = (): TilingAlgorithmsService => ({
   all: () => [],
@@ -29,11 +48,21 @@ export const emptyCommands = (): DaemonCommandsService => ({
   register: () => Effect.void,
 });
 
+export const stubSessions: DaemonSessionsService = {
+  message: () =>
+    Effect.fail(new DaemonSessionsError({ message: "no daemon sessions in test stub" })),
+  prompt: () =>
+    Effect.fail(new DaemonSessionsError({ message: "no daemon sessions in test stub" })),
+  capture: () =>
+    Effect.fail(new DaemonSessionsError({ message: "no daemon sessions in test stub" })),
+};
+
 /** Empty behaviour for layers that require PluginBehaviour but register nothing. */
 export const emptyPluginBehaviour: PluginBehaviourService = buildPluginBehaviour(
   emptyCommands(),
   emptyAlgorithms(),
   emptyAdapterLookup(),
+  stubSessions,
 );
 
 /** Build PluginBehaviour from a static command list (converts fields once). */
@@ -41,6 +70,7 @@ export const pluginBehaviourFromRegistrations = (
   registrations: Iterable<DaemonCommandRegistration>,
   algorithms: TilingAlgorithmsService = emptyAlgorithms(),
   adapters: ForeignHarnessAdapterLookup = emptyAdapterLookup(),
+  sessions: DaemonSessionsService = stubSessions,
 ): Effect.Effect<PluginBehaviourService, PluginActivateError> =>
   Effect.gen(function* () {
     const records: DaemonCommandRecord[] = yield* Effect.forEach([...registrations], (command) =>
@@ -63,5 +93,5 @@ export const pluginBehaviourFromRegistrations = (
         })),
       register: () => Effect.void,
     };
-    return buildPluginBehaviour(commands, algorithms, adapters);
+    return buildPluginBehaviour(commands, algorithms, adapters, sessions);
   });

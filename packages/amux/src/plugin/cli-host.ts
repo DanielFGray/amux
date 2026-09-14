@@ -5,13 +5,13 @@ import { dirname } from "node:path";
 import { configPath, loadConfig } from "../config.ts";
 import { createPluginContributions } from "./contributions.ts";
 import { createPluginHost, type RefusedPlugin } from "./host.ts";
-import { loadCliPluginsFromConfig } from "./loader.ts";
+import { loadCliPlugins } from "./loader.ts";
 import { definePlugin } from "./types.ts";
 import { CliCommandsTag, scopedRegistry, type CliCommandRegistration } from "./services.ts";
 import {
   ForeignHarnessAdaptersTag,
-  ForeignHarnessAdapterTable,
   makeForeignHarnessAdapters,
+  type ForeignHarnessAdapter,
 } from "../foreign-harness.ts";
 
 export interface CliCommandFound {
@@ -48,32 +48,22 @@ export const dispatchCliCommand = (
         (owner, registration: CliCommandRegistration) =>
           table.add(owner, registration.name, registration),
       );
-      const harnessAdapters = new ForeignHarnessAdapterTable();
-      const foreignHarnessAdapters = makeForeignHarnessAdapters(
-        harnessAdapters,
-        (_owner, adapter) => harnessAdapters.register(adapter),
-      );
+      const adapterTable = contributions.table<ForeignHarnessAdapter>();
+      const foreignHarnessAdapters = makeForeignHarnessAdapters(adapterTable);
       const host = yield* createPluginHost({ contributions });
-      const { refused } = yield* loadCliPluginsFromConfig(
-        config,
-        host,
-        dirname(yield* configPath),
-        [
-          definePlugin({
-            id: "amux.registry.cli-commands",
-            provide: [CliCommandsTag],
-            effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
-          }),
-          definePlugin({
-            id: "amux.registry.foreign-harness-adapters",
-            provide: [ForeignHarnessAdaptersTag],
-            effect: (ctx) =>
-              Effect.sync(
-                () => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters),
-              ),
-          }),
-        ],
-      );
+      const { refused } = yield* loadCliPlugins(config.plugins, host, dirname(yield* configPath), [
+        definePlugin({
+          id: "amux.registry.cli-commands",
+          provide: [CliCommandsTag],
+          effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
+        }),
+        definePlugin({
+          id: "amux.registry.foreign-harness-adapters",
+          provide: [ForeignHarnessAdaptersTag],
+          effect: (ctx) =>
+            Effect.sync(() => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters)),
+        }),
+      ]);
       const match = table.all().find((entry) => entry.value.name === name);
       if (!match) return { refused };
       return { code: yield* match.value.handler(argv) };

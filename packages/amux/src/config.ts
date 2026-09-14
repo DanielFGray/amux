@@ -138,8 +138,19 @@ const PluginPackageSpecSchema = S.Struct({
   version: S.optional(S.String.pipe(S.check(S.isMinLength(1)))),
   enabled: S.Boolean.pipe(S.withDecodingDefaultType(Effect.succeed(true))),
 });
-const PluginSpecSchema = S.Union([PluginPathSpecSchema, PluginPackageSpecSchema]);
+/** Typed plugin spec — Load / RPC payloads use this, not JsonValue. */
+export const PluginSpecSchema = S.Union([PluginPathSpecSchema, PluginPackageSpecSchema]);
 const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = [];
+
+/**
+ * Daemon → plugin-host Load payload: the plugin specs and the directory
+ * relative paths resolve against. Owner: config.ts.
+ */
+export const PluginHostLoadInputSchema = S.Struct({
+  plugins: S.Array(PluginSpecSchema),
+  configDirectory: S.String,
+});
+export type PluginHostLoadInput = typeof PluginHostLoadInputSchema.Type;
 
 const ConfigSchema = S.Struct({
   options: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),

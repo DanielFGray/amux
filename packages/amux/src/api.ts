@@ -74,7 +74,6 @@ export {
 } from "./plugin/services.ts";
 export {
   ForeignHarnessAdaptersTag,
-  ForeignHarnessAdapterTable,
   ForeignHarnessHookError,
   ForeignHarnessPlanResumeError,
   makeForeignHarnessAdapters,
@@ -141,10 +140,10 @@ export {
   PluginDeclarationsSchema,
   PluginCommandDeclarationSchema,
   buildPluginBehaviour,
-  makePluginBehaviour,
   runPluginSessionCommand,
   PLUGIN_SESSION_RUN_TIMEOUT_MS,
   QueuedPluginActionSchema,
+  asHostFailure,
   type PluginBehaviourService,
   type PluginDeclarations,
   type PluginCommandDeclaration,
@@ -223,6 +222,9 @@ export {
   command,
   runtimeCommand,
   CommandError,
+  clientPluginCommandTag,
+  parseClientPluginCommandTag,
+  isClientPluginCommandTag,
   type Command,
   type CommandTag,
   type CommandOf,
@@ -248,7 +250,6 @@ export {
 export {
   inspect,
   formatInspectResult,
-  parsePluginCommandTag,
   provenanceFor,
   InspectResultSchema,
   type InspectCatalog,

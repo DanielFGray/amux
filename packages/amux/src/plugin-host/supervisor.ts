@@ -10,8 +10,6 @@ import { fileURLToPath } from "node:url";
 import type { FileSink } from "bun";
 import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
-import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
-import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import {
   Deferred,
   Duration,
@@ -29,7 +27,14 @@ import {
 } from "effect";
 import { errorMessage } from "../error-message.ts";
 import { formatStderrTail, makeStderrTail } from "../stderr-tail.ts";
-import { PluginHostRpcs, PluginHostSerialization, type PluginHostStatus } from "./rpc.ts";
+import type { PluginDeclarations } from "../plugin-behaviour.ts";
+import { type PluginHostClient, type PluginHostGeneration } from "./client.ts";
+import {
+  PluginHostError,
+  PluginHostRpcs,
+  PluginHostSerialization,
+  type PluginHostStatus,
+} from "./rpc.ts";
 
 /** How often the daemon asks the host whether it is still answering. */
 export const PLUGIN_HOST_PING_INTERVAL_MS = 1_000;
@@ -37,6 +42,8 @@ export const PLUGIN_HOST_PING_INTERVAL_MS = 1_000;
 export const PLUGIN_HOST_PING_TIMEOUT_MS = 2_000;
 /** Wall time for the first successful Ping after spawn (socket retries included). */
 export const PLUGIN_HOST_READY_TIMEOUT_MS = 5_000;
+/** Wall time allowed for Load after Ping before the generation fails. */
+export const PLUGIN_HOST_LOAD_TIMEOUT_MS = 30_000;
 /** First wait after a failed start or forced restart. */
 export const PLUGIN_HOST_BACKOFF_INITIAL_MS = 100;
 /** Cap on restart backoff so a dead host is retried regularly. */
@@ -46,23 +53,26 @@ const STOP_RPC_TIMEOUT_MS = 100;
 /** How long to wait for exit after SIGTERM / SIGKILL. */
 const EXIT_WAIT_MS = 150;
 
-export type PluginHostClient = RpcClient.RpcClient<
-  RpcGroup.Rpcs<typeof PluginHostRpcs>,
-  RpcClientError
->;
-
 export interface PluginHostSupervisorOptions {
   readonly socketPath: string;
   /** Capability socket path passed to the child as AMUX_PLUGIN_CAPABILITIES_SOCKET. */
   readonly capabilitiesSocketPath: string;
-  readonly status: Ref.Ref<PluginHostStatus>;
-  /** Slot for the live generation's client; cleared by the generation release. */
-  readonly client: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostClient>>;
+  readonly status: SubscriptionRef.SubscriptionRef<PluginHostStatus>;
+  /** Slot for the live generation; cleared by the generation release. */
+  readonly generation: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostGeneration>>;
+  /**
+   * After Ping succeeds, load plugins for this generation. Failure fails the
+   * generation (status failed + backoff restart).
+   */
+  readonly loadGeneration: (
+    client: PluginHostClient,
+  ) => Effect.Effect<PluginDeclarations, PluginHostError>;
   /** Override the host argv (tests: hang fixture). Default: this package's CLI. */
   readonly argv?: readonly string[];
   readonly pingIntervalMs?: number;
   readonly pingTimeoutMs?: number;
   readonly readyTimeoutMs?: number;
+  readonly loadTimeoutMs?: number;
   readonly backoffInitialMs?: number;
   readonly backoffMaxMs?: number;
 }
@@ -80,10 +90,10 @@ const defaultArgv = (): readonly string[] => {
 };
 
 const setStatus = (
-  status: Ref.Ref<PluginHostStatus>,
+  status: SubscriptionRef.SubscriptionRef<PluginHostStatus>,
   next: PluginHostStatus,
 ): Effect.Effect<void> =>
-  Ref.update(status, (cur) => ({
+  SubscriptionRef.update(status, (cur) => ({
     ...next,
     lastError: next.lastError ?? cur.lastError,
   }));
@@ -202,11 +212,11 @@ const preferExitReason = (
   );
 
 /**
- * Wait until a live client is in the slot (for later plugin calls).
+ * Wait until a live generation is in the slot (for later plugin calls).
  * Subscribes to slot changes; first `Some` within the ready window wins.
  */
 export const awaitPluginHostClient = (
-  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostClient>>,
+  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostGeneration>>,
   readyTimeoutMs = PLUGIN_HOST_READY_TIMEOUT_MS,
 ): Effect.Effect<PluginHostClient, PluginHostConnectError> =>
   SubscriptionRef.changes(slot).pipe(
@@ -218,10 +228,35 @@ export const awaitPluginHostClient = (
     Effect.flatMap(
       Option.match({
         onNone: () => Effect.fail(notReadyError()),
-        onSome: (client) => Effect.succeed(client),
+        onSome: (generation) => Effect.succeed(generation.client),
       }),
     ),
   );
+
+/**
+ * Wait until the first generation is ready or fails. Subscribes to status;
+ * after the first `ready`/`failed` event, reads the generation slot.
+ */
+export const awaitFirstPluginHostOutcome = (
+  slot: SubscriptionRef.SubscriptionRef<Option.Option<PluginHostGeneration>>,
+  status: SubscriptionRef.SubscriptionRef<PluginHostStatus>,
+): Effect.Effect<Option.Option<PluginHostGeneration>> =>
+  Effect.gen(function* () {
+    const current = yield* SubscriptionRef.get(status);
+    if (current.state === "ready") return yield* SubscriptionRef.get(slot);
+    if (current.state === "failed") return Option.none();
+
+    const terminal = yield* SubscriptionRef.changes(status).pipe(
+      Stream.filter((s) => s.state === "ready" || s.state === "failed"),
+      Stream.take(1),
+      Stream.runHead,
+    );
+    return yield* Option.match(terminal, {
+      onNone: () => Effect.succeed(Option.none()),
+      onSome: (s) =>
+        s.state === "failed" ? Effect.succeed(Option.none()) : SubscriptionRef.get(slot),
+    });
+  });
 
 type GenerationResult = {
   readonly reason: string;
@@ -268,9 +303,20 @@ const runGeneration = (
     const connectionScope = yield* Scope.make();
     const done = yield* Deferred.make<GenerationResult>();
     const exitReason = yield* Deferred.make<string>();
+    const reachedReady = yield* Ref.make(false);
 
     const failBeforeReady = Effect.fnUntraced(function* (failure: string) {
-      const reason = yield* preferExitReason(exitReason, failure);
+      // Transport errors from a dying peer often land before the exit watcher
+      // completes; wait briefly so lastError names the child exit when it can.
+      const reason = yield* Deferred.await(exitReason).pipe(
+        Effect.timeoutOption(Duration.millis(100)),
+        Effect.flatMap(
+          Option.match({
+            onNone: () => preferExitReason(exitReason, failure),
+            onSome: (exit) => Effect.succeed(exit),
+          }),
+        ),
+      );
       yield* setStatus(options.status, {
         state: "failed",
         restarts,
@@ -278,6 +324,17 @@ const runGeneration = (
         pid: child.pid,
       });
       yield* Deferred.succeed(done, { reason, reachedReady: false });
+    });
+
+    const failAfterReady = Effect.fnUntraced(function* (failure: string) {
+      const reason = yield* preferExitReason(exitReason, failure);
+      yield* setStatus(options.status, {
+        state: "failed",
+        restarts,
+        lastError: reason,
+        pid: child.pid,
+      });
+      yield* Deferred.succeed(done, { reason, reachedReady: true });
     });
 
     yield* Effect.forkIn(
@@ -321,17 +378,42 @@ const runGeneration = (
           return yield* failBeforeReady("plugin-host exited before the control socket opened");
         }
 
-        const ready = yield* client.Ping().pipe(
-          Effect.timeout(Duration.millis(readyTimeoutMs)),
-          Effect.mapError((error) => describeFailure(errorMessage(error), child)),
-          Effect.result,
+        const ready = yield* Effect.raceFirst(
+          client.Ping().pipe(
+            Effect.timeout(Duration.millis(readyTimeoutMs)),
+            Effect.mapError((error) => describeFailure(errorMessage(error), child)),
+            Effect.result,
+          ),
+          Deferred.await(exitReason).pipe(Effect.map((reason) => Result.fail(reason))),
         );
         if (ready._tag === "Failure") {
           return yield* failBeforeReady(ready.failure);
         }
 
-        yield* SubscriptionRef.set(options.client, Option.some(client));
+        const loadTimeoutMs = options.loadTimeoutMs ?? PLUGIN_HOST_LOAD_TIMEOUT_MS;
+        const loaded = yield* Effect.raceFirst(
+          options.loadGeneration(client).pipe(
+            Effect.timeout(Duration.millis(loadTimeoutMs)),
+            Effect.mapError((error) =>
+              describeFailure(
+                S.is(PluginHostError)(error) ? error.message : errorMessage(error),
+                child,
+              ),
+            ),
+            Effect.result,
+          ),
+          Deferred.await(exitReason).pipe(Effect.map((reason) => Result.fail(reason))),
+        );
+        if (loaded._tag === "Failure") {
+          return yield* failBeforeReady(loaded.failure);
+        }
+
+        yield* SubscriptionRef.set(
+          options.generation,
+          Option.some({ client, declarations: loaded.success }),
+        );
         yield* setStatus(options.status, { state: "ready", restarts, pid: child.pid });
+        yield* Ref.set(reachedReady, true);
 
         const pingFailed = yield* Deferred.make<string>();
         yield* Effect.forkIn(
@@ -353,24 +435,28 @@ const runGeneration = (
           Deferred.await(exitReason),
           Deferred.await(pingFailed),
         );
-        yield* setStatus(options.status, {
-          state: "failed",
-          restarts,
-          lastError: reason,
-          pid: child.pid,
-        });
-        yield* Deferred.succeed(done, { reason, reachedReady: true });
-      }).pipe(Effect.asVoid),
+        yield* failAfterReady(reason);
+      }).pipe(
+        Effect.catchDefect((defect) =>
+          Effect.gen(function* () {
+            const ready = yield* Ref.get(reachedReady);
+            const failure = describeFailure(errorMessage(defect), child);
+            if (ready) yield* failAfterReady(failure);
+            else yield* failBeforeReady(failure);
+          }),
+        ),
+        Effect.asVoid,
+      ),
       connectionScope,
     );
 
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
-        const client = yield* SubscriptionRef.get(options.client);
-        yield* Option.match(client, {
+        const live = yield* SubscriptionRef.get(options.generation);
+        yield* Option.match(live, {
           onNone: () => Effect.void,
-          onSome: (live) =>
-            live
+          onSome: (generation) =>
+            generation.client
               .Stop()
               .pipe(Effect.timeoutOption(Duration.millis(STOP_RPC_TIMEOUT_MS)), Effect.ignore),
         });
@@ -379,7 +465,7 @@ const runGeneration = (
         if (!afterTerm) child.kill("SIGKILL");
         yield* waitExited(child, EXIT_WAIT_MS).pipe(Effect.asVoid);
         yield* Scope.close(connectionScope, Exit.void);
-        yield* SubscriptionRef.set(options.client, Option.none());
+        yield* SubscriptionRef.set(options.generation, Option.none());
       }).pipe(Effect.asVoid),
     );
 

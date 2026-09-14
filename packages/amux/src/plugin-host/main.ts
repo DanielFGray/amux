@@ -12,6 +12,7 @@ import * as SocketServer from "effect/unstable/socket/SocketServer";
 import { admits } from "../peer-credentials.ts";
 import { peerCheckedSocketServer } from "../peer-checked-socket-server.ts";
 import { removeStaleSocket } from "../remove-stale-socket.ts";
+import { behaviourPluginHostHandlers, createBehaviourHostRuntime } from "./behaviour-host.ts";
 import { PluginHostRpcs, PluginHostSerialization, type PluginHostHandlers } from "./rpc.ts";
 
 /**
@@ -50,14 +51,17 @@ export const runPluginHost = (
     Effect.asVoid,
   );
 
-/** Default Ping/Stop handlers; Stop completes `stopped`. */
-export const defaultPluginHostHandlers = (stopped: Deferred.Deferred<void>): PluginHostHandlers =>
-  PluginHostRpcs.toLayer({
-    Ping: () => Effect.void,
-    Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
-  });
+/** Default Ping/Stop/Load/behaviour handlers; Stop completes `stopped`. */
+export const defaultPluginHostHandlers = (
+  stopped: Deferred.Deferred<void>,
+): Effect.Effect<PluginHostHandlers, Config.ConfigError, Scope.Scope> =>
+  Effect.map(createBehaviourHostRuntime, (runtime) =>
+    behaviourPluginHostHandlers(stopped, runtime),
+  );
 
-export type PluginHostHandlerFactory = (stopped: Deferred.Deferred<void>) => PluginHostHandlers;
+export type PluginHostHandlerFactory = (
+  stopped: Deferred.Deferred<void>,
+) => Effect.Effect<PluginHostHandlers, Config.ConfigError, Scope.Scope>;
 
 /**
  * Completes when the supervisor's stdin write end closes (daemon process gone)
@@ -80,11 +84,8 @@ export const runPluginHostMain = (
       return yield* Effect.die("AMUX_PLUGIN_HOST_SOCKET is required");
     }
     const stopped = yield* Deferred.make<void>();
-    yield* Effect.raceAll([
-      runPluginHost(socket, handlers(stopped)),
-      Deferred.await(stopped),
-      awaitDaemonGone,
-    ]);
+    const layer = yield* handlers(stopped);
+    yield* Effect.raceAll([runPluginHost(socket, layer), Deferred.await(stopped), awaitDaemonGone]);
   });
 
   BunRuntime.runMain(Effect.scoped(program).pipe(Effect.provide(BunServices.layer)));

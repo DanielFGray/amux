@@ -8,13 +8,7 @@ import type { ContextSpec } from "../key-context.ts";
 import type { PaneContent } from "../layout.ts";
 import type { Contribution, PluginInstance } from "./contributions.ts";
 import { createPluginContributions } from "./contributions.ts";
-import {
-  formatInspectResult,
-  inspect,
-  parsePluginCommandTag,
-  provenanceFor,
-  type InspectCatalog,
-} from "./inspect.ts";
+import { formatInspectResult, inspect, provenanceFor, type InspectCatalog } from "./inspect.ts";
 import type { PluginStatus } from "./types.ts";
 
 const keys: Keys = { prefix: "ctrl+a", leader: "space", bindings: {} };
@@ -59,16 +53,6 @@ const catalog = (parts: {
   paneContent: (paneId) => parts.panes?.get(paneId),
   keys: () => keys,
 });
-
-testEffect("parsePluginCommandTag keeps dotted plugin ids", () =>
-  Effect.sync(() => {
-    expect(parsePluginCommandTag("plugin.amux.notifications.ring")).toEqual({
-      pluginId: "amux.notifications",
-      verb: "ring",
-    });
-    expect(parsePluginCommandTag("pane.split")).toBeUndefined();
-  }),
-);
 
 testEffect("inspect command reports core provenance", () =>
   Effect.sync(() => {

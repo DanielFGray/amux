@@ -2,7 +2,7 @@ import { BunServices } from "@effect/platform-bun";
 import { Effect, Option, Path, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { pluginSpecKey, type Config, type PluginSpec } from "../config.ts";
+import { pluginSpecKey, type PluginSpec } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost, RefusedPlugin } from "./host.ts";
 import { hotImport, resolveExportsSubpath } from "./hot.ts";
@@ -50,8 +50,8 @@ function discoveredPlugins(configDir: string) {
   }).pipe(Effect.orElseSucceed(() => [] as readonly string[]));
 }
 
-const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
-  config: Config,
+const loadPluginsEffect = Effect.fnUntraced(function* (
+  plugins: readonly PluginSpec[],
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
@@ -80,9 +80,9 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
       "plugins are running the last-known-good archived source; run 'amux plugin.reload --disk' to retry files on disk",
     );
 
-  const configured = new Map(config.plugins.map((spec) => [pluginSpecKey(spec), spec]));
+  const configured = new Map(plugins.map((spec) => [pluginSpecKey(spec), spec]));
   const specs: readonly PluginSpec[] = [
-    ...config.plugins,
+    ...plugins,
     ...(yield* discoveredPlugins(configDir))
       .filter((path) => !configured.has(path))
       .map((path) => ({ path, enabled: true })),
@@ -136,32 +136,40 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
   return { entries, recovered: restored.size > 0, refused } as LoadedPlugins;
 });
 
-export const loadPluginsFromConfig = (...args: Parameters<typeof loadPluginsFromConfigEffect>) =>
-  loadPluginsFromConfigEffect(...args).pipe(Effect.provide(BunServices.layer));
-
-/** Load only the privileged package export used by a daemon host. */
-export const loadDaemonPluginsFromConfig = (
-  config: Config,
+export const loadPlugins = (
+  plugins: readonly PluginSpec[],
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
   storeDir?: string,
 ) =>
-  loadPluginsFromConfigEffect(config, host, configDir, coreEntries, storeDir, "./daemon").pipe(
+  loadPluginsEffect(plugins, host, configDir, coreEntries, storeDir, ".").pipe(
+    Effect.provide(BunServices.layer),
+  );
+
+/** Load only the privileged package export used by a daemon host. */
+export const loadDaemonPlugins = (
+  plugins: readonly PluginSpec[],
+  host: PluginHost,
+  configDir: string,
+  coreEntries: readonly PluginDefinition[] = [],
+  storeDir?: string,
+) =>
+  loadPluginsEffect(plugins, host, configDir, coreEntries, storeDir, "./daemon").pipe(
     Effect.provide(BunServices.layer),
   );
 
 /** Load only the CLI-command export used by the headless dispatch host — a
  *  setup verb like an agent-hook installer, which injects `CliCommandsTag`
  *  and so can never activate under any other host. */
-export const loadCliPluginsFromConfig = (
-  config: Config,
+export const loadCliPlugins = (
+  plugins: readonly PluginSpec[],
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
   storeDir?: string,
 ) =>
-  loadPluginsFromConfigEffect(config, host, configDir, coreEntries, storeDir, "./cli").pipe(
+  loadPluginsEffect(plugins, host, configDir, coreEntries, storeDir, "./cli").pipe(
     Effect.provide(BunServices.layer),
   );
 

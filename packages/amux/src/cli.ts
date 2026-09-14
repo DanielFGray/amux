@@ -329,22 +329,28 @@ function main(): Effect.Effect<number> {
         import("./effect/AttachProtocol.ts"),
       ]),
     );
-    const { COMMAND_META, Command, commandDefinition, isCoreCommandTag, runtimeCommand } =
-      commandsMod;
+    const {
+      COMMAND_META,
+      Command,
+      commandDefinition,
+      isCoreCommandTag,
+      isClientPluginCommandTag,
+      runtimeCommand,
+    } = commandsMod;
     // `new`, an out-of-schema plugin verb (its own single-command path
-    // below, matched by prefix alone), and a bare session-id attach never
-    // consult daemonCommandByTag — they dispatch on sub alone, without ever
-    // reaching parseCommandGroup/isCommandTag. Asking a daemon for
-    // declarations none of them will read would just tax those paths
-    // (notably runClient's nesting-guard refusal) for nothing. Every core
-    // and daemon command tag is dot-namespaced ("pane.split", "agent.new"),
-    // so a bare, dot-free sub unambiguously can't be one — the only shape a
-    // real session id takes here, since a dotted sub must still be checked
-    // against daemonCommands in case it names a plugin verb.
+    // below, matched by the client-plugin namespace alone), and a bare
+    // session-id attach never consult daemonCommandByTag — they dispatch on
+    // sub alone, without ever reaching parseCommandGroup/isCommandTag. Asking
+    // a daemon for declarations none of them will read would just tax those
+    // paths (notably runClient's nesting-guard refusal) for nothing. Every
+    // core and daemon command tag is dot-namespaced ("pane.split",
+    // "agent.new"), so a bare, dot-free sub unambiguously can't be one — the
+    // only shape a real session id takes here, since a dotted sub must still
+    // be checked against daemonCommands in case it names a plugin verb.
     const commandGroups = splitCommandArgs(argv);
     const needsDeclarations =
       sub !== "new" &&
-      !sub.startsWith("plugin.") &&
+      !isClientPluginCommandTag(sub) &&
       !(!sub.includes(".") && isSessionId(sub)) &&
       commandGroups.some((group) => group[0] !== undefined && !isCoreCommandTag(group[0]));
     let daemonCommands: readonly PluginCommandDeclaration[] = [];
@@ -424,15 +430,7 @@ function main(): Effect.Effect<number> {
       value._tag === "agent.watch" && typeof value.target === "string";
 
     function isCommandTag(s: string): s is CommandTag {
-      return s in COMMAND_META || daemonCommandByTag.has(s) || s.startsWith("plugin.");
-    }
-
-    // A plugin verb the compiler has never seen — see commands.ts's
-    // RuntimeCommandSchema. The CLI process has no plugin registry (plugins
-    // load in an attached client), so this is a syntactic check only; the
-    // daemon is what decides whether anyone can actually run it.
-    function isPluginTag(s: string): boolean {
-      return s.startsWith("plugin.");
+      return s in COMMAND_META || daemonCommandByTag.has(s) || isClientPluginCommandTag(s);
     }
 
     /**
@@ -494,7 +492,7 @@ function main(): Effect.Effect<number> {
     // target the way the core dispatch below does, so it gets its own minimal
     // path — one command per invocation, `--key=value` args, `--session`
     // required unless a pane's own env or a lone running session settles it.
-    if (isPluginTag(sub)) {
+    if (isClientPluginCommandTag(sub)) {
       const stripped = stripSessionFlag(argv.slice(1));
       if ("error" in stripped) {
         writeErr(`error: ${stripped.error}`);

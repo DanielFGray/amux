@@ -7,10 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
 import { createPluginHost, type PluginHost } from "./host.ts";
-import {
-  loadDaemonPluginsFromConfig,
-  loadPluginsFromConfig as loadConfiguredPlugins,
-} from "./loader.ts";
+import { loadDaemonPlugins, loadPlugins as loadConfiguredPlugins } from "./loader.ts";
 import { testPluginEnvironment, type TestPluginEnvironment } from "./test-environment.ts";
 import { definePlugin, type PluginDefinition } from "./types.ts";
 import type { Config, PluginSpec } from "../config.ts";
@@ -68,7 +65,7 @@ function makeHost(): Effect.Effect<{ host: PluginHost; slots: Slots }, never, Sc
   });
 }
 
-const loadPluginsFromConfig = (
+const loadPlugins = (
   config: Config,
   host: PluginHost,
   configDir: string,
@@ -76,7 +73,7 @@ const loadPluginsFromConfig = (
   storeDir?: string,
 ) =>
   loadConfiguredPlugins(
-    config,
+    config.plugins,
     host,
     configDir,
     [...(registryEntriesByHost.get(host) ?? []), ...entries],
@@ -151,7 +148,7 @@ testEffect("loads a valid plugin", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "my-plugin.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("my-plugin");
@@ -172,7 +169,7 @@ testEffect("a quarantined last-good archive is loaded instead of a broken disk e
     });
     const { host } = yield* makeHost();
 
-    const loaded = yield* loadPluginsFromConfig(baseConfig({ plugins: [spec(entry)] }), host, dir);
+    const loaded = yield* loadPlugins(baseConfig({ plugins: [spec(entry)] }), host, dir);
 
     expect(loaded.recovered).toBe(true);
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["saved"]);
@@ -185,7 +182,7 @@ testEffect("loads the editor package through its configured package entrypoint",
     const editor = join(testDir, "../../../editor");
     const config = baseConfig({ plugins: [spec(editor)] });
 
-    yield* loadPluginsFromConfig(config, host, testDir);
+    yield* loadPlugins(config, host, testDir);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["amux.editor"]);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -200,7 +197,7 @@ testEffect("loads a path plugin's daemon entrypoint", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "index.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadDaemonPluginsFromConfig(config, host, dir);
+    yield* loadDaemonPlugins(config.plugins, host, dir);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["daemon-plugin"]);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -227,11 +224,11 @@ testEffect(
 
       const config = baseConfig({ plugins: [spec(dir)] });
       const { host: clientHost } = yield* makeHost();
-      yield* loadPluginsFromConfig(config, clientHost, dir);
+      yield* loadPlugins(config, clientHost, dir);
       expect(pluginStatuses(clientHost).map((status) => status.id)).toEqual(["client-plugin"]);
 
       const { host: daemonHost } = yield* makeHost();
-      yield* loadDaemonPluginsFromConfig(config, daemonHost, dir);
+      yield* loadDaemonPlugins(config.plugins, daemonHost, dir);
       expect(pluginStatuses(daemonHost).map((status) => status.id)).toEqual(["daemon-plugin"]);
     }).pipe(Effect.provide(BunFileSystem.layer)),
 );
@@ -243,7 +240,7 @@ testEffect("loads the worked external status bar example", () =>
       plugins: [spec(join(testDir, "../../../../examples/status-bar.tsx"))],
     });
 
-    yield* loadPluginsFromConfig(config, host, testDir);
+    yield* loadPlugins(config, host, testDir);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.status-bar"]);
     expect(slots.declared("bottom", "app")).toBe(true);
@@ -257,7 +254,7 @@ testEffect("the agent dashboard example stays gated with no AgentAwarenessTag pr
     const configPath = yield* writeExampleConfig(dir, "agent-dashboard.tsx");
     const config = yield* loadConfig(configPath).pipe(Effect.provide(BunFileSystem.layer));
 
-    yield* loadPluginsFromConfig(config, host, dirname(configPath));
+    yield* loadPlugins(config, host, dirname(configPath));
 
     // This test's host provides no `AgentAwarenessTag`, and the example
     // injects it for its roster view, so it never activates — the same
@@ -274,7 +271,7 @@ testEffect("the agent triage example stays gated with no AgentAwarenessTag provi
     const configPath = yield* writeExampleConfig(dir, "agent-triage.tsx");
     const config = yield* loadConfig(configPath).pipe(Effect.provide(BunFileSystem.layer));
 
-    yield* loadPluginsFromConfig(config, host, dirname(configPath));
+    yield* loadPlugins(config, host, dirname(configPath));
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual([]);
     expect(slots.declared("right", "app")).toBe(false);
@@ -292,7 +289,7 @@ testEffect("loads multiple plugins in order", () =>
     });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     const ids = pluginStatuses(host)
       .map((s) => s.id)
@@ -310,7 +307,7 @@ testEffect("discovers plugins in the config directory's plugins/ subdirectory", 
     yield* writePluginFile(pluginDir, "discovered.ts", mkPluginSrc("discovered"));
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(baseConfig(), host, join(configHome, "amux"));
+    yield* loadPlugins(baseConfig(), host, join(configHome, "amux"));
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["discovered"]);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -326,7 +323,7 @@ testEffect("resolves relative paths against configDir", () =>
     const config = baseConfig({ plugins: [spec("rel.ts")] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("rel-plugin");
@@ -344,7 +341,7 @@ testEffect("resolves file:// URLs to paths", () =>
     const config = baseConfig({ plugins: [urlSpec] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("url-plugin");
@@ -364,7 +361,7 @@ testEffect("skips disabled plugins", () =>
     });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("enabled");
@@ -384,7 +381,7 @@ testEffect("one bad plugin does not block the next", () =>
     });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     const ids = pluginStatuses(host).map((s) => s.id);
     expect(ids).toEqual(["good"]);
@@ -402,7 +399,7 @@ testEffect("a plugin that throws on import does not block others", () =>
     });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("ok");
@@ -419,7 +416,7 @@ testEffect("reports a plugin with no default export", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "nodefault.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -435,7 +432,7 @@ testEffect("reports a plugin with a null default export", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "null.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -451,7 +448,7 @@ testEffect("reports a plugin with no id field", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "noid.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -465,7 +462,7 @@ testEffect("reports a plugin with an empty id", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "emptyid.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -481,7 +478,7 @@ testEffect("reports a plugin with no activation function", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "noeff.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -497,7 +494,7 @@ testEffect("handles a missing file gracefully", () =>
     const config = baseConfig({ plugins: [spec(missing)] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -510,7 +507,7 @@ testEffect("empty plugins array does nothing", () =>
     const dir = yield* tempDir;
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(baseConfig(), host, dir);
+    yield* loadPlugins(baseConfig(), host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -526,12 +523,9 @@ testEffect("reconciles core and configured entries as one configuration", () =>
       effect: () => Effect.void,
     });
 
-    yield* loadPluginsFromConfig(
-      baseConfig({ plugins: [spec(join(dir, "configured.ts"))] }),
-      host,
-      dir,
-      [core],
-    );
+    yield* loadPlugins(baseConfig({ plugins: [spec(join(dir, "configured.ts"))] }), host, dir, [
+      core,
+    ]);
 
     expect(
       pluginStatuses(host)
@@ -550,7 +544,7 @@ testEffect("relative paths that escape configDir are rejected", () =>
     const config = baseConfig({ plugins: [spec("../other/plugin.ts")] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -567,14 +561,14 @@ testEffect("absolute paths outside configDir are allowed", () =>
     const config = baseConfig({ plugins: [spec(join(other, "abs.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("abs-plugin");
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
-// --- loadPluginsFromConfig doesn't block host lifecycle ---
+// --- loadPlugins doesn't block host lifecycle ---
 
 testEffect("host continues working after loader finishes", () =>
   Effect.gen(function* () {
@@ -584,7 +578,7 @@ testEffect("host continues working after loader finishes", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "pre.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir);
+    yield* loadPlugins(config, host, dir);
     yield* host.add(
       definePlugin({
         id: "post",
@@ -648,7 +642,7 @@ testEffect("loads an installed package by name", () =>
     const config = baseConfig({ plugins: [{ package: "fake-example-plugin", enabled: true }] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir, [], store);
+    yield* loadPlugins(config, host, dir, [], store);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["fake-example"]);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -662,7 +656,7 @@ testEffect("a configured package with no install is skipped", () =>
     const config = baseConfig({ plugins: [{ package: "absent-plugin", enabled: true }] });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir, [], store);
+    yield* loadPlugins(config, host, dir, [], store);
 
     expect(pluginStatuses(host).length).toBe(0);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -683,7 +677,7 @@ testEffect("a package whose engines.amux misses the host is refused, without blo
     });
     const { host } = yield* makeHost();
 
-    yield* loadPluginsFromConfig(config, host, dir, [], store);
+    yield* loadPlugins(config, host, dir, [], store);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["present"]);
   }).pipe(Effect.provide(BunFileSystem.layer)),

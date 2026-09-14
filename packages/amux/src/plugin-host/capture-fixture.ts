@@ -15,11 +15,16 @@ import {
   Schedule,
   Schema as S,
 } from "effect";
+import { CommandError } from "../commands.ts";
 import { DaemonSessions, DaemonSessionsError } from "../daemon-sessions.ts";
 import { errorMessage } from "../error-message.ts";
+import { ForeignHarnessPlanResumeError } from "../foreign-harness.ts";
+import { emptyPluginDeclarations, PluginBehaviourError } from "../plugin-behaviour.ts";
+import { TilingAlgorithmError } from "../tiling-algorithm.ts";
+import { PluginReducerError } from "../workspace-changes.ts";
 import { daemonSessionsFromCapabilitiesSocket } from "./daemon-sessions-layer.ts";
-import { runPluginHostMain } from "./main.ts";
-import { PluginHostRpcs, type PluginHostHandlers } from "./rpc.ts";
+import { runPluginHostMain, type PluginHostHandlerFactory } from "./main.ts";
+import { PluginHostRpcs } from "./rpc.ts";
 
 class CaptureFixtureError extends S.TaggedError<CaptureFixtureError>()("CaptureFixtureError", {
   message: S.String,
@@ -56,28 +61,54 @@ const captureOnce = (
     yield* writeOut(outPath, text);
   }).pipe(Effect.catch((error) => writeOut(outPath, `error: ${errorMessage(error)}`)));
 
-const captureHandlers = (stopped: Deferred.Deferred<void>): PluginHostHandlers => {
-  const started = Ref.makeUnsafe(false);
-  return PluginHostRpcs.toLayer({
-    Ping: () =>
-      Effect.gen(function* () {
-        const already = yield* Ref.getAndSet(started, true);
-        if (already) return;
-        const outPath = process.argv[2];
-        const session = process.argv[3];
-        const expect = process.argv[4];
-        if (outPath === undefined || session === undefined || expect === undefined) {
-          return yield* Effect.die("capture-fixture argv: <outPath> <sessionId> <expectText>");
-        }
-        yield* Effect.forkDetach(
-          captureOnce(outPath, session, expect).pipe(
-            Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
+const captureHandlers: PluginHostHandlerFactory = (stopped) =>
+  Effect.succeed(
+    (() => {
+      const started = Ref.makeUnsafe(false);
+      return PluginHostRpcs.toLayer({
+        Ping: () =>
+          Effect.gen(function* () {
+            const already = yield* Ref.getAndSet(started, true);
+            if (already) return;
+            const outPath = process.argv[2];
+            const session = process.argv[3];
+            const expect = process.argv[4];
+            if (outPath === undefined || session === undefined || expect === undefined) {
+              return yield* Effect.die("capture-fixture argv: <outPath> <sessionId> <expectText>");
+            }
+            yield* Effect.forkDetach(
+              captureOnce(outPath, session, expect).pipe(
+                Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
+              ),
+            );
+          }),
+        Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
+        Load: () => Effect.succeed(emptyPluginDeclarations),
+        Reduce: () =>
+          Effect.fail(new PluginReducerError({ message: "capture fixture has no reducers" })),
+        CheckDescriptor: () =>
+          Effect.fail(new PluginReducerError({ message: "capture fixture has no descriptors" })),
+        RunAction: () =>
+          Effect.fail(new PluginBehaviourError({ message: "capture fixture has no actions" })),
+        RunSession: () =>
+          Effect.fail(new CommandError({ message: "capture fixture has no session handlers" })),
+        RunTiling: ({ algorithmId }) =>
+          Effect.fail(
+            new TilingAlgorithmError({
+              algorithm: algorithmId,
+              message: "capture fixture has no tiling",
+            }),
           ),
-        );
-      }),
-    Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
-  });
-};
+        PlanResume: ({ adapterId }) =>
+          Effect.fail(
+            new ForeignHarnessPlanResumeError({
+              adapter: adapterId,
+              message: "capture fixture has no adapters",
+            }),
+          ),
+      });
+    })(),
+  );
 
 if (import.meta.main) {
   runPluginHostMain(captureHandlers);

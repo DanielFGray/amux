@@ -11,11 +11,7 @@ import {
   planAgentResumeFromSnapshot,
 } from "./agent-resume.ts";
 import { AgentSessionRefSchema, type AgentSessionRef } from "./agent-session.ts";
-import {
-  ForeignHarnessPlanResumeError,
-  ForeignHarnessAdapterTable,
-  type ForeignHarnessAdapter,
-} from "./foreign-harness.ts";
+import { ForeignHarnessPlanResumeError, type ForeignHarnessAdapter } from "./foreign-harness.ts";
 import {
   claudeAdapter,
   codexAdapter,
@@ -25,19 +21,22 @@ import {
 import { testEffect } from "./test-effect.ts";
 import { withCollectingLogger } from "./test-logger.ts";
 import { PluginBehaviour, buildPluginBehaviour } from "./plugin-behaviour.ts";
-import { emptyAlgorithms, emptyCommands } from "./test-plugin-behaviour.ts";
+import {
+  adapterLookupWith,
+  emptyAlgorithms,
+  emptyCommands,
+  stubSessions,
+} from "./test-plugin-behaviour.ts";
 
 const { effect: testClockEffect } = testEffect(Layer.empty);
 
-const adapters = new ForeignHarnessAdapterTable();
-for (const adapter of [claudeAdapter, codexAdapter, cursorAdapter, opencodeAdapter])
-  adapters.register(adapter);
+const adapters = adapterLookupWith([claudeAdapter, codexAdapter, cursorAdapter, opencodeAdapter]);
 
 const withResume = <A, E>(effect: Effect.Effect<A, E, PluginBehaviour>) =>
   effect.pipe(
     Effect.provideService(
       PluginBehaviour,
-      buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), adapters),
+      buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), adapters, stubSessions),
     ),
   );
 
@@ -169,7 +168,6 @@ testEffect("AgentSessionRefSchema and AgentResumePlanSchema round-trip", () =>
 
 testEffect("askPlanResume treats adapter failure as no plan and warns", () =>
   Effect.gen(function* () {
-    const table = new ForeignHarnessAdapterTable();
     const failing: ForeignHarnessAdapter = {
       ...claudeAdapter,
       planResume: () =>
@@ -180,8 +178,13 @@ testEffect("askPlanResume treats adapter failure as no plan and warns", () =>
           }),
         ),
     };
-    table.register(failing);
-    const failingBehaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table);
+    const table = adapterLookupWith([failing]);
+    const failingBehaviour = buildPluginBehaviour(
+      emptyCommands(),
+      emptyAlgorithms(),
+      table,
+      stubSessions,
+    );
     const logs: string[] = [];
     const plan = yield* withCollectingLogger(
       askPlanResume("claude", id("sess")).pipe(
@@ -196,7 +199,6 @@ testEffect("askPlanResume treats adapter failure as no plan and warns", () =>
 
 testClockEffect("askPlanResume times out under TestClock and yields no plan", () =>
   Effect.gen(function* () {
-    const table = new ForeignHarnessAdapterTable();
     const hanging: ForeignHarnessAdapter = {
       ...codexAdapter,
       planResume: () =>
@@ -210,8 +212,13 @@ testClockEffect("askPlanResume times out under TestClock and yields no plan", ()
           ),
         ),
     };
-    table.register(hanging);
-    const hangingBehaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table);
+    const table = adapterLookupWith([hanging]);
+    const hangingBehaviour = buildPluginBehaviour(
+      emptyCommands(),
+      emptyAlgorithms(),
+      table,
+      stubSessions,
+    );
     const logs: string[] = [];
     const fiber = yield* withCollectingLogger(
       askPlanResume("codex", id("late")).pipe(

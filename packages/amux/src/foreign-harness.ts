@@ -13,9 +13,9 @@ import type * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import type { AgentResumePlan } from "./agent-resume.ts";
 import type { AgentSessionRef, OfficialAgentSource } from "./agent-session.ts";
+import type { Contribution, ContributionTable, PluginInstance } from "./plugin/contributions.ts";
 import type { CurrentPlugin, RegistryService } from "./plugin/services.ts";
 import { scopedRegistry } from "./plugin/services.ts";
-import type { PluginInstance } from "./plugin/contributions.ts";
 
 export class ForeignHarnessHookError extends S.TaggedError<ForeignHarnessHookError>()(
   "ForeignHarnessHookError",
@@ -48,42 +48,13 @@ export type ForeignHarnessAdapter = {
   };
 };
 
-/** Lookup table for registered foreign-harness adapters (daemon and CLI each own one). */
+/** Lookup over committed contribution rows (daemon and CLI each own one table). */
 export type ForeignHarnessAdapterLookup = {
   readonly bySource: (source: string) => ForeignHarnessAdapter | undefined;
   readonly byId: (id: string) => ForeignHarnessAdapter | undefined;
   readonly list: () => readonly ForeignHarnessAdapter[];
+  readonly all: () => readonly Contribution<ForeignHarnessAdapter>[];
 };
-
-/**
- * In-memory adapter table. Daemon and CLI each own one; plugins register
- * into it through `ForeignHarnessAdaptersTag`.
- */
-export class ForeignHarnessAdapterTable implements ForeignHarnessAdapterLookup {
-  readonly #bySource = new Map<string, ForeignHarnessAdapter>();
-  readonly #byId = new Map<string, ForeignHarnessAdapter>();
-
-  register(adapter: ForeignHarnessAdapter): () => void {
-    this.#bySource.set(adapter.source, adapter);
-    this.#byId.set(adapter.id, adapter);
-    return () => {
-      if (this.#bySource.get(adapter.source) === adapter) this.#bySource.delete(adapter.source);
-      if (this.#byId.get(adapter.id) === adapter) this.#byId.delete(adapter.id);
-    };
-  }
-
-  bySource(source: string): ForeignHarnessAdapter | undefined {
-    return this.#bySource.get(source);
-  }
-
-  byId(id: string): ForeignHarnessAdapter | undefined {
-    return this.#byId.get(id);
-  }
-
-  list(): readonly ForeignHarnessAdapter[] {
-    return [...this.#byId.values()];
-  }
-}
 
 export interface ForeignHarnessAdaptersService
   extends RegistryService<ForeignHarnessAdapter>, ForeignHarnessAdapterLookup {}
@@ -93,17 +64,23 @@ export class ForeignHarnessAdaptersTag extends Context.Service<
   ForeignHarnessAdaptersService
 >()("amux/ForeignHarnessAdapters") {}
 
+/**
+ * One contribution table is the store: bySource / byId / list / all and
+ * register all read or write that table.
+ */
 export const makeForeignHarnessAdapters = (
-  table: ForeignHarnessAdapterTable,
-  register: (owner: PluginInstance, adapter: ForeignHarnessAdapter) => () => void,
+  table: ContributionTable<ForeignHarnessAdapter>,
 ): ForeignHarnessAdaptersService =>
   scopedRegistry(
     {
-      bySource: (source: string) => table.bySource(source),
-      byId: (id: string) => table.byId(id),
-      list: () => table.list(),
+      bySource: (source: string) =>
+        table.all().find((entry) => entry.value.source === source)?.value,
+      byId: (id: string) => table.all().find((entry) => entry.value.id === id)?.value,
+      list: () => table.all().map((entry) => entry.value),
+      all: table.all,
     },
-    register,
+    (owner: PluginInstance, adapter: ForeignHarnessAdapter) =>
+      table.add(owner, adapter.id, adapter),
   );
 
 export const registerForeignHarnessAdapter = (

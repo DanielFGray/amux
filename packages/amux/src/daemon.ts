@@ -33,7 +33,9 @@ import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { PluginHostStatus } from "./plugin-host/rpc.ts";
 import { serveDaemonSessions } from "./plugin-host/capabilities-server.ts";
-import { supervisePluginHost, type PluginHostClient } from "./plugin-host/supervisor.ts";
+import { awaitFirstPluginHostOutcome, supervisePluginHost } from "./plugin-host/supervisor.ts";
+import type { PluginHostGeneration } from "./plugin-host/client.ts";
+import { PluginHostError } from "./plugin-host/rpc.ts";
 import { removeStaleSocket } from "./remove-stale-socket.ts";
 import { type AttachHostService } from "./effect/AttachHost.ts";
 import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
@@ -55,22 +57,14 @@ import {
 import { DaemonSessions, buildDaemonSessions } from "./daemon-sessions.ts";
 import {
   PluginBehaviour,
-  buildPluginBehaviour,
+  asHostFailure,
+  pluginBehaviourFromHostSlot,
   runPluginSessionCommand,
 } from "./plugin-behaviour.ts";
 import { configPath, loadConfig, type Config } from "./config.ts";
 import { createPluginContributions } from "./plugin/contributions.ts";
 import type { DaemonKernelPhase } from "./daemon-kernel.ts";
 import { startDaemonKernel } from "./daemon-kernel.ts";
-import type { PluginDefinition } from "./plugin/types.ts";
-import {
-  DaemonCommandsTag,
-  TilingAlgorithmsTag,
-  scopedRegistry,
-  type DaemonCommandRecord,
-  type TilingAlgorithmRegistration,
-} from "./plugin/services.ts";
-import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import type { PlatformError } from "effect/PlatformError";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
@@ -101,6 +95,7 @@ import {
   COMMAND_META,
   fieldDeclaresPaneTarget,
   isCoreCommand,
+  isClientPluginCommandTag,
   WireCommand,
   type Command,
   type CommandMeta,
@@ -128,11 +123,6 @@ import {
   PendingAgentResumesTag,
   type ResumePlanCandidate,
 } from "./agent-restore.ts";
-import {
-  ForeignHarnessAdaptersTag,
-  ForeignHarnessAdapterTable,
-  makeForeignHarnessAdapters,
-} from "./foreign-harness.ts";
 import { gitWorktreeExists } from "./git.ts";
 import { paneSession } from "./layout.ts";
 import { createHeadlessKeyParser, parseSendKeys } from "./send.ts";
@@ -324,7 +314,6 @@ export const makeDaemonService = Effect.fnUntraced(
     /** Foreign-agent resume: claim once per conversation; defer spawn until size settles. */
     const resumeClaims = yield* AgentResumeClaimsTag;
     const pendingResumes = yield* PendingAgentResumesTag;
-    const harnessAdapters = new ForeignHarnessAdapterTable();
 
     yield* ensurePrivateDirectory(paths.root);
 
@@ -448,63 +437,23 @@ export const makeDaemonService = Effect.fnUntraced(
     );
     const model = Context.get(modelContext, DaemonModel);
 
-    const pluginHostStatus = yield* Ref.make<PluginHostStatus>({
+    const pluginHostStatus = yield* SubscriptionRef.make<PluginHostStatus>({
       state: "starting",
       restarts: 0,
     });
-    const pluginHostClient = yield* SubscriptionRef.make(Option.none<PluginHostClient>());
+    const pluginHostGeneration = yield* SubscriptionRef.make(Option.none<PluginHostGeneration>());
+    const configDirectory = dirname(yield* configPath);
+    const readPluginConfig = (): Effect.Effect<Config> =>
+      options.pluginConfig !== undefined
+        ? Effect.succeed(options.pluginConfig)
+        : provideRootServices(loadConfig());
 
     const pluginContributions = createPluginContributions();
-    const daemonCommandTable = pluginContributions.table<DaemonCommandRecord>();
-    const daemonCommands = scopedRegistry(
-      { all: daemonCommandTable.all },
-      (owner, record: DaemonCommandRecord) =>
-        daemonCommandTable.add(owner, record.command.tag, record),
-    );
-    const tilingAlgorithmTable = pluginContributions.table<TilingAlgorithmRegistration>();
-    const tilingAlgorithms = scopedRegistry(
-      {
-        all: () => [
-          ...tilingAlgorithmTable.all(),
-          {
-            owner: { id: "amux.core", generation: 0 },
-            name: defaultTilingAlgorithm.id,
-            value: {
-              algorithm: defaultTilingAlgorithm,
-            },
-          },
-        ],
-      },
-      (owner, registration: TilingAlgorithmRegistration) =>
-        tilingAlgorithmTable.add(owner, registration.algorithm.id, registration),
-    );
-    const foreignHarnessAdapters = makeForeignHarnessAdapters(harnessAdapters, (_owner, adapter) =>
-      harnessAdapters.register(adapter),
-    );
-    const daemonCoreEntries: readonly PluginDefinition[] = [
-      {
-        id: "amux.registry.daemon-commands",
-        provide: [DaemonCommandsTag],
-        activate: (ctx) => Effect.sync(() => void ctx.provide(DaemonCommandsTag, daemonCommands)),
-      },
-      {
-        id: "amux.registry.tiling-algorithms",
-        provide: [TilingAlgorithmsTag],
-        activate: (ctx) =>
-          Effect.sync(() => void ctx.provide(TilingAlgorithmsTag, tilingAlgorithms)),
-      },
-      {
-        id: "amux.registry.foreign-harness-adapters",
-        provide: [ForeignHarnessAdaptersTag],
-        activate: (ctx) =>
-          Effect.sync(() => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters)),
-      },
-    ];
-
-    const pluginBehaviour = buildPluginBehaviour(
-      daemonCommands,
-      tilingAlgorithms,
-      foreignHarnessAdapters,
+    const pluginBehaviour = yield* Layer.build(
+      pluginBehaviourFromHostSlot(pluginHostGeneration),
+    ).pipe(
+      Scope.provide(daemonScope),
+      Effect.map((ctx) => Context.get(ctx, PluginBehaviour)),
     );
 
     const activeSaveRef = {
@@ -727,13 +676,9 @@ export const makeDaemonService = Effect.fnUntraced(
             ),
           );
 
-        const config = options.pluginConfig ?? (yield* provideRootServices(loadConfig()));
         const kernel = yield* startDaemonKernel({
           scope: daemonScope,
           contributions: pluginContributions,
-          config,
-          configDirectory: dirname(yield* configPath),
-          coreEntries: daemonCoreEntries,
           attach: {
             path: paths.attach,
             processStatePath: paths.processState,
@@ -770,6 +715,40 @@ export const makeDaemonService = Effect.fnUntraced(
       Effect.gen(function* () {
         if (state._tag !== "starting") return [void 0, state] as const;
         const { host, kernel } = state;
+
+        // Plugin-host before restore so planResume can use adapters when ready.
+        // Own fiber in daemonScope: host exit/hang cannot reach sessions/model.
+        yield* Effect.forkIn(
+          supervisePluginHost({
+            socketPath: paths.pluginHost,
+            capabilitiesSocketPath: paths.pluginCapabilities,
+            status: pluginHostStatus,
+            generation: pluginHostGeneration,
+            loadGeneration: (client) =>
+              readPluginConfig().pipe(
+                Effect.flatMap((pluginConfig) =>
+                  client.Load({
+                    plugins: pluginConfig.plugins,
+                    configDirectory,
+                  }),
+                ),
+                Effect.mapError(
+                  (error) =>
+                    new PluginHostError({
+                      message: error.message,
+                    }),
+                ),
+              ),
+            argv: options.pluginHost?.argv,
+            pingIntervalMs: options.pluginHost?.pingIntervalMs,
+            pingTimeoutMs: options.pluginHost?.pingTimeoutMs,
+            backoffInitialMs: options.pluginHost?.backoffInitialMs,
+            backoffMaxMs: options.pluginHost?.backoffMaxMs,
+          }).pipe(Scope.provide(daemonScope)),
+          daemonScope,
+        );
+        // Wait for Load to publish a generation or fail — no config-shaped timeout.
+        yield* awaitFirstPluginHostOutcome(pluginHostGeneration, pluginHostStatus);
 
         yield* Effect.gen(function* () {
           const cur = yield* model.get;
@@ -809,9 +788,9 @@ export const makeDaemonService = Effect.fnUntraced(
               planCandidates.push({ sessionId: session.id, snapshot: pane.agentSession });
             }
           }
-          // Ask adapters before the spawn loop so a future plugin-host socket
-          // round trip stays off the claim-order path. Claims still run below
-          // in loop order so the first pane wins.
+          // Ask adapters before the spawn loop so a plugin-host socket round
+          // trip stays off the claim-order path. Claims still run below in
+          // loop order so the first pane wins.
           const plansBySession = yield* collectSessionResumePlans(planCandidates).pipe(
             Effect.provideService(PluginBehaviour, pluginBehaviour),
           );
@@ -910,7 +889,7 @@ export const makeDaemonService = Effect.fnUntraced(
         // Same controlScope: shutdown closes both listeners. Admission is the
         // live plugin-host pid, read at connect time — an older generation is refused.
         yield* serveDaemonSessions(paths.pluginCapabilities, daemonSessions, (peer) =>
-          Ref.get(pluginHostStatus).pipe(
+          SubscriptionRef.get(pluginHostStatus).pipe(
             Effect.map((status) => admitsHostChild(peer, process.getuid?.(), status.pid)),
           ),
         ).pipe(Scope.provide(controlScope), Effect.provideService(FileSystem.FileSystem, fs));
@@ -954,24 +933,6 @@ export const makeDaemonService = Effect.fnUntraced(
             processStateSocket: paths.processState,
             binPath: amuxCli,
           }).pipe(Effect.provide(BunServices.layer), Scope.provide(daemonScope)),
-          daemonScope,
-        );
-
-        // Plugin-host: supervised child answering PluginHostRpcs. Own fiber in
-        // daemonScope so host exit/hang cannot reach sessions or the model, and
-        // scope close stops the child (no orphan).
-        yield* Effect.forkIn(
-          supervisePluginHost({
-            socketPath: paths.pluginHost,
-            capabilitiesSocketPath: paths.pluginCapabilities,
-            status: pluginHostStatus,
-            client: pluginHostClient,
-            argv: options.pluginHost?.argv,
-            pingIntervalMs: options.pluginHost?.pingIntervalMs,
-            pingTimeoutMs: options.pluginHost?.pingTimeoutMs,
-            backoffInitialMs: options.pluginHost?.backoffInitialMs,
-            backoffMaxMs: options.pluginHost?.backoffMaxMs,
-          }).pipe(Scope.provide(daemonScope)),
           daemonScope,
         );
 
@@ -1516,7 +1477,6 @@ export const makeDaemonService = Effect.fnUntraced(
             };
             const result = yield* runPluginSessionCommand(value, commandContext).pipe(
               Effect.provideService(PluginBehaviour, pluginBehaviour),
-              Effect.provideService(DaemonSessions, daemonSessions),
               Effect.mapError(
                 (error) =>
                   new ControlError({
@@ -1526,12 +1486,17 @@ export const makeDaemonService = Effect.fnUntraced(
             );
             return result === undefined ? {} : { result };
           }
-          return yield* controlFail(`daemon command '${value._tag}' has no handler`);
+          if (registration.meta.target !== "client") {
+            return yield* controlFail(`daemon command '${value._tag}' has no handler`);
+          }
+          // Client-target declaration: fall through to runOnClient below.
+        } else if (!isClientPluginCommandTag(value._tag)) {
+          // Neither core, declared, nor a client-only plugin verb.
+          const host = yield* SubscriptionRef.get(pluginHostStatus);
+          const hostNote = host.state === "ready" ? "" : ` (plugin host not ready: ${host.state})`;
+          return yield* controlFail(`unknown command '${value._tag}'${hostNote}`);
         }
-        // Not a core command: only a plugin verb reaches here (the control
-        // socket's wire schema admits nothing else). Client-target plugin verbs
-        // run on an attached client. Prefer the connection that asked; a
-        // control-socket caller (CLI) still picks any attached client.
+        // Declared client-target, or undeclared client-plugin tag: run on an attached client.
         const connections = yield* model.attachedConnections;
         const target = caller ?? connections[0];
         if (!target) return yield* controlFail(`no client attached, cannot run '${value._tag}'`);
@@ -1702,15 +1667,29 @@ export const makeDaemonService = Effect.fnUntraced(
         return yield* Match.value(command).pipe(
           Match.tag("plugin.reload", (command) =>
             Effect.gen(function* () {
-              // Reconcile the daemon's own plugin set first: a client that
-              // just enabled a daemon-side plugin and immediately relies on
-              // it must not race the event it's about to publish below.
-              const live = hostOf(yield* Ref.get(stateRef));
-              if (!live) return yield* controlFail("daemon not started");
-              const config = options.pluginConfig ?? (yield* provideRootServices(loadConfig()));
-              yield* live.kernel
-                .reload(config)
-                .pipe(Effect.mapError((message) => new DaemonError({ message })));
+              const live = yield* SubscriptionRef.get(pluginHostGeneration);
+              if (Option.isNone(live)) {
+                return yield* controlFail("plugin host not ready");
+              }
+              const client = live.value.client;
+              const config = yield* readPluginConfig();
+              const declarations = yield* asHostFailure(
+                S.is(ControlError),
+                (message) => new ControlError({ message }),
+                client
+                  .Load({
+                    plugins: config.plugins,
+                    configDirectory,
+                  })
+                  .pipe(Effect.mapError((error) => new ControlError({ message: error.message }))),
+              );
+              yield* SubscriptionRef.update(pluginHostGeneration, (current) =>
+                Option.match(current, {
+                  onNone: () => Option.none(),
+                  onSome: (generation) =>
+                    generation.client === client ? Option.some({ client, declarations }) : current,
+                }),
+              );
               if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
               else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
               return {};
@@ -1811,7 +1790,7 @@ export const makeDaemonService = Effect.fnUntraced(
             const obligation = cur.durableObligations.values().next().value as string | undefined;
             const degraded = obligation ?? cur.heartbeatError ?? undefined;
             const live = yield* liveSessions;
-            const pluginHost = yield* Ref.get(pluginHostStatus);
+            const pluginHost = yield* SubscriptionRef.get(pluginHostStatus);
             const baseStatus = {
               attached: cur.state.attached,
               ...(yield* attachTimes()),

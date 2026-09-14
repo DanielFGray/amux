@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { Effect, Result, Schema } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 import {
   COMMAND_DEFS,
   COMMAND_META,
@@ -8,13 +8,16 @@ import {
   PaneTarget,
   PaneTargetPane,
   agentToolDefinitions,
+  clientPluginCommandTag,
   command,
   commandDefinition,
   commandInvocation,
   decodeCommand,
   fieldDeclaresPaneTarget,
+  isClientPluginCommandTag,
   makeCommands,
   isCoreCommandTag,
+  parseClientPluginCommandTag,
   runDetached,
   type CommandHandlerTable,
 } from "./commands.ts";
@@ -365,6 +368,19 @@ test("built-in commands declare resources from decoded args", () => {
     expect(typeof def.resources).toBe("function");
     expect(Array.isArray(def.resources({} as never))).toBe(true);
   }
+});
+
+test("client plugin command tags keep dotted plugin ids and reject malformed tags", () => {
+  expect(parseClientPluginCommandTag("plugin.amux.notifications.ring")).toEqual(
+    Option.some({ pluginId: "amux.notifications", verb: "ring" }),
+  );
+  expect(parseClientPluginCommandTag("pane.split")).toEqual(Option.none());
+  expect(parseClientPluginCommandTag("plugin.x")).toEqual(Option.none());
+  expect(isClientPluginCommandTag("plugin.amux.notifications.ring")).toBe(true);
+  expect(isClientPluginCommandTag("plugin.x")).toBe(false);
+  expect(clientPluginCommandTag("amux.notifications", "ring")).toBe(
+    "plugin.amux.notifications.ring",
+  );
 });
 
 test("a plugin registers a verb under its own namespace and it dispatches, lists, and validates", () => {

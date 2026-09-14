@@ -8,16 +8,17 @@ import {
   PendingAgentResumeScheduler,
   type PendingAgentResume,
 } from "./agent-restore.ts";
-import {
-  ForeignHarnessAdapterTable,
-  ForeignHarnessPlanResumeError,
-  type ForeignHarnessAdapter,
-} from "./foreign-harness.ts";
+import { ForeignHarnessPlanResumeError, type ForeignHarnessAdapter } from "./foreign-harness.ts";
 import { claudeAdapter } from "../../plugin-agent-continuity/src/adapters/claude.ts";
 import { testEffect } from "./test-effect.ts";
 import { withCollectingLogger } from "./test-logger.ts";
 import { PluginBehaviour, buildPluginBehaviour } from "./plugin-behaviour.ts";
-import { emptyAlgorithms, emptyCommands } from "./test-plugin-behaviour.ts";
+import {
+  adapterLookupWith,
+  emptyAlgorithms,
+  emptyCommands,
+  stubSessions,
+} from "./test-plugin-behaviour.ts";
 
 const { effect: testClockEffect } = testEffect(Layer.empty);
 
@@ -121,7 +122,6 @@ test("takeAllReady drains every pending resume under one geometry", () => {
 
 testEffect("collectSessionResumePlans: a failing adapter leaves that session with no plan", () =>
   Effect.gen(function* () {
-    const table = new ForeignHarnessAdapterTable();
     const selective: ForeignHarnessAdapter = {
       ...claudeAdapter,
       planResume: (ref) =>
@@ -134,8 +134,8 @@ testEffect("collectSessionResumePlans: a failing adapter leaves that session wit
             )
           : claudeAdapter.planResume(ref),
     };
-    table.register(selective);
-    const behaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table);
+    const table = adapterLookupWith([selective]);
+    const behaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table, stubSessions);
     const logs: string[] = [];
     const plans = yield* withCollectingLogger(
       collectSessionResumePlans([
@@ -168,7 +168,6 @@ testEffect("collectSessionResumePlans: a failing adapter leaves that session wit
 
 testClockEffect("collectSessionResumePlans: a hanging adapter hits the time limit", () =>
   Effect.gen(function* () {
-    const table = new ForeignHarnessAdapterTable();
     const hanging: ForeignHarnessAdapter = {
       ...claudeAdapter,
       planResume: () =>
@@ -182,8 +181,8 @@ testClockEffect("collectSessionResumePlans: a hanging adapter hits the time limi
           ),
         ),
     };
-    table.register(hanging);
-    const behaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table);
+    const table = adapterLookupWith([hanging]);
+    const behaviour = buildPluginBehaviour(emptyCommands(), emptyAlgorithms(), table, stubSessions);
     const logs: string[] = [];
     const fiber = yield* withCollectingLogger(
       collectSessionResumePlans([

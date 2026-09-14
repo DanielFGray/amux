@@ -394,7 +394,6 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
     make: Effect.gen(function* () {
       const model = yield* DaemonModel;
       const transactionSessions = yield* WorkspaceTransactionSessions;
-      const pluginSessions = yield* DaemonSessions;
       const worktreeOps = yield* WorkspaceTransactionWorktreeOps;
       const persistence = yield* WorkspaceTransactionPersistence;
       const events = yield* WorkspaceTransactionEvents;
@@ -461,6 +460,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
               const defaultDeclaration: PluginAlgorithmDeclaration = {
                 id: defaultTilingAlgorithm.id,
                 version: defaultTilingAlgorithm.version,
+                owner: { id: "amux.core", generation: 0 },
               };
               const algorithmDeclarations = [defaultDeclaration, ...declarations.algorithms];
               const selectedId = resolveOptions(
@@ -560,14 +560,13 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                   }
                   for (const action of mutation.actions) {
                     if (isCoreWorkspaceAction(action)) continue;
-                    yield* Effect.scoped(
-                      behaviour
-                        .runAction(action)
-                        .pipe(
-                          Effect.provideService(DaemonSessions, pluginSessions),
-                          Effect.mapError(transactionError),
-                        ),
-                    ).pipe(Effect.timeout("30 seconds"), Effect.asVoid);
+                    yield* behaviour
+                      .runAction(action)
+                      .pipe(
+                        Effect.mapError(transactionError),
+                        Effect.timeout("30 seconds"),
+                        Effect.asVoid,
+                      );
                   }
                   for (const wt of worktrees.removed) {
                     const dirty = yield* worktreeOps.isDirty(wt!.path);

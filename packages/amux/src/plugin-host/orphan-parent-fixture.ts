@@ -5,30 +5,36 @@
  * the host must still exit via the stdin lifeline.
  */
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Config, Effect, Option, Ref, SubscriptionRef } from "effect";
-import type { PluginHostStatus } from "./rpc.ts";
-import { awaitPluginHostClient, supervisePluginHost, type PluginHostClient } from "./supervisor.ts";
+import { Config, Effect, Option, SubscriptionRef } from "effect";
+import type { PluginHostGeneration } from "./client.ts";
+import { PluginHostError, type PluginHostStatus } from "./rpc.ts";
+import { awaitPluginHostClient, supervisePluginHost } from "./supervisor.ts";
 
 const program = Effect.gen(function* () {
   const socketPath = yield* Config.string("AMUX_PLUGIN_HOST_SOCKET");
   const capabilitiesSocketPath = `${socketPath}.capabilities`;
-  const status = yield* Ref.make<PluginHostStatus>({
+  const status = yield* SubscriptionRef.make<PluginHostStatus>({
     state: "starting",
     restarts: 0,
   });
-  const client = yield* SubscriptionRef.make(Option.none<PluginHostClient>());
+  const generation = yield* SubscriptionRef.make(Option.none<PluginHostGeneration>());
+  const configDirectory = yield* Config.string("HOME").pipe(Effect.orElseSucceed(() => "/tmp"));
 
   yield* Effect.forkScoped(
     supervisePluginHost({
       socketPath,
       capabilitiesSocketPath,
       status,
-      client,
+      generation,
+      loadGeneration: (client) =>
+        client
+          .Load({ plugins: [], configDirectory })
+          .pipe(Effect.mapError((error) => new PluginHostError({ message: error.message }))),
     }),
   );
 
-  yield* awaitPluginHostClient(client);
-  const ready = yield* Ref.get(status);
+  yield* awaitPluginHostClient(generation);
+  const ready = yield* SubscriptionRef.get(status);
   if (ready.pid === undefined) {
     return yield* Effect.die("plugin-host ready without a pid");
   }

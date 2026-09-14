@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Exit, JsonSchema, Schema as S, SchemaIssue } from "effect";
+import { Cause, Context, Effect, Exit, JsonSchema, Option, Schema as S, SchemaIssue } from "effect";
 
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
@@ -1456,8 +1456,8 @@ export const runtimeCommand = (tag: string, args?: Record<string, JsonValue>): R
 /**
  * The wire shape of a plugin verb: `Command` is a closed compile-time union,
  * so a control-socket payload needs a permissive fallback to admit
- * `plugin.<id>.<verb>` tags the daemon has never seen and cannot validate
- * beyond this shape. The `plugin.` prefix is what tells the daemon a tag it
+ * {@link clientPluginCommandTag} tags the daemon has never seen and cannot
+ * validate beyond this shape. That namespace is what tells the daemon a tag it
  * does not recognise is worth forwarding to an attached client rather than
  * rejecting outright.
  */
@@ -1557,6 +1557,30 @@ export type MakeCommandsOptions = {
   readonly realmForPane?: (paneId: string) => RealmValue;
 };
 
+/**
+ * Client-plugin command namespace (`plugin.<pluginId>.<verb>`): what
+ * {@link Commands.registerCommand} claims. Build with
+ * {@link clientPluginCommandTag}; classify with {@link isClientPluginCommandTag}
+ * / {@link parseClientPluginCommandTag}. Callers must not invent a second prefix.
+ */
+const CLIENT_PLUGIN_COMMAND_NAMESPACE = "plugin.";
+
+export const clientPluginCommandTag = (pluginId: string, verb: string): string =>
+  `${CLIENT_PLUGIN_COMMAND_NAMESPACE}${pluginId}.${verb}`;
+
+export const parseClientPluginCommandTag = (
+  tag: string,
+): Option.Option<{ readonly pluginId: string; readonly verb: string }> => {
+  if (!tag.startsWith(CLIENT_PLUGIN_COMMAND_NAMESPACE)) return Option.none();
+  const rest = tag.slice(CLIENT_PLUGIN_COMMAND_NAMESPACE.length);
+  const lastDot = rest.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === rest.length - 1) return Option.none();
+  return Option.some({ pluginId: rest.slice(0, lastDot), verb: rest.slice(lastDot + 1) });
+};
+
+export const isClientPluginCommandTag = (tag: string): boolean =>
+  Option.isSome(parseClientPluginCommandTag(tag));
+
 export const makeCommands = (
   handlers: CommandHandlers | CommandHandlerTable,
   options: MakeCommandsOptions = {},
@@ -1630,7 +1654,7 @@ export const makeCommands = (
     meta,
     resources,
     handler,
-  ) => claim(`plugin.${pluginId}.${verb}`, fields, meta, resources, handler);
+  ) => claim(clientPluginCommandTag(pluginId, verb), fields, meta, resources, handler);
 
   const registerFullCommand: Commands["registerFullCommand"] = (
     tag,

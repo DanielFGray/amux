@@ -1,7 +1,7 @@
-import { Schema as S, type Types } from "effect";
+import { Option, Schema as S, type Types } from "effect";
 import { fileURLToPath } from "node:url";
 import { keysFor, type CommandSpec, type Keys } from "../bindings.ts";
-import type { CommandMeta } from "../commands.ts";
+import { parseClientPluginCommandTag, type CommandMeta } from "../commands.ts";
 import type { ContextSpec } from "../key-context.ts";
 import type { PaneContent } from "../layout.ts";
 import type { Contribution, PluginInstance } from "./contributions.ts";
@@ -57,17 +57,6 @@ export interface InspectCatalog {
   readonly keys: () => Keys;
 }
 
-/** `plugin.<pluginId>.<verb>` — plugin ids may contain dots; verb is the last segment. */
-export const parsePluginCommandTag = (
-  tag: string,
-): { readonly pluginId: string; readonly verb: string } | undefined => {
-  if (!tag.startsWith("plugin.")) return undefined;
-  const rest = tag.slice("plugin.".length);
-  const lastDot = rest.lastIndexOf(".");
-  if (lastDot <= 0 || lastDot === rest.length - 1) return undefined;
-  return { pluginId: rest.slice(0, lastDot), verb: rest.slice(lastDot + 1) };
-};
-
 /**
  * Absent facts are omitted keys, never `undefined` values: an inspect result
  * crosses the client socket as a JsonValue, which has no `undefined`.
@@ -118,11 +107,13 @@ export const inspect = (catalog: InspectCatalog, query: InspectQuery): InspectRe
     }
     case "command": {
       const meta = catalog.commandMeta(subject.name);
-      const parsed = parsePluginCommandTag(subject.name);
-      if (!meta && !parsed) return { kind: "command", name: subject.name, found: false };
-      if (parsed) {
-        const provider = provenanceFor(catalog, parsed.pluginId);
-        const details: Details = { verb: parsed.verb };
+      const parsed = parseClientPluginCommandTag(subject.name);
+      if (!meta && Option.isNone(parsed))
+        return { kind: "command", name: subject.name, found: false };
+      if (Option.isSome(parsed)) {
+        const { pluginId, verb } = parsed.value;
+        const provider = provenanceFor(catalog, pluginId);
+        const details: Details = { verb };
         const result: Types.Mutable<InspectResult> = {
           kind: "command",
           name: subject.name,
@@ -139,14 +130,15 @@ export const inspect = (catalog: InspectCatalog, query: InspectQuery): InspectRe
         }
         return result;
       }
+      if (meta === undefined) return { kind: "command", name: subject.name, found: false };
       return {
         kind: "command",
         name: subject.name,
         found: true,
-        description: meta!.desc,
+        description: meta.desc,
         provider: coreProvenance(),
         whyActive: "core command (built into the command table)",
-        details: { group: meta!.group, target: meta!.target, exposure: meta!.exposure },
+        details: { group: meta.group, target: meta.target, exposure: meta.exposure },
       };
     }
     case "binding": {

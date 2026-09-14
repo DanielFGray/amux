@@ -634,6 +634,7 @@ testEffect(
             actionTags: ["fake.act"],
             paneTypes: [],
             providers: [],
+            owner: { id: "test", generation: 0 },
           },
         ],
         algorithms: [],
@@ -687,7 +688,7 @@ testEffect(
       const fake: PluginBehaviourService = {
         declarations: Effect.succeed({
           commands: [],
-          algorithms: [{ id: "boom", version: 1 }],
+          algorithms: [{ id: "boom", version: 1, owner: { id: "test", generation: 0 } }],
           adapters: [],
         }),
         reduce: () => Effect.succeed({ changes: [] }),

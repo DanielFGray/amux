@@ -165,6 +165,14 @@ test("ping and status answer over the session's unix socket", async () => {
 
 test("PluginDeclarations returns declared plugin commands over the wire", async () => {
   const { daemon, env } = await started("control-plugin-declarations");
+  await waitFor(
+    async () => {
+      const status = await ctl(daemon.id, env, (c) => c.Status());
+      return status.pluginHost.state === "ready";
+    },
+    "plugin-host ready for declarations",
+    30_000,
+  );
   const { PluginDeclarationsSchema } = await import("./plugin-behaviour.ts");
   const viaRpc = await ctl(daemon.id, env, (c) => c.PluginDeclarations());
   expect(Option.isSome(S.decodeUnknownOption(PluginDeclarationsSchema)(viaRpc))).toBe(true);

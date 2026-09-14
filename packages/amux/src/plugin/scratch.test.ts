@@ -15,7 +15,7 @@ import {
   sendSelectionScratchSource,
   sendTopBufferToPane,
 } from "./scratch.ts";
-import { loadPluginsFromConfig } from "./loader.ts";
+import { loadPlugins } from "./loader.ts";
 import { DEFAULT_CONFIG, loadConfig, type Config } from "../config.ts";
 import { testPluginEnvironment } from "./test-environment.ts";
 import { testEffect } from "../test-effect.ts";
@@ -254,7 +254,7 @@ testEffect("promoteScratch writes managed path + config so a fresh load picks it
     if (!commandsRegistry) return yield* Effect.fail("missing commands registry");
     yield* freshHost.add(commandsRegistry);
 
-    const loaded = yield* loadPluginsFromConfig(onDisk, freshHost, configDir, [
+    const loaded = yield* loadPlugins(onDisk.plugins, freshHost, configDir, [
       ...environment.registryEntries,
     ]);
     expect(loaded.entries.some((entry) => entry.id === id)).toBe(true);

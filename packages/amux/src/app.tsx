@@ -101,7 +101,7 @@ import {
 } from "./plugin/contributions.ts";
 
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
-import { loadPluginsFromConfig, type PluginEntry } from "./plugin/loader.ts";
+import { loadPlugins, type PluginEntry } from "./plugin/loader.ts";
 import { makeOverlay, OverlayTag, type OverlayKind } from "./plugin/overlay.ts";
 import {
   CommandsChromeTag,
@@ -480,8 +480,8 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     runFiber(
       "plugin-load",
       Effect.gen(function* () {
-        const loaded = yield* loadPluginsFromConfig(
-          options.config,
+        const loaded = yield* loadPlugins(
+          options.config.plugins,
           pluginHost,
           options.configDir ?? dirname(yield* configPath),
           [...app.registryEntries, ...app.coreEntries],

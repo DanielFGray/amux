@@ -1,6 +1,5 @@
 import { Context, Effect, Exit, Layer, Scope } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
-import type { Config } from "./config.ts";
 import {
   AttachHost,
   type AttachHostOptions,
@@ -13,22 +12,17 @@ import { AttachHub } from "./effect/AttachHub.ts";
 import { SessionSupervisor } from "./effect/SessionSupervisor.ts";
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
 import type { PluginContributions } from "./plugin/contributions.ts";
-import { loadDaemonPluginsFromConfig } from "./plugin/loader.ts";
 import { definePlugin, type PluginDefinition } from "./plugin/types.ts";
 
 export interface DaemonKernelPhase {
   readonly attachHost: AttachHostService;
   readonly pluginHost: PluginHost;
   readonly close: Effect.Effect<void>;
-  readonly reload: (config: Config) => Effect.Effect<void, string>;
 }
 
 export interface StartDaemonKernel {
   readonly scope: Scope.Scope;
   readonly contributions: PluginContributions;
-  readonly config: Config;
-  readonly configDirectory: string;
-  readonly coreEntries: readonly PluginDefinition[];
   readonly attach: AttachHostOptions;
   readonly agentLog: AgentLogService;
 }
@@ -79,23 +73,18 @@ const kernelEntries = (input: StartDaemonKernel): readonly PluginDefinition[] =>
   }),
 ];
 
+/** Start the attach kernel only — user `./daemon` plugins load in the plugin-host. */
 export const startDaemonKernel = Effect.fnUntraced(function* (input: StartDaemonKernel) {
   const phaseScope = yield* Scope.fork(input.scope, "sequential");
   const host = yield* createPluginHost({ contributions: input.contributions }).pipe(
     Effect.provideService(Scope.Scope, phaseScope),
   );
-  const entries = [...input.coreEntries, ...kernelEntries(input)];
-  const reload = (config: Config) =>
-    loadDaemonPluginsFromConfig(config, host, input.configDirectory, entries).pipe(
-      Effect.provide(BunFileSystem.layer),
-    );
-  const phase = yield* reload(input.config).pipe(
+  const phase = yield* host.reconcile([...kernelEntries(input)]).pipe(
     Effect.andThen(host.await(AttachHost)),
     Effect.map((attachHost) => ({
       attachHost,
       pluginHost: host,
       close: Scope.close(phaseScope, Exit.void),
-      reload,
     })),
     Effect.onError(() => Scope.close(phaseScope, Exit.void)),
   );

@@ -15,9 +15,11 @@ import {
   runPluginSessionCommand,
 } from "./plugin-behaviour.ts";
 import {
+  adapterLookupWith,
   emptyAdapterLookup,
   emptyAlgorithms,
   pluginBehaviourFromRegistrations,
+  stubSessions,
 } from "./test-plugin-behaviour.ts";
 import { DaemonSessions, type DaemonSessionsService } from "./daemon-sessions.ts";
 import {
@@ -35,7 +37,6 @@ import { editorDaemonCommands } from "../../editor/src/daemon.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { niriTilingAlgorithm } from "../../plugin-niri/src/niri.ts";
 import { adapters as continuityAdapters } from "../../plugin-agent-continuity/src/adapters/index.ts";
-import { ForeignHarnessAdapterTable } from "./foreign-harness.ts";
 import type {
   DaemonCommandRecord,
   DaemonCommandsService,
@@ -203,8 +204,7 @@ testEffect(
 
 testEffect("declarations list editor.open, agent.* commands, niri, and continuity adapters", () =>
   Effect.gen(function* () {
-    const table = new ForeignHarnessAdapterTable();
-    for (const adapter of continuityAdapters) table.register(adapter);
+    const table = adapterLookupWith(continuityAdapters);
     const algorithms: TilingAlgorithmsService = {
       all: () => [
         {
@@ -290,7 +290,12 @@ testEffect("after a plugin reload, declarations show the new set", () =>
       reduce: () => Effect.succeed({ changes: [] }),
     });
     const commands = mutableCommands([yield* recordOf(first)]);
-    const behaviour = buildPluginBehaviour(commands, emptyAlgorithms(), emptyAdapterLookup());
+    const behaviour = buildPluginBehaviour(
+      commands,
+      emptyAlgorithms(),
+      emptyAdapterLookup(),
+      stubSessions,
+    );
     const before = yield* behaviour.declarations;
     expect(before.commands.map((entry) => entry.tag)).toEqual(["probe.first"]);
     commands.replace([yield* recordOf(second)]);
@@ -320,11 +325,13 @@ testEffect("two behaviours over different tables do not share declarations", () 
       mutableCommands([yield* recordOf(leftCmd)]),
       emptyAlgorithms(),
       emptyAdapterLookup(),
+      stubSessions,
     );
     const right = buildPluginBehaviour(
       mutableCommands([yield* recordOf(rightCmd)]),
       emptyAlgorithms(),
       emptyAdapterLookup(),
+      stubSessions,
     );
     expect((yield* left.declarations).commands.map((entry) => entry.tag)).toEqual(["probe.left"]);
     expect((yield* right.declarations).commands.map((entry) => entry.tag)).toEqual(["probe.right"]);
@@ -394,6 +401,7 @@ testEffect(
         daemonCommands,
         emptyAlgorithms(),
         emptyAdapterLookup(),
+        stubSessions,
       );
       const host = yield* createPluginHost({ contributions });
 

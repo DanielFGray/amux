@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, Option, Scope, type Schema as S, type Stream } from "effect";
+import { Context, Deferred, Effect, Option, Schema as S, Scope, type Stream } from "effect";
 import type { Contribution, PluginContributions, PluginInstance } from "./contributions.ts";
 import type {
   DockOccupant,
@@ -19,7 +19,7 @@ export { SessionFactsTag } from "../session-facts.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
-import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
+import { WorkspaceSnapshotSchema, type PluginWorkspaceReducer } from "../workspace.ts";
 import type { PluginActionRegistration } from "../effect/WorkspaceTransaction.ts";
 import type { PaneTypeRegistration } from "../pane-descriptors.ts";
 import type { ProviderMessageRegistration } from "../session-provider-messages.ts";
@@ -159,9 +159,10 @@ export interface DaemonCommandRecord {
 /** Per-call capabilities for a session-target daemon command. Read-only plus
  *  the live session surface — mutation of daemon-owned model state goes
  *  through workspace-target commands, never through here. */
-export interface DaemonSessionCommandContext {
-  readonly snapshot: WorkspaceSnapshot;
-}
+export const DaemonSessionCommandContextSchema = S.Struct({
+  snapshot: WorkspaceSnapshotSchema,
+});
+export type DaemonSessionCommandContext = typeof DaemonSessionCommandContextSchema.Type;
 
 export interface DaemonCommandsService extends RegistryService<DaemonCommandRecord> {
   readonly all: () => readonly Contribution<DaemonCommandRecord>[];
