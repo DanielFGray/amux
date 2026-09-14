@@ -17,7 +17,7 @@ export const LinkedProcessPluginSchema = S.Struct({
   pluginId: S.String.pipe(S.check(S.isMinLength(1))),
   name: S.String.pipe(S.check(S.isMinLength(1))),
   version: S.String.pipe(S.check(S.isMinLength(1))),
-  description: S.optionalKey(S.String),
+  description: S.optional(S.String),
   pluginRoot: S.String.pipe(S.check(S.isMinLength(1))),
   enabled: S.Boolean,
   linkedAtUnixMs: S.Finite.pipe(S.check(S.isGreaterThanOrEqualTo(0))),
@@ -164,7 +164,7 @@ export const linkProcessPlugin = (
       pluginRoot: absolute,
       enabled: options.enabled ?? true,
       linkedAtUnixMs,
-      ...(manifest.description !== undefined ? { description: manifest.description } : {}),
+      description: manifest.description,
     };
     const registry = yield* readRegistry(roots.registryPath);
     const plugins = [

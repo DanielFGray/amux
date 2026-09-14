@@ -1,14 +1,13 @@
 import { expect, test } from "bun:test";
-import type { WorkspaceSnapshot } from "@danielfgray/amux";
 import { conversationPreview } from "@danielfgray/amux/project-store.ts";
 import type { ConversationRecord } from "@danielfgray/amux/project-store.ts";
-import { sessionEntries } from "./SessionPicker.tsx";
+import { sessionEntries, type SessionPickerWorkspace } from "./SessionPicker.tsx";
 
 test("conversationPreview prefers the first user text blob", () => {
   expect(
     conversationPreview(
       JSON.stringify({
-        messages: [
+        content: [
           { role: "system", content: "sys" },
           { role: "user", content: [{ type: "text", text: "ship the picker" }] },
         ],
@@ -19,39 +18,26 @@ test("conversationPreview prefers the first user text blob", () => {
 });
 
 test("sessionEntries sorts by conversation date, newest first", () => {
-  const snapshot = {
-    revision: 1,
+  const snapshot: SessionPickerWorkspace = {
     spaces: [
       {
         id: "s1",
         name: "amux",
         dir: "/tmp/amux",
-        state: { activeWindow: 1 },
         windows: [
           {
-            number: 1,
-            state: { focus: null },
-            layout: { root: null, focus: null },
             sessions: [
               {
                 id: "agent-live",
                 name: "native-agent",
-                cwd: "/tmp/amux",
-                cols: 80,
-                rows: 24,
                 exited: false,
-                exitCode: null,
                 kind: "component",
                 provider: "native",
               },
               {
                 id: "agent-dead",
                 name: "native-agent",
-                cwd: "/tmp/amux",
-                cols: 80,
-                rows: 24,
                 exited: true,
-                exitCode: 1,
                 kind: "component",
                 provider: "native",
               },
@@ -61,34 +47,34 @@ test("sessionEntries sorts by conversation date, newest first", () => {
       },
     ],
     state: { activeSpace: "s1" },
-  } as unknown as WorkspaceSnapshot;
+  };
 
   const stored: ConversationRecord[] = [
     {
       session: "agent-live",
       conversation: JSON.stringify({
-        messages: [{ role: "user", content: [{ type: "text", text: "still going" }] }],
+        content: [{ role: "user", content: [{ type: "text", text: "still going" }] }],
       }),
       updated: 100,
     },
     {
       session: "agent-orphan-old",
       conversation: JSON.stringify({
-        messages: [{ role: "user", content: [{ type: "text", text: "ancient" }] }],
+        content: [{ role: "user", content: [{ type: "text", text: "ancient" }] }],
       }),
       updated: 50,
     },
     {
       session: "agent-orphan-new",
       conversation: JSON.stringify({
-        messages: [{ role: "user", content: [{ type: "text", text: "fresh" }] }],
+        content: [{ role: "user", content: [{ type: "text", text: "fresh" }] }],
       }),
       updated: 300,
     },
     {
       session: "agent-dead",
       conversation: JSON.stringify({
-        messages: [{ role: "user", content: [{ type: "text", text: "mid" }] }],
+        content: [{ role: "user", content: [{ type: "text", text: "mid" }] }],
       }),
       updated: 200,
     },

@@ -2,6 +2,7 @@ import { Config, Effect, Option, Schema as S } from "effect";
 import { BunServices } from "@effect/platform-bun";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import { errorMessage } from "../error-message.ts";
 import type { ProcessPluginInvocationContext } from "./env.ts";
 import {
   defaultProcessPluginRoots,
@@ -10,7 +11,11 @@ import {
   unlinkProcessPlugin,
   type ProcessPluginRoots,
 } from "./registry.ts";
-import { resolveProcessPluginAction, resolveProcessPluginPane } from "./resolve.ts";
+import {
+  resolveProcessPluginAction,
+  resolveProcessPluginPane,
+  type ProcessPluginHostLaunch,
+} from "./resolve.ts";
 
 export const PROCESS_PLUGIN_CLI_HELP = [
   "usage: amux process-plugin <command> [args]",
@@ -37,11 +42,6 @@ export const PROCESS_PLUGIN_CLI_HELP = [
 const ACTION_OUTPUT_MAX_BYTES = 64 * 1024;
 
 type Fs = FileSystem.FileSystem | Path.Path;
-
-const errorMessage = (error: unknown): string =>
-  typeof error === "object" && error !== null && "message" in error
-    ? String((error as { message: unknown }).message)
-    : String(error);
 
 const readEnv = (name: string): Effect.Effect<Option.Option<string>> =>
   Config.option(Config.string(name)).pipe(Effect.orElseSucceed(() => Option.none()));
@@ -82,18 +82,17 @@ export const invokeProcessPluginAction = (
   Effect.gen(function* () {
     const controlSocket = yield* readEnv("AMUX_CONTROL_SOCKET");
     const processStateSocket = yield* readEnv("AMUX_PROCESS_STATE_SOCKET");
-    const resolved = yield* resolveProcessPluginAction(pluginId, actionId, {
+    const host: ProcessPluginHostLaunch = {
       roots: options.roots,
       binPath: currentBinPath(),
-      ...(Option.isSome(controlSocket) ? { controlSocket: controlSocket.value } : {}),
-      ...(Option.isSome(processStateSocket)
-        ? { processStateSocket: processStateSocket.value }
-        : {}),
+      controlSocket: Option.getOrUndefined(controlSocket),
+      processStateSocket: Option.getOrUndefined(processStateSocket),
       context: options.context ?? {
         invocationSource: "cli",
         correlationId: "process-plugin-action",
       },
-    });
+    };
+    const resolved = yield* resolveProcessPluginAction(pluginId, actionId, host);
     const child = Bun.spawn([...resolved.argv], {
       cwd: resolved.cwd,
       env: { ...process.env, ...resolved.env },

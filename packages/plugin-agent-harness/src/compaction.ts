@@ -148,14 +148,16 @@ export const shouldAutoCompact = (tokens: number, policy: CompactionPolicy): boo
  * Split history into preserved system prefix, region to summarize, and recent tail.
  * Cut snaps to a user-message turn boundary when possible (Pi turn cut).
  */
-export const splitForCompaction = (
-  prompt: Prompt.Prompt,
-  keepRecentTokens: number,
-): {
+export interface CompactionSplit {
   readonly system: readonly Prompt.Message[];
   readonly toSummarize: readonly Prompt.Message[];
   readonly keep: readonly Prompt.Message[];
-} => {
+}
+
+export const splitForCompaction = (
+  prompt: Prompt.Prompt,
+  keepRecentTokens: number,
+): CompactionSplit => {
   const system: Prompt.Message[] = [];
   const rest: Prompt.Message[] = [];
   for (const message of prompt.content) {
@@ -292,7 +294,7 @@ export const compactChatHistory = (options: {
     const response = yield* LanguageModel.generateText({
       prompt: request,
       toolChoice: "none",
-    }).pipe(Effect.orElseSucceed(() => ({ text: "" }) as { readonly text: string }));
+    }).pipe(Effect.orElseSucceed(() => ({ text: "" })));
 
     const summary = response.text?.trim() ?? "";
     if (summary === "") {

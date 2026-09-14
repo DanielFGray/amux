@@ -16,7 +16,7 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import * as FileSystem from "effect/FileSystem";
-import { Clock, Context, Effect, Layer, Schema as S, type Scope } from "effect";
+import { Clock, Context, Effect, Layer, Option, Schema as S, type Scope } from "effect";
 import * as Path from "effect/Path";
 import { nodePath } from "./effect/node-path.ts";
 import { PermissionEffectSchema, type PermissionRule } from "./permission.ts";
@@ -374,53 +374,54 @@ const attempt = <A>(operation: string, body: () => A) =>
     catch: (error) => new ProjectStoreError({ operation, message: errorMessage(error) }),
   });
 
+/**
+ * Conversation JSON owned by `chat.exportJson` (Prompt → `{ content: Message[] }`).
+ * Preview only reads role + text content — decode that contract once here.
+ */
+const ConversationTextPartSchema = S.Struct({
+  type: S.Literal("text"),
+  text: S.String,
+});
+const ConversationContentPartSchema = S.Union([
+  ConversationTextPartSchema,
+  S.Struct({ type: S.String }),
+]);
+const ConversationMessageSchema = S.Struct({
+  role: S.String,
+  content: S.Union([S.String, S.Array(ConversationContentPartSchema)]),
+});
+const ConversationExportSchema = S.Struct({
+  content: S.Array(ConversationMessageSchema),
+});
+type ConversationExport = typeof ConversationExportSchema.Type;
+
 /** Short label for a picker row — first user-ish text blob in the JSON export. */
 export function conversationPreview(conversation: string, maxLen = 72): string {
-  try {
-    const parsed = JSON.parse(conversation) as unknown;
-    const text = firstUserText(parsed);
-    if (text !== undefined) {
+  return Option.match(S.decodeOption(S.fromJsonString(ConversationExportSchema))(conversation), {
+    onNone: () => "(conversation)",
+    onSome: (parsed) => {
+      const text = firstUserText(parsed);
+      if (text === undefined) return "(conversation)";
       const oneLine = text.replace(/\s+/g, " ").trim();
       if (oneLine.length === 0) return "(empty)";
       return oneLine.length > maxLen ? `${oneLine.slice(0, maxLen - 1)}…` : oneLine;
-    }
-  } catch {
-    // fall through
-  }
-  return "(conversation)";
+    },
+  });
 }
 
-const firstUserText = (value: unknown): string | undefined => {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value === "string") return undefined;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = firstUserText(item);
-      if (found !== undefined) return found;
+const firstUserText = (value: ConversationExport): string | undefined => {
+  for (const message of value.content) {
+    if (message.role !== "user") continue;
+    if (typeof message.content === "string") {
+      if (message.content.trim() !== "") return message.content;
+      continue;
     }
-    return undefined;
-  }
-  if (typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  if (record.role === "user") {
-    if (typeof record.content === "string" && record.content.trim() !== "") return record.content;
-    if (Array.isArray(record.content)) {
-      for (const part of record.content) {
-        if (
-          part &&
-          typeof part === "object" &&
-          (part as { type?: string }).type === "text" &&
-          typeof (part as { text?: string }).text === "string"
-        ) {
-          const text = (part as { text: string }).text.trim();
-          if (text.length > 0) return text;
-        }
+    for (const part of message.content) {
+      if (part.type === "text" && "text" in part) {
+        const text = part.text.trim();
+        if (text.length > 0) return text;
       }
     }
-  }
-  for (const child of Object.values(record)) {
-    const found = firstUserText(child);
-    if (found !== undefined) return found;
   }
   return undefined;
 };

@@ -110,16 +110,17 @@ function scrollRoot(
     active && active.length === children.length
       ? [...active]
       : children.map((child) => layoutPanes(child)[0]?.id ?? "");
+  const arrangement: NiriArrangement = {
+    offset,
+    sizes: [...sizes],
+    active: resolved,
+    basisCols: basisCols !== undefined && basisCols > 0 ? basisCols : undefined,
+  };
   return {
     type: "container",
     kind: "scroll",
     weight: 1,
-    arrangement: {
-      offset,
-      sizes: [...sizes],
-      active: resolved,
-      ...(basisCols !== undefined && basisCols > 0 ? { basisCols } : {}),
-    },
+    arrangement,
     children: [...children],
   };
 }
@@ -388,12 +389,17 @@ function excise(node: LayoutNode, paneId: string): LayoutNode | null {
  *  and the pane that should inherit focus when the closed pane held it —
  *  stack survivor in the same column, else the previous column's active pane
  *  (niri's activate_prev_column_on_removal default). */
+interface RemovePaneFromStripResult {
+  readonly next: LayoutNode | null;
+  readonly heir: string | undefined;
+}
+
 function removePaneFromStrip(
   root: LayoutContainer,
   paneId: string,
   size: LayoutSize,
   columnHint: number,
-): { next: LayoutNode | null; heir: string | undefined } {
+): RemovePaneFromStripResult {
   const arrangement = arrangementOf(root);
   const children: LayoutNode[] = [];
   const kept: number[] = [];

@@ -281,8 +281,8 @@ export const agentToolkit = Effect.fnUntraced(function* (
       tier,
       resources,
       input,
-      ...(extras.call !== undefined ? { call: extras.call } : {}),
-      ...(extras.diff !== undefined ? { diff: extras.diff } : {}),
+      call: extras.call,
+      diff: extras.diff,
     };
     return gate
       .assert(assertion)

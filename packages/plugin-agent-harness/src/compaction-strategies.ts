@@ -11,9 +11,13 @@
  * - ../codex/.../prompts/templates/compact/ — short checkpoint + SUMMARY_PREFIX
  */
 
+import { Option, Schema as S } from "effect";
+
 export const COMPACTION_STRATEGIES = ["claude", "pi", "codex"] as const;
 export type CompactionStrategy = (typeof COMPACTION_STRATEGIES)[number];
 export const DEFAULT_COMPACTION_STRATEGY: CompactionStrategy = "claude";
+
+const CompactionStrategySchema = S.Literals(COMPACTION_STRATEGIES);
 
 export const SUMMARY_OPEN_TAG = "<compacted-summary>";
 export const SUMMARY_CLOSE_TAG = "</compacted-summary>";
@@ -179,12 +183,11 @@ export const CODEX_COMPACTION_INSTRUCTION = [
   TEXT_ONLY_RULE,
 ].join("\n");
 
-export const resolveCompactionStrategy = (value: unknown): CompactionStrategy => {
-  if (typeof value === "string" && (COMPACTION_STRATEGIES as readonly string[]).includes(value)) {
-    return value as CompactionStrategy;
-  }
-  return DEFAULT_COMPACTION_STRATEGY;
-};
+export const resolveCompactionStrategy = (value: string): CompactionStrategy =>
+  Option.getOrElse(
+    S.decodeUnknownOption(CompactionStrategySchema)(value),
+    () => DEFAULT_COMPACTION_STRATEGY,
+  );
 
 export const compactionInstruction = (
   strategy: CompactionStrategy,

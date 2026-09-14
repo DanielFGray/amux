@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import { errorMessage } from "../error-message.ts";
 import { processPluginLaunchEnv, type ProcessPluginInvocationContext } from "./env.ts";
 import { getProcessPlugin, type LinkedProcessPlugin, type ProcessPluginRoots } from "./registry.ts";
 import type { ProcessPluginPlacement } from "./manifest.ts";
@@ -34,11 +35,6 @@ export interface ResolvedProcessPluginPane {
   readonly placement: ProcessPluginPlacement;
   readonly transient: boolean;
 }
-
-const errorMessage = (error: unknown): string =>
-  typeof error === "object" && error !== null && "message" in error
-    ? String((error as { message: unknown }).message)
-    : String(error);
 
 /** Resolve a linked manifest action into argv + launch env. */
 export const resolveProcessPluginAction = (
@@ -159,8 +155,8 @@ export function enrichProcessPluginPaneEnv(
     readonly processStateSocket?: string;
     readonly binPath?: string;
   },
-): Record<string, string> {
-  const next: Record<string, string> = { ...(env ?? {}) };
+) {
+  const next = { ...(env ?? {}) };
   next.AMUX_PLUGIN_CONTEXT_JSON = JSON.stringify(options.context);
   if (options.controlSocket !== undefined) next.AMUX_CONTROL_SOCKET = options.controlSocket;
   if (options.processStateSocket !== undefined) {
@@ -169,5 +165,5 @@ export function enrichProcessPluginPaneEnv(
   if (options.binPath !== undefined && next.AMUX_BIN_PATH === undefined) {
     next.AMUX_BIN_PATH = options.binPath;
   }
-  return next;
+  return next satisfies Record<string, string>;
 }

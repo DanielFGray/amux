@@ -159,11 +159,9 @@ testEffect("two open handles on one project both land their writes", () =>
 testEffect("a conversation survives reopening and is isolated by daemon session", () =>
   Effect.gen(function* () {
     yield* isolate();
-    yield* run("/tmp/project-chat", (store) =>
-      store.saveConversation("agent-a", '{"messages":[]}'),
-    );
+    yield* run("/tmp/project-chat", (store) => store.saveConversation("agent-a", '{"content":[]}'));
     expect(yield* run("/tmp/project-chat", (store) => store.conversation("agent-a"))).toBe(
-      '{"messages":[]}',
+      '{"content":[]}',
     );
     expect(
       yield* run("/tmp/project-chat", (store) => store.conversation("agent-b")),
@@ -175,7 +173,7 @@ testEffect("listConversations and copyConversation cover resume picker storage",
   Effect.gen(function* () {
     yield* isolate();
     yield* run("/tmp/project-list", (store) =>
-      store.saveConversation("source", '{"messages":[{"role":"user","content":"b"}]}'),
+      store.saveConversation("source", '{"content":[{"role":"user","content":"b"}]}'),
     );
     const listed = yield* run("/tmp/project-list", (store) => store.listConversations);
     expect(listed.map((row) => row.session)).toContain("source");
@@ -183,7 +181,7 @@ testEffect("listConversations and copyConversation cover resume picker storage",
       yield* run("/tmp/project-list", (store) => store.copyConversation("source", "clone")),
     ).toBe(true);
     expect(yield* run("/tmp/project-list", (store) => store.conversation("clone"))).toBe(
-      '{"messages":[{"role":"user","content":"b"}]}',
+      '{"content":[{"role":"user","content":"b"}]}',
     );
     expect(
       yield* run("/tmp/project-list", (store) => store.copyConversation("missing", "nowhere")),

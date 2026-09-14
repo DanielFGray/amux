@@ -25,6 +25,12 @@ export interface PlaceHoverInput {
   readonly preferredWidth?: number;
 }
 
+export interface FitHoverTextResult {
+  readonly text: string;
+  readonly rows: number;
+  readonly truncated: boolean;
+}
+
 /** Compute absolute coords inside the editor pane for a hover popup. */
 export const placeHoverPopup = (input: PlaceHoverInput): HoverPlacement => {
   const preferredWidth = input.preferredWidth ?? 72;
@@ -75,11 +81,7 @@ export const wrapHoverLine = (line: string, width: number): readonly string[] =>
 };
 
 /** Wrap every hard line, then keep at most `maxRows` (OpenTUI does not clip maxHeight). */
-export const fitHoverText = (
-  text: string,
-  width: number,
-  maxRows: number,
-): { readonly text: string; readonly rows: number; readonly truncated: boolean } => {
+export const fitHoverText = (text: string, width: number, maxRows: number): FitHoverTextResult => {
   const wrapped = hoverLines(text).flatMap((line) => wrapHoverLine(line, Math.max(1, width)));
   const rows = Math.max(1, maxRows);
   if (wrapped.length <= rows) {
@@ -103,7 +105,7 @@ export const fitHoverSegments = (
   text: string,
   width: number,
   maxRows: number,
-): { readonly segments: readonly HoverSegment[]; readonly rows: number } => {
+): FitHoverSegmentsResult => {
   const out: HoverSegment[] = [];
   let rows = 0;
   const budget = Math.max(1, maxRows);
@@ -134,6 +136,11 @@ export const fitHoverSegments = (
 export type HoverSegment =
   | { readonly kind: "text"; readonly text: string }
   | { readonly kind: "code"; readonly language: string; readonly code: string };
+
+export interface FitHoverSegmentsResult {
+  readonly segments: readonly HoverSegment[];
+  readonly rows: number;
+}
 
 type FenceScan =
   | { readonly _tag: "prose"; readonly lines: readonly string[] }

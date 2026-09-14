@@ -14,7 +14,6 @@ import {
   runtimeCommand,
   type ContextSpec,
   type OverlayOccupant,
-  type WorkspaceSnapshot,
 } from "@danielfgray/amux";
 import { projectRoot } from "@danielfgray/amux/git.ts";
 import {
@@ -45,6 +44,27 @@ export interface SessionPickerView {
   readonly entries: readonly SessionPickerEntry[];
   readonly query: string;
   readonly selected: number;
+}
+
+/** Narrow workspace shape `sessionEntries` reads — tests mock this without casting. */
+export interface SessionPickerWorkspace {
+  readonly spaces: readonly {
+    readonly id: string;
+    readonly name?: string;
+    readonly dir?: string;
+    readonly windows: readonly {
+      readonly sessions: readonly {
+        readonly id: string;
+        readonly name: string;
+        readonly exited: boolean;
+        readonly kind?: string;
+        readonly provider?: string;
+      }[];
+    }[];
+  }[];
+  readonly state: {
+    readonly activeSpace: string | null;
+  };
 }
 
 /**
@@ -184,7 +204,7 @@ export const registerSessionPicker: Effect.Effect<
 });
 
 export function sessionEntries(
-  snapshot: WorkspaceSnapshot,
+  snapshot: SessionPickerWorkspace,
   stored: readonly ConversationRecord[],
 ): SessionPickerEntry[] {
   const updatedById = new Map(stored.map((row) => [row.session, row.updated]));
@@ -265,9 +285,9 @@ const formatUpdated = (updated: number): string => {
   }
 };
 
-function* workspaceNativeSessions(snapshot: WorkspaceSnapshot): Generator<{
-  readonly session: WorkspaceSnapshot["spaces"][number]["windows"][number]["sessions"][number];
-  readonly space: WorkspaceSnapshot["spaces"][number];
+function* workspaceNativeSessions(snapshot: SessionPickerWorkspace): Generator<{
+  readonly session: SessionPickerWorkspace["spaces"][number]["windows"][number]["sessions"][number];
+  readonly space: SessionPickerWorkspace["spaces"][number];
 }> {
   for (const space of snapshot.spaces) {
     for (const window of space.windows) {
@@ -280,7 +300,7 @@ function* workspaceNativeSessions(snapshot: WorkspaceSnapshot): Generator<{
   }
 }
 
-const activeSpaceDir = (snapshot: WorkspaceSnapshot): string | undefined => {
+const activeSpaceDir = (snapshot: SessionPickerWorkspace): string | undefined => {
   const activeId = snapshot.state.activeSpace;
   const active =
     activeId !== null ? snapshot.spaces.find((space) => space.id === activeId) : undefined;
