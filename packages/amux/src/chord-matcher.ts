@@ -30,7 +30,11 @@ export interface ChordBinding {
   readonly group?: string;
   /** Hidden from which-key (still dispatchable). */
   readonly hidden?: boolean;
-  /** Hint sort priority — higher first. Context-scoped commands use context priority. */
+  /**
+   * Context / layer priority. Higher sorts first in which-key. A layer owns
+   * its keys: an exact match in a strictly higher layer fires at once, even
+   * when a lower layer maps a longer sequence from the same strokes.
+   */
   readonly priority?: number;
 }
 
@@ -142,6 +146,12 @@ export function createChordMatcher(opts: ChordMatcherOpts = {}): ChordMatcher {
 
   const hasLongerPrefix = (strokes: readonly ChordStroke[]): boolean =>
     activeBindings().some((binding) => isStrictPrefix(strokes, binding.strokes));
+
+  const longerMaxPriority = (strokes: readonly ChordStroke[]): number =>
+    activeBindings().reduce((max, binding) => {
+      if (!isStrictPrefix(strokes, binding.strokes)) return max;
+      return Math.max(max, binding.priority ?? 0);
+    }, Number.NEGATIVE_INFINITY);
 
   const modeAt = (strokes: readonly ChordStroke[]): ChordMode | null => {
     for (const mode of modes.values()) {
@@ -265,6 +275,12 @@ export function createChordMatcher(opts: ChordMatcherOpts = {}): ChordMatcher {
       const exact = exactAt(candidate);
 
       if (longer) {
+        // In one layer, an exact match waits for a longer one (g vs gg,
+        // timeoutlen). An exact match in a higher layer outranks the longer
+        // maps below it, so it does not wait.
+        if (exact && (exact.priority ?? 0) > longerMaxPriority(candidate)) {
+          return fireExact(exact);
+        }
         return becomePending(candidate);
       }
       if (exact) {

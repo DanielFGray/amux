@@ -70,6 +70,27 @@ effect("timeoutlen prefers the longer chord, else the exact shorter binding", ()
   }),
 );
 
+test("a higher-priority exact does not wait on lower-priority longer maps", () => {
+  const fired: string[] = [];
+  const chords = createChordMatcher({ timeoutlen: Duration.millis(40) });
+  chords.register({
+    id: "enter",
+    strokes: ["<prefix>"],
+    priority: 202,
+    run: () => fired.push("enter"),
+  });
+  chords.register({
+    id: "focus",
+    strokes: ["<prefix>", "h"],
+    priority: 0,
+    run: () => fired.push("focus"),
+  });
+
+  expect(chords.push("<prefix>")).toEqual({ _tag: "matched", id: "enter" });
+  expect(fired).toEqual(["enter"]);
+  expect(chords.pending()).toEqual([]);
+});
+
 effect("ambiguous timeout without exact binding re-emits strokes", () =>
   Effect.gen(function* () {
     const context = yield* Effect.context();
