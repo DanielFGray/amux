@@ -209,13 +209,19 @@ const make = (
     }>();
     const closed = yield* Deferred.make<void>();
     const closingError = () => new SessionClientError({ message: "client is closing" });
+    // Modeled non-exited sessions, including ones whose PTY is still parked
+    // behind a deferred foreign-agent resume. daemonBackend uses this set to
+    // decide resize-vs-"is not live"; it must match Status.workspace, not
+    // Status.agents (live PTYs only), or the first projection never flushes.
+    const fillLive = (target: Set<string>, snapshot: WorkspaceSnapshot) => {
+      target.clear();
+      for (const { session } of workspaceSessions(snapshot))
+        if (!session.exited) target.add(session.id);
+    };
     const accept = (next: WorkspaceSnapshot) => {
       if (next.revision > workspace.revision) {
         workspace = next;
-        const live = service.live as Set<string>;
-        live.clear();
-        for (const { session } of workspaceSessions(next))
-          if (!session.exited) live.add(session.id);
+        fillLive(service.live as Set<string>, next);
       }
       return workspace;
     };
@@ -260,13 +266,15 @@ const make = (
         yield* Queue.clear(commandQueue);
       }),
     );
+    const live = new Set<string>();
+    fillLive(live, initialWorkspace);
     service = {
       id,
       attach,
       // Decoded from the wire as deeply readonly; the client's shape owns a
       // mutable copy of it.
       session: structuredClone(status.session) as SessionState,
-      live: new Set(status.agents),
+      live,
       workspace: () => structuredClone(workspace),
       models: attach.workspace.pipe(Stream.map(accept)),
       events: control.Events().pipe(
@@ -313,7 +321,7 @@ const make = (
           Effect.flatMap((resumeInput) => control.ResumeAgent(resumeInput)),
           Effect.mapError(toControlError),
         ),
-      // service.live is kept in sync by accept() on every workspace snapshot.
+      // service.live is seeded from the Status workspace and refreshed by accept().
       backend: () => daemonBackend(service, service.live),
       setBuffer: (name, data) =>
         control.SetBuffer({ name, data }).pipe(Effect.mapError(toControlError)),
