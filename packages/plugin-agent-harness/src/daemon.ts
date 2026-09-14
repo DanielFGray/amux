@@ -30,14 +30,13 @@ import { NativeControl } from "./native-control.ts";
 
 const encodeNativeControl = encodeOwner(NativeControl, "NativeControl");
 
-const deliverNativeControl = (agent: string, control: NativeControl) =>
-  Effect.gen(function* () {
-    const sessions = yield* DaemonSessions;
-    const message = yield* encodeNativeControl(control).pipe(
-      Effect.mapError((error) => new WorkspaceTransactionError({ message: error.message })),
-    );
-    yield* sessions.message(agent, message);
-  });
+const deliverNativeControl = Effect.fnUntraced(function* (agent: string, control: NativeControl) {
+  const sessions = yield* DaemonSessions;
+  const message = yield* encodeNativeControl(control).pipe(
+    Effect.mapError((error) => new WorkspaceTransactionError({ message: error.message })),
+  );
+  yield* sessions.message(agent, message);
+});
 
 const sessionTarget = { target: S.String };
 const agentPluginMeta = (

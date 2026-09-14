@@ -64,16 +64,15 @@ export const worktreeDirname = (branch: string): string => branch.replace(/\//g,
  * unit a permission rule or a conversation is scoped to. A directory that is
  * not in a repository is its own project, which keeps the notion total.
  */
-export const projectRoot = (dir: string): Effect.Effect<string> =>
-  Effect.gen(function* () {
-    const path = yield* nodePath;
-    return yield* Effect.tryPromise(() =>
-      git(["rev-parse", "--path-format=absolute", "--git-common-dir"], dir),
-    ).pipe(
-      Effect.map((common) => (common ? path.dirname(common) : path.resolve(dir))),
-      Effect.orElseSucceed(() => path.resolve(dir)),
-    );
-  });
+export const projectRoot = Effect.fnUntraced(function* (dir: string) {
+  const path = yield* nodePath;
+  return yield* Effect.tryPromise(() =>
+    git(["rev-parse", "--path-format=absolute", "--git-common-dir"], dir),
+  ).pipe(
+    Effect.map((common) => (common ? path.dirname(common) : path.resolve(dir))),
+    Effect.orElseSucceed(() => path.resolve(dir)),
+  );
+});
 
 /** Imperative git operations for daemon-side use. The daemon runs outside the
  *  client's Effect scope and calls these through its promise queue.

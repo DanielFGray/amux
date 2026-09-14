@@ -106,14 +106,15 @@ export const makeHarnessHooks = (): HarnessHooks => {
       discard: true,
     }).pipe(Effect.asVoid);
 
-  const emitToolCall = (event: Extract<HarnessHookEvent, { _tag: "tool_call" }>) =>
-    Effect.gen(function* () {
-      for (const handler of handlers.get("tool_call") ?? []) {
-        const result = yield* handler(event);
-        if (result && result.block === true) return result;
-      }
-      return { block: false } as const;
-    });
+  const emitToolCall = Effect.fnUntraced(function* (
+    event: Extract<HarnessHookEvent, { _tag: "tool_call" }>,
+  ) {
+    for (const handler of handlers.get("tool_call") ?? []) {
+      const result = yield* handler(event);
+      if (result && result.block === true) return result;
+    }
+    return { block: false } as const;
+  });
 
   return { on, emit, emitToolCall };
 };

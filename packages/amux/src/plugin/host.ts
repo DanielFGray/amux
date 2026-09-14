@@ -535,53 +535,52 @@ export function createPluginHost(
         ),
       );
 
-    const replace = (plugins: readonly PluginDefinition[]) =>
-      Effect.gen(function* () {
-        const ids = new Set(plugins.map((plugin) => plugin.id));
-        if (ids.size !== plugins.length)
-          return yield* Effect.fail("replacement contains duplicate plugin ids");
-        if ([...ids].some((id) => !activePlugins.has(id)))
-          return yield* Effect.fail("replacement names a plugin that is not active");
-        const batch: ReplacementBatch = { ids };
-        const results = yield* submit(
-          Effect.forEach(plugins, (plugin) => addPlugin(plugin, batch)).pipe(
-            Effect.map((values) =>
-              values.filter((value): value is Deferred.Deferred<void, string> => !!value),
-            ),
+    const replace = Effect.fnUntraced(function* (plugins: readonly PluginDefinition[]) {
+      const ids = new Set(plugins.map((plugin) => plugin.id));
+      if (ids.size !== plugins.length)
+        return yield* Effect.fail("replacement contains duplicate plugin ids");
+      if ([...ids].some((id) => !activePlugins.has(id)))
+        return yield* Effect.fail("replacement names a plugin that is not active");
+      const batch: ReplacementBatch = { ids };
+      const results = yield* submit(
+        Effect.forEach(plugins, (plugin) => addPlugin(plugin, batch)).pipe(
+          Effect.map((values) =>
+            values.filter((value): value is Deferred.Deferred<void, string> => !!value),
           ),
-        );
-        yield* submit(Effect.void);
-        const settled = yield* Effect.exit(Effect.all(results.map(Deferred.await)));
-        if (Exit.isFailure(settled)) {
-          yield* submit(
-            Effect.forEach(ids, (id) => {
-              const candidate = candidates.get(id);
-              if (!candidate) return Effect.void;
-              candidates.delete(id);
-              return closeRun(
-                candidate,
-                "batch replacement failed; kept the version that was running",
-              );
-            }),
-          );
-          return yield* Effect.fail(String(Cause.squash(settled.cause)));
-        }
+        ),
+      );
+      yield* submit(Effect.void);
+      const settled = yield* Effect.exit(Effect.all(results.map(Deferred.await)));
+      if (Exit.isFailure(settled)) {
         yield* submit(
-          Effect.gen(function* () {
-            const next = [...ids].map((id) => candidates.get(id)!);
-            const conflicts = env.contributions.commitAll(next.map((state) => state.instance));
-            if (conflicts.length > 0)
-              return yield* Effect.fail(`replacement conflicts: ${conflicts.join(", ")}`);
-            for (const state of next) {
-              const previous = activePlugins.get(state.instance.id)!;
-              candidates.delete(state.instance.id);
-              activePlugins.set(state.instance.id, state);
-              desired.set(state.instance.id, state.definition);
-              yield* closeRun(previous, "was replaced");
-            }
+          Effect.forEach(ids, (id) => {
+            const candidate = candidates.get(id);
+            if (!candidate) return Effect.void;
+            candidates.delete(id);
+            return closeRun(
+              candidate,
+              "batch replacement failed; kept the version that was running",
+            );
           }),
         );
-      });
+        return yield* Effect.fail(String(Cause.squash(settled.cause)));
+      }
+      yield* submit(
+        Effect.gen(function* () {
+          const next = [...ids].map((id) => candidates.get(id)!);
+          const conflicts = env.contributions.commitAll(next.map((state) => state.instance));
+          if (conflicts.length > 0)
+            return yield* Effect.fail(`replacement conflicts: ${conflicts.join(", ")}`);
+          for (const state of next) {
+            const previous = activePlugins.get(state.instance.id)!;
+            candidates.delete(state.instance.id);
+            activePlugins.set(state.instance.id, state);
+            desired.set(state.instance.id, state.definition);
+            yield* closeRun(previous, "was replaced");
+          }
+        }),
+      );
+    });
 
     return {
       reconcile: (entries) =>

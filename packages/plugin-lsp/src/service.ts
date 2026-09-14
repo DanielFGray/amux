@@ -300,60 +300,58 @@ export interface LspServiceOptions {
   >;
 }
 
-const makeServer = (
+const makeServer = Effect.fnUntraced(function* (
   key: string,
   catalog: LanguageCatalog,
   documents: DocumentServiceApi,
   spawn: NonNullable<LspServiceOptions["spawn"]>,
-) =>
-  Effect.gen(function* () {
-    const [language, root] = key.split("\u0000") as [string, string];
-    const commands = Option.getOrUndefined(serverCommandsFor(catalog, language));
-    if (!commands?.length)
-      return yield* new LspServiceError({ message: `no LSP server configured for ${language}` });
-    const command = commands[0]!;
-    const transport = yield* spawn({ ...command, cwd: root }).pipe(
-      Effect.mapError((error) => new LspServiceError({ message: error.message })),
-    );
-    yield* transport
-      .request("initialize", { processId: null, rootUri: `file://${root}`, capabilities: {} })
-      .pipe(Effect.mapError((error) => new LspServiceError({ message: error.message })));
-    yield* transport
-      .notify("initialized", {})
-      .pipe(Effect.mapError((error) => new LspServiceError({ message: error.message })));
-    const documentMap = yield* RcMap.make({
-      lookup: (uri: string) => openDocument(uri, language, documents, transport),
-    });
-    return { transport, documents: documentMap };
+) {
+  const [language, root] = key.split("\u0000") as [string, string];
+  const commands = Option.getOrUndefined(serverCommandsFor(catalog, language));
+  if (!commands?.length)
+    return yield* new LspServiceError({ message: `no LSP server configured for ${language}` });
+  const command = commands[0]!;
+  const transport = yield* spawn({ ...command, cwd: root }).pipe(
+    Effect.mapError((error) => new LspServiceError({ message: error.message })),
+  );
+  yield* transport
+    .request("initialize", { processId: null, rootUri: `file://${root}`, capabilities: {} })
+    .pipe(Effect.mapError((error) => new LspServiceError({ message: error.message })));
+  yield* transport
+    .notify("initialized", {})
+    .pipe(Effect.mapError((error) => new LspServiceError({ message: error.message })));
+  const documentMap = yield* RcMap.make({
+    lookup: (uri: string) => openDocument(uri, language, documents, transport),
   });
+  return { transport, documents: documentMap };
+});
 
-const openDocument = (
+const openDocument = Effect.fnUntraced(function* (
   uri: string,
   language: string,
   documents: DocumentServiceApi,
   transport: LspTransport,
-) =>
-  Effect.gen(function* () {
-    let version = 1;
-    const snapshot = yield* documents.read({ uri, language }).pipe(Effect.mapError(asServiceError));
-    yield* notifyOpen(transport, snapshot, version);
-    yield* Effect.forkScoped(
-      documents.changes(uri).pipe(
-        Stream.runForEach((next) => {
-          version += 1;
-          return transport
-            .notify("textDocument/didChange", {
-              textDocument: { uri, version },
-              contentChanges: [{ text: next.text }],
-            })
-            .pipe(Effect.mapError(asServiceError));
-        }),
-      ),
-    );
-    yield* Effect.addFinalizer(() =>
-      transport.notify("textDocument/didClose", { textDocument: { uri } }).pipe(Effect.ignore),
-    );
-  });
+) {
+  let version = 1;
+  const snapshot = yield* documents.read({ uri, language }).pipe(Effect.mapError(asServiceError));
+  yield* notifyOpen(transport, snapshot, version);
+  yield* Effect.forkScoped(
+    documents.changes(uri).pipe(
+      Stream.runForEach((next) => {
+        version += 1;
+        return transport
+          .notify("textDocument/didChange", {
+            textDocument: { uri, version },
+            contentChanges: [{ text: next.text }],
+          })
+          .pipe(Effect.mapError(asServiceError));
+      }),
+    ),
+  );
+  yield* Effect.addFinalizer(() =>
+    transport.notify("textDocument/didClose", { textDocument: { uri } }).pipe(Effect.ignore),
+  );
+});
 
 const notifyOpen = (transport: LspTransport, snapshot: DocumentSnapshot, version: number) =>
   transport

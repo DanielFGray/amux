@@ -117,13 +117,12 @@ export const layer = (
  * digest is what makes it unique, because two checkouts of `api` under
  * different parents are different projects.
  */
-export const projectSlug = (root: string): Effect.Effect<string> =>
-  Effect.gen(function* () {
-    const path = yield* nodePath;
-    const absolute = path.resolve(root);
-    const digest = createHash("sha256").update(absolute).digest("hex").slice(0, 8);
-    return `${path.basename(absolute) || "root"}-${digest}`;
-  });
+export const projectSlug = Effect.fnUntraced(function* (root: string) {
+  const path = yield* nodePath;
+  const absolute = path.resolve(root);
+  const digest = createHash("sha256").update(absolute).digest("hex").slice(0, 8);
+  return `${path.basename(absolute) || "root"}-${digest}`;
+});
 
 export const projectDirectory = (root: string): Effect.Effect<string, never, Path.Path> =>
   Effect.gen(function* () {

@@ -73,38 +73,37 @@ export interface ProcessPluginLaunchOptions {
 const encodeContextJson = S.encodeSync(S.fromJsonString(S.Unknown));
 
 /** Build the env map for a process-plugin action or pane. */
-export const processPluginLaunchEnv = (
+export const processPluginLaunchEnv = Effect.fnUntraced(function* (
   options: ProcessPluginLaunchOptions,
-): Effect.Effect<Record<string, string>> =>
-  Effect.gen(function* () {
-    const env: Record<string, string> = {};
-    if (options.extraEnv) {
-      for (const [key, value] of Object.entries(options.extraEnv)) {
-        if (!isProcessPluginProtectedEnvKey(key)) env[key] = value;
-      }
+) {
+  const env: Record<string, string> = {};
+  if (options.extraEnv) {
+    for (const [key, value] of Object.entries(options.extraEnv)) {
+      if (!isProcessPluginProtectedEnvKey(key)) env[key] = value;
     }
+  }
 
-    const configRoot = options.configRoot ?? (yield* processPluginConfigRoot);
-    const stateRoot = options.stateRoot ?? (yield* processPluginStateRoot);
+  const configRoot = options.configRoot ?? (yield* processPluginConfigRoot);
+  const stateRoot = options.stateRoot ?? (yield* processPluginStateRoot);
 
-    env.AMUX_ENV = "1";
-    env.AMUX_PLUGIN_ID = options.plugin.id;
-    env.AMUX_PLUGIN_ROOT = options.pluginRoot;
-    env.AMUX_PLUGIN_CONFIG_DIR = processPluginConfigDir(options.plugin.id, configRoot);
-    env.AMUX_PLUGIN_STATE_DIR = processPluginStateDir(options.plugin.id, stateRoot);
+  env.AMUX_ENV = "1";
+  env.AMUX_PLUGIN_ID = options.plugin.id;
+  env.AMUX_PLUGIN_ROOT = options.pluginRoot;
+  env.AMUX_PLUGIN_CONFIG_DIR = processPluginConfigDir(options.plugin.id, configRoot);
+  env.AMUX_PLUGIN_STATE_DIR = processPluginStateDir(options.plugin.id, stateRoot);
 
-    if (options.binPath !== undefined) env.AMUX_BIN_PATH = options.binPath;
-    if (options.controlSocket !== undefined) env.AMUX_CONTROL_SOCKET = options.controlSocket;
-    if (options.processStateSocket !== undefined) {
-      env.AMUX_PROCESS_STATE_SOCKET = options.processStateSocket;
-    }
-    if (options.daemonSession !== undefined) env.AMUX_DAEMON_SESSION = options.daemonSession;
-    if (options.actionId !== undefined) env.AMUX_PLUGIN_ACTION_ID = options.actionId;
-    if (options.entrypointId !== undefined) env.AMUX_PLUGIN_ENTRYPOINT_ID = options.entrypointId;
-    if (options.event !== undefined) env.AMUX_PLUGIN_EVENT = options.event;
-    if (options.eventJson !== undefined) env.AMUX_PLUGIN_EVENT_JSON = options.eventJson;
+  if (options.binPath !== undefined) env.AMUX_BIN_PATH = options.binPath;
+  if (options.controlSocket !== undefined) env.AMUX_CONTROL_SOCKET = options.controlSocket;
+  if (options.processStateSocket !== undefined) {
+    env.AMUX_PROCESS_STATE_SOCKET = options.processStateSocket;
+  }
+  if (options.daemonSession !== undefined) env.AMUX_DAEMON_SESSION = options.daemonSession;
+  if (options.actionId !== undefined) env.AMUX_PLUGIN_ACTION_ID = options.actionId;
+  if (options.entrypointId !== undefined) env.AMUX_PLUGIN_ENTRYPOINT_ID = options.entrypointId;
+  if (options.event !== undefined) env.AMUX_PLUGIN_EVENT = options.event;
+  if (options.eventJson !== undefined) env.AMUX_PLUGIN_EVENT_JSON = options.eventJson;
 
-    env.AMUX_PLUGIN_CONTEXT_JSON = encodeContextJson(options.context ?? {});
+  env.AMUX_PLUGIN_CONTEXT_JSON = encodeContextJson(options.context ?? {});
 
-    return env;
-  });
+  return env;
+});

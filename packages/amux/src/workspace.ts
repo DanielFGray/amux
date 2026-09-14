@@ -914,53 +914,50 @@ const applyWorkspaceCommandOnce = (
         },
         caller,
       );
-    const setFocus = (target: WorkspaceWindow, id: string | undefined) =>
-      Effect.gen(function* () {
-        if (!id) return;
-        if (target.state.focus !== id) {
-          target.state.zoom = target.state.zoom?.pane === id ? target.state.zoom : null;
-          target.state.last = target.state.focus;
-          target.state.focus = id;
-          target.layout = makeLayout({ ...target.layout, focus: id });
-        }
-        const answer = yield* ask({
-          _tag: "reveal",
-          layout: target.layout,
-          size: context.size,
-          pane: id,
-        });
-        if (answer._tag === "ok") target.layout = answer.layout;
+    const setFocus = Effect.fnUntraced(function* (target: WorkspaceWindow, id: string | undefined) {
+      if (!id) return;
+      if (target.state.focus !== id) {
+        target.state.zoom = target.state.zoom?.pane === id ? target.state.zoom : null;
+        target.state.last = target.state.focus;
+        target.state.focus = id;
+        target.layout = makeLayout({ ...target.layout, focus: id });
+      }
+      const answer = yield* ask({
+        _tag: "reveal",
+        layout: target.layout,
+        size: context.size,
+        pane: id,
       });
+      if (answer._tag === "ok") target.layout = answer.layout;
+    });
     /** Focus a session's viewport, restore into its displace-host, or place a new pane. */
-    const revealSession = (target: SessionEntry) =>
-      Effect.gen(function* () {
-        const pane = layoutRefs(target.window.layout).find(
-          (candidate) => paneSession(candidate.content) === target.session.id,
+    const revealSession = Effect.fnUntraced(function* (target: SessionEntry) {
+      const pane = layoutRefs(target.window.layout).find(
+        (candidate) => paneSession(candidate.content) === target.session.id,
+      );
+      if (pane) {
+        yield* setFocus(target.window, pane.id);
+        return;
+      }
+      const holder = layoutRefs(target.window.layout).find(
+        (candidate) =>
+          candidate.content.kind === "plugin" && candidate.content.displaced === target.session.id,
+      );
+      if (holder) {
+        target.window.layout = setPaneContent(
+          target.window.layout,
+          holder.id,
+          paneContentFor(target.session),
         );
-        if (pane) {
-          yield* setFocus(target.window, pane.id);
-          return;
-        }
-        const holder = layoutRefs(target.window.layout).find(
-          (candidate) =>
-            candidate.content.kind === "plugin" &&
-            candidate.content.displaced === target.session.id,
-        );
-        if (holder) {
-          target.window.layout = setPaneContent(
-            target.window.layout,
-            holder.id,
-            paneContentFor(target.session),
-          );
-          yield* setFocus(target.window, holder.id);
-          return;
-        }
-        const placed = { id: newPaneId(target.space), content: paneContentFor(target.session) };
-        target.window.layout = target.window.layout.root
-          ? splitLayout(target.window.layout, 0, "row", placed)
-          : appendPane(target.window.layout, placed);
-        target.window.state.focus = placed.id;
-      });
+        yield* setFocus(target.window, holder.id);
+        return;
+      }
+      const placed = { id: newPaneId(target.space), content: paneContentFor(target.session) };
+      target.window.layout = target.window.layout.root
+        ? splitLayout(target.window.layout, 0, "row", placed)
+        : appendPane(target.window.layout, placed);
+      target.window.state.focus = placed.id;
+    });
     const addSession = (
       target: WorkspaceWindow,
       dir: string,
@@ -1016,103 +1013,100 @@ const applyWorkspaceCommandOnce = (
         actions.push({ _tag: "spawn", agent });
         return agent;
       });
-    const placeSessionPane = (
+    const placeSessionPane = Effect.fnUntraced(function* (
       entry: WindowEntry,
       agent: PersistedSession,
       paneId: string,
       opts?: { readonly mode?: "split" | "replace" },
-    ) =>
-      Effect.gen(function* () {
-        const content = paneContentFor(agent);
-        if (opts?.mode === "replace") {
-          const target = targetPane();
-          if (target && target.window.window === entry.window) {
-            return yield* replacePaneContent(target, content);
-          }
+    ) {
+      const content = paneContentFor(agent);
+      if (opts?.mode === "replace") {
+        const target = targetPane();
+        if (target && target.window.window === entry.window) {
+          return yield* replacePaneContent(target, content);
         }
-        const pane = { id: paneId, content };
-        entry.window.layout = entry.window.layout.root
-          ? splitLayout(entry.window.layout, 0, "row", pane)
-          : appendPane(entry.window.layout, pane);
-        entry.window.state.focus = pane.id;
-        return pane.id;
-      });
-    const replacePaneContent = (
+      }
+      const pane = { id: paneId, content };
+      entry.window.layout = entry.window.layout.root
+        ? splitLayout(entry.window.layout, 0, "row", pane)
+        : appendPane(entry.window.layout, pane);
+      entry.window.state.focus = pane.id;
+      return pane.id;
+    });
+    const replacePaneContent = Effect.fnUntraced(function* (
       target: { window: WindowEntry; pane: PaneRef },
       content: PaneContent,
-    ) =>
-      Effect.gen(function* () {
-        const { window, space } = target.window;
-        const previous = target.pane.content;
-        // Depth-1 keepalive: the original shell stays displaced across chained
-        // replaces. Prefer an existing displaced id; otherwise keep the session
-        // this leaf was viewing. The session that drops out of retention is
-        // reaped below — otherwise it stays live with no pane and the next
-        // attach fails the workspace invariant (same trap as pane.close).
-        const displaced =
-          (previous.kind === "plugin" ? previous.displaced : undefined) ?? paneSession(previous);
-        const nextContent: PaneContent =
-          content.kind === "plugin"
-            ? displaced !== undefined
-              ? { ...content, displaced }
-              : content
-            : content;
-        window.layout = setPaneContent(window.layout, target.pane.id, nextContent);
-        window.state.zoom = null;
-        window.state.preset = null;
-        // Same path as pane.select: keep layout.focus in lockstep with state.focus
-        // (parseWorkspace refuses a desync). Reveal scrolls the replaced leaf on
-        // screen for viewport algorithms.
-        yield* setFocus(window, target.pane.id);
-        afterPaneRemoved(next, space, window, actions);
-        return target.pane.id;
-      });
-    const placePluginPane = (
+    ) {
+      const { window, space } = target.window;
+      const previous = target.pane.content;
+      // Depth-1 keepalive: the original shell stays displaced across chained
+      // replaces. Prefer an existing displaced id; otherwise keep the session
+      // this leaf was viewing. The session that drops out of retention is
+      // reaped below — otherwise it stays live with no pane and the next
+      // attach fails the workspace invariant (same trap as pane.close).
+      const displaced =
+        (previous.kind === "plugin" ? previous.displaced : undefined) ?? paneSession(previous);
+      const nextContent: PaneContent =
+        content.kind === "plugin"
+          ? displaced !== undefined
+            ? { ...content, displaced }
+            : content
+          : content;
+      window.layout = setPaneContent(window.layout, target.pane.id, nextContent);
+      window.state.zoom = null;
+      window.state.preset = null;
+      // Same path as pane.select: keep layout.focus in lockstep with state.focus
+      // (parseWorkspace refuses a desync). Reveal scrolls the replaced leaf on
+      // screen for viewport algorithms.
+      yield* setFocus(window, target.pane.id);
+      afterPaneRemoved(next, space, window, actions);
+      return target.pane.id;
+    });
+    const placePluginPane = Effect.fnUntraced(function* (
       type: string,
       descriptor: JsonValue,
       paneId: string | undefined,
       opts?: { readonly mode?: "split" | "replace" },
-    ) =>
-      Effect.gen(function* () {
-        if (opts?.mode === "replace") {
-          const target = targetPane();
-          if (!target) return null;
-          return yield* replacePaneContent(target, {
-            kind: "plugin",
-            type,
-            descriptor,
-          });
-        }
-        if (paneId === undefined) return null;
+    ) {
+      if (opts?.mode === "replace") {
         const target = targetPane();
         if (!target) return null;
-        const { window } = target.window;
-        const panes = layoutPanes(window.layout.root);
-        const at = panes.findIndex((pane) => pane.id === target.pane.id);
-        const ref = {
-          id: paneId,
-          content: { kind: "plugin", type, descriptor } satisfies PaneContent,
-        };
-        if (at === -1) {
-          window.layout = appendPane(window.layout, ref);
-        } else {
-          const answer = yield* ask({
-            _tag: "split",
-            layout: window.layout,
-            size: context.size,
-            at: target.pane.id,
-            direction: "row",
-            pane: ref,
-          });
-          window.layout =
-            answer._tag === "ok" ? answer.layout : splitLayout(window.layout, at, "row", ref);
-        }
-        window.state.focus = ref.id;
-        window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
-        window.state.zoom = null;
-        window.state.preset = null;
-        return ref.id;
-      });
+        return yield* replacePaneContent(target, {
+          kind: "plugin",
+          type,
+          descriptor,
+        });
+      }
+      if (paneId === undefined) return null;
+      const target = targetPane();
+      if (!target) return null;
+      const { window } = target.window;
+      const panes = layoutPanes(window.layout.root);
+      const at = panes.findIndex((pane) => pane.id === target.pane.id);
+      const ref = {
+        id: paneId,
+        content: { kind: "plugin", type, descriptor } satisfies PaneContent,
+      };
+      if (at === -1) {
+        window.layout = appendPane(window.layout, ref);
+      } else {
+        const answer = yield* ask({
+          _tag: "split",
+          layout: window.layout,
+          size: context.size,
+          at: target.pane.id,
+          direction: "row",
+          pane: ref,
+        });
+        window.layout =
+          answer._tag === "ok" ? answer.layout : splitLayout(window.layout, at, "row", ref);
+      }
+      window.state.focus = ref.id;
+      window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
+      window.state.zoom = null;
+      window.state.preset = null;
+      return ref.id;
+    });
     const windowEntryFor = (target: {
       space: string;
       window: number;
@@ -1204,123 +1198,122 @@ const applyWorkspaceCommandOnce = (
         paneIds.add(pane);
       });
 
-    const applyPluginChanges = (apply: PluginCommandApply) =>
-      Effect.gen(function* () {
-        for (const change of apply.changes) {
-          yield* Match.valueTags(change, {
-            "session.add": (c) =>
-              Effect.gen(function* () {
-                const entry = yield* fromChangeResult(windowEntryFor(c.target));
-                yield* acceptProposedSessionId(c.id);
-                if (c.firstMessage !== undefined) {
-                  if (c.provider === undefined) {
-                    return yield* new WorkspaceChangeError({
-                      message: "session.add firstMessage requires a provider",
-                    });
-                  }
-                  if (!apply.providers.has(c.provider)) {
-                    return yield* new WorkspaceChangeError({
-                      message: `unknown session provider '${c.provider}' for firstMessage`,
-                    });
-                  }
+    const applyPluginChanges = Effect.fnUntraced(function* (apply: PluginCommandApply) {
+      for (const change of apply.changes) {
+        yield* Match.valueTags(change, {
+          "session.add": (c) =>
+            Effect.gen(function* () {
+              const entry = yield* fromChangeResult(windowEntryFor(c.target));
+              yield* acceptProposedSessionId(c.id);
+              if (c.firstMessage !== undefined) {
+                if (c.provider === undefined) {
+                  return yield* new WorkspaceChangeError({
+                    message: "session.add firstMessage requires a provider",
+                  });
                 }
-                yield* addSession(entry.window, c.dir, {
-                  provider: c.provider,
-                  id: c.id,
-                  firstMessage: c.firstMessage,
+                if (!apply.providers.has(c.provider)) {
+                  return yield* new WorkspaceChangeError({
+                    message: `unknown session provider '${c.provider}' for firstMessage`,
+                  });
+                }
+              }
+              yield* addSession(entry.window, c.dir, {
+                provider: c.provider,
+                id: c.id,
+                firstMessage: c.firstMessage,
+              });
+            }),
+          "session.place": (c) =>
+            Effect.gen(function* () {
+              const entry = yield* fromChangeResult(windowEntryFor(c.target));
+              const agent = entry.window.sessions.find((item) => item.id === c.session);
+              if (!agent) {
+                return yield* new WorkspaceChangeError({
+                  message: `session '${c.session}' is not in the target window`,
                 });
-              }),
-            "session.place": (c) =>
-              Effect.gen(function* () {
-                const entry = yield* fromChangeResult(windowEntryFor(c.target));
-                const agent = entry.window.sessions.find((item) => item.id === c.session);
-                if (!agent) {
-                  return yield* new WorkspaceChangeError({
-                    message: `session '${c.session}' is not in the target window`,
-                  });
-                }
-                if (c.mode === "replace") {
-                  const target = targetPane();
-                  if (!target || target.window.window !== entry.window) {
-                    return yield* new WorkspaceChangeError({
-                      message: "session.place replace requires a target pane in the named window",
-                    });
-                  }
-                  yield* replacePaneContent(target, paneContentFor(agent));
-                  return;
-                }
-                yield* acceptProposedPaneId(c.pane, entry.space);
-                yield* placeSessionPane(entry, agent, c.pane, { mode: "split" });
-              }),
-            "plugin.place": (c) =>
-              Effect.gen(function* () {
-                if (!apply.paneTypes.has(c.type)) {
-                  return yield* new WorkspaceChangeError({
-                    message: `unknown pane type '${c.type}'`,
-                  });
-                }
-                const sized = yield* S.decodeEffect(DescriptorSchema)(c.descriptor).pipe(
-                  Effect.mapError(
-                    (error) =>
-                      new WorkspaceChangeError({
-                        message: `plugin.place descriptor size for '${c.type}': ${errorMessage(error)}`,
-                      }),
-                  ),
-                );
-                if (c.mode === "replace") {
-                  const paneId = yield* placePluginPane(c.type, sized, undefined, {
-                    mode: "replace",
-                  });
-                  if (paneId === null) {
-                    return yield* new WorkspaceChangeError({
-                      message: "plugin.place requires a target pane or window",
-                    });
-                  }
-                  return;
-                }
+              }
+              if (c.mode === "replace") {
                 const target = targetPane();
-                if (!target) {
+                if (!target || target.window.window !== entry.window) {
                   return yield* new WorkspaceChangeError({
-                    message: "plugin.place requires a target pane or window",
+                    message: "session.place replace requires a target pane in the named window",
                   });
                 }
-                yield* acceptProposedPaneId(c.pane, target.window.space);
-                const paneId = yield* placePluginPane(c.type, sized, c.pane, { mode: "split" });
+                yield* replacePaneContent(target, paneContentFor(agent));
+                return;
+              }
+              yield* acceptProposedPaneId(c.pane, entry.space);
+              yield* placeSessionPane(entry, agent, c.pane, { mode: "split" });
+            }),
+          "plugin.place": (c) =>
+            Effect.gen(function* () {
+              if (!apply.paneTypes.has(c.type)) {
+                return yield* new WorkspaceChangeError({
+                  message: `unknown pane type '${c.type}'`,
+                });
+              }
+              const sized = yield* S.decodeEffect(DescriptorSchema)(c.descriptor).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new WorkspaceChangeError({
+                      message: `plugin.place descriptor size for '${c.type}': ${errorMessage(error)}`,
+                    }),
+                ),
+              );
+              if (c.mode === "replace") {
+                const paneId = yield* placePluginPane(c.type, sized, undefined, {
+                  mode: "replace",
+                });
                 if (paneId === null) {
                   return yield* new WorkspaceChangeError({
                     message: "plugin.place requires a target pane or window",
                   });
                 }
-              }),
-            "action.push": (c) =>
-              Effect.gen(function* () {
-                const tagged = S.decodeUnknownResult(ActionTagSchema)(c.action);
-                if (Result.isFailure(tagged)) {
-                  return yield* new WorkspaceChangeError({
-                    message: "action.push payload must be an object with _tag",
-                  });
-                }
-                const tag = tagged.success._tag;
-                if (!apply.actionTags.has(tag)) {
-                  return yield* new WorkspaceChangeError({
-                    message: `action tag '${tag}' is not registered for this command`,
-                  });
-                }
-                const queued: QueuedPluginAction = { _tag: tag, payload: c.action };
-                actions.push(queued);
-              }),
-            "result.set": (c) =>
-              Effect.gen(function* () {
-                if (!apply.declaresResult) {
-                  return yield* new WorkspaceChangeError({
-                    message: "result.set requires a declared result Schema on the command",
-                  });
-                }
-                result = c.result;
-              }),
-          });
-        }
-      });
+                return;
+              }
+              const target = targetPane();
+              if (!target) {
+                return yield* new WorkspaceChangeError({
+                  message: "plugin.place requires a target pane or window",
+                });
+              }
+              yield* acceptProposedPaneId(c.pane, target.window.space);
+              const paneId = yield* placePluginPane(c.type, sized, c.pane, { mode: "split" });
+              if (paneId === null) {
+                return yield* new WorkspaceChangeError({
+                  message: "plugin.place requires a target pane or window",
+                });
+              }
+            }),
+          "action.push": (c) =>
+            Effect.gen(function* () {
+              const tagged = S.decodeUnknownResult(ActionTagSchema)(c.action);
+              if (Result.isFailure(tagged)) {
+                return yield* new WorkspaceChangeError({
+                  message: "action.push payload must be an object with _tag",
+                });
+              }
+              const tag = tagged.success._tag;
+              if (!apply.actionTags.has(tag)) {
+                return yield* new WorkspaceChangeError({
+                  message: `action tag '${tag}' is not registered for this command`,
+                });
+              }
+              const queued: QueuedPluginAction = { _tag: tag, payload: c.action };
+              actions.push(queued);
+            }),
+          "result.set": (c) =>
+            Effect.gen(function* () {
+              if (!apply.declaresResult) {
+                return yield* new WorkspaceChangeError({
+                  message: "result.set requires a declared result Schema on the command",
+                });
+              }
+              result = c.result;
+            }),
+        });
+      }
+    });
     const addWindow = (
       target: WorkspaceSpace,
     ): Effect.Effect<WorkspaceWindow, WorkspaceChangeError> =>
@@ -1349,36 +1342,35 @@ const applyWorkspaceCommandOnce = (
         created.state.focus = pane;
         return created;
       });
-    const splitAtTarget = (
+    const splitAtTarget = Effect.fnUntraced(function* (
       axis: "row" | "column",
       agent: PersistedSession,
       target: { window: WindowEntry; pane: PaneRef },
-    ) =>
-      Effect.gen(function* () {
-        const { space, window } = target.window;
-        const panes = layoutPanes(window.layout.root);
-        const at = panes.findIndex((pane) => pane.id === target.pane.id);
-        const ref = { id: newPaneId(space), content: paneContentFor(agent) };
-        if (at === -1) {
-          window.layout = appendPane(window.layout, ref);
-        } else {
-          const answer = yield* ask({
-            _tag: "split",
-            layout: window.layout,
-            size: context.size,
-            at: target.pane.id,
-            direction: axis,
-            pane: ref,
-          });
-          window.layout =
-            answer._tag === "ok" ? answer.layout : splitLayout(window.layout, at, axis, ref);
-        }
-        window.state.focus = ref.id;
-        window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
-        window.state.zoom = null;
-        window.state.preset = null;
-        return ref.id;
-      });
+    ) {
+      const { space, window } = target.window;
+      const panes = layoutPanes(window.layout.root);
+      const at = panes.findIndex((pane) => pane.id === target.pane.id);
+      const ref = { id: newPaneId(space), content: paneContentFor(agent) };
+      if (at === -1) {
+        window.layout = appendPane(window.layout, ref);
+      } else {
+        const answer = yield* ask({
+          _tag: "split",
+          layout: window.layout,
+          size: context.size,
+          at: target.pane.id,
+          direction: axis,
+          pane: ref,
+        });
+        window.layout =
+          answer._tag === "ok" ? answer.layout : splitLayout(window.layout, at, axis, ref);
+      }
+      window.state.focus = ref.id;
+      window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
+      window.state.zoom = null;
+      window.state.preset = null;
+      return ref.id;
+    });
     if (!isCoreCommand(command)) {
       if (plugins !== undefined) yield* applyPluginChanges(plugins);
       return yield* finish();

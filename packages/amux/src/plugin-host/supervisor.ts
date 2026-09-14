@@ -261,17 +261,16 @@ const runGeneration = (
     const done = yield* Deferred.make<GenerationResult>();
     const exitReason = yield* Deferred.make<string>();
 
-    const failBeforeReady = (failure: string) =>
-      Effect.gen(function* () {
-        const reason = yield* preferExitReason(exitReason, failure);
-        yield* setStatus(options.status, {
-          state: "failed",
-          restarts,
-          lastError: reason,
-          pid: child.pid,
-        });
-        yield* Deferred.succeed(done, { reason, reachedReady: false });
+    const failBeforeReady = Effect.fnUntraced(function* (failure: string) {
+      const reason = yield* preferExitReason(exitReason, failure);
+      yield* setStatus(options.status, {
+        state: "failed",
+        restarts,
+        lastError: reason,
+        pid: child.pid,
       });
+      yield* Deferred.succeed(done, { reason, reachedReady: false });
+    });
 
     yield* Effect.forkIn(
       Effect.promise(() => child.exited).pipe(

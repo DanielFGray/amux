@@ -19,44 +19,42 @@ const usage = (): string =>
 const adapterById = (name: string | undefined): ForeignHarnessAdapter | undefined =>
   adapters.find((adapter) => adapter.id === name);
 
-const handleAgentHook = (argv: readonly string[]): Effect.Effect<number> =>
-  Effect.gen(function* () {
-    const [vendorName, action] = argv;
-    const adapter = adapterById(vendorName);
-    if (adapter === undefined || (action !== "install" && action !== "uninstall")) {
-      process.stderr.write(usage() + "\n");
-      return 2;
-    }
-    if (!argv.includes("--yes")) {
-      process.stderr.write(
-        `error: editing ${vendorName} config requires explicit consent; add --yes\n`,
-      );
-      return 2;
-    }
-    const outcome: Effect.Effect<
-      string | boolean,
-      ForeignHarnessHookError | PlatformError,
-      FileSystem.FileSystem
-    > = action === "install" ? adapter.hooks.install() : adapter.hooks.uninstall();
-    return yield* outcome.pipe(
-      Effect.provide(BunFileSystem.layer),
-      Effect.map((result) => {
-        if (action === "install")
-          process.stdout.write(`installed ${vendorName} hook at ${result}\n`);
-        else
-          process.stdout.write(
-            result ? `removed ${vendorName} hook\n` : `no ${vendorName} hook installed\n`,
-          );
-        return 0;
-      }),
-      Effect.catch((error) =>
-        Effect.sync(() => {
-          process.stderr.write(`error: ${String(error)}\n`);
-          return 1;
-        }),
-      ),
+const handleAgentHook = Effect.fnUntraced(function* (argv: readonly string[]) {
+  const [vendorName, action] = argv;
+  const adapter = adapterById(vendorName);
+  if (adapter === undefined || (action !== "install" && action !== "uninstall")) {
+    process.stderr.write(usage() + "\n");
+    return 2;
+  }
+  if (!argv.includes("--yes")) {
+    process.stderr.write(
+      `error: editing ${vendorName} config requires explicit consent; add --yes\n`,
     );
-  });
+    return 2;
+  }
+  const outcome: Effect.Effect<
+    string | boolean,
+    ForeignHarnessHookError | PlatformError,
+    FileSystem.FileSystem
+  > = action === "install" ? adapter.hooks.install() : adapter.hooks.uninstall();
+  return yield* outcome.pipe(
+    Effect.provide(BunFileSystem.layer),
+    Effect.map((result) => {
+      if (action === "install") process.stdout.write(`installed ${vendorName} hook at ${result}\n`);
+      else
+        process.stdout.write(
+          result ? `removed ${vendorName} hook\n` : `no ${vendorName} hook installed\n`,
+        );
+      return 0;
+    }),
+    Effect.catch((error) =>
+      Effect.sync(() => {
+        process.stderr.write(`error: ${String(error)}\n`);
+        return 1;
+      }),
+    ),
+  );
+});
 
 /**
  * CLI + adapter registration for foreign PTY harness continuity (hooks install

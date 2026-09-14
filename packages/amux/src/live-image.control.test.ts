@@ -143,20 +143,16 @@ export default definePlugin({
 });
 `;
 
-const attachClient = (id: string, env: NodeJS.ProcessEnv) =>
-  Effect.gen(function* () {
-    const scope = yield* Scope.make();
-    scopes.push(scope);
-    const client = yield* provideEnv(
-      Scope.provide(
-        SessionClient.connect(id, { client: "live-image-ui", autostart: false }),
-        scope,
-      ),
-      env,
-    );
-    clients.push(client);
-    return client;
-  });
+const attachClient = Effect.fnUntraced(function* (id: string, env: NodeJS.ProcessEnv) {
+  const scope = yield* Scope.make();
+  scopes.push(scope);
+  const client = yield* provideEnv(
+    Scope.provide(SessionClient.connect(id, { client: "live-image-ui", autostart: false }), scope),
+    env,
+  );
+  clients.push(client);
+  return client;
+});
 
 const bootApp = (
   client: SessionClientContract,

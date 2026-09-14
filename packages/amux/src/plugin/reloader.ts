@@ -198,41 +198,40 @@ export const createReloader = (
     return ids.length === 0 ? Effect.succeed([]) : reloadEntries(ids, changed).pipe(Effect.as(ids));
   };
 
-  const observeError = (event: PluginErrorEvent): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      if (event.phase !== "render" || host.generation(event.pluginId) !== event.generation) return;
-      const now = event.timestamp;
-      const recent = [...(renderFaults.get(event.pluginId) ?? []), now].filter(
-        (timestamp) => now - timestamp <= 5_000,
-      );
-      renderFaults.set(event.pluginId, recent);
-      if (recent.length < 3 || rollingBack.has(event.pluginId)) return;
+  const observeError = Effect.fnUntraced(function* (event: PluginErrorEvent) {
+    if (event.phase !== "render" || host.generation(event.pluginId) !== event.generation) return;
+    const now = event.timestamp;
+    const recent = [...(renderFaults.get(event.pluginId) ?? []), now].filter(
+      (timestamp) => now - timestamp <= 5_000,
+    );
+    renderFaults.set(event.pluginId, recent);
+    if (recent.length < 3 || rollingBack.has(event.pluginId)) return;
 
-      const ids = cohorts.get(event.pluginId) ?? [event.pluginId];
-      const previous = ids.map((id) => [id, lastGood.get(id)] as const);
-      if (previous.some(([, plugin]) => !plugin)) return;
-      rollingBack.add(event.pluginId);
-      yield* host.replace(previous.map(([, plugin]) => plugin!.definition)).pipe(Effect.ignore);
-      for (const [id, plugin] of previous) running.set(id, plugin!);
-      for (const id of ids) {
-        renderFaults.delete(id);
-        quarantined.add(id);
-      }
-      yield* Option.match(recoveryStore, {
-        onNone: () => Effect.void,
-        onSome: (store) =>
-          store.read.pipe(
-            Effect.orElseSucceed(() => Option.none()),
-            Effect.flatMap((saved) =>
-              Option.match(saved, {
-                onNone: () => Effect.void,
-                onSome: (value) => store.write({ ...value, quarantined: true }).pipe(Effect.ignore),
-              }),
-            ),
+    const ids = cohorts.get(event.pluginId) ?? [event.pluginId];
+    const previous = ids.map((id) => [id, lastGood.get(id)] as const);
+    if (previous.some(([, plugin]) => !plugin)) return;
+    rollingBack.add(event.pluginId);
+    yield* host.replace(previous.map(([, plugin]) => plugin!.definition)).pipe(Effect.ignore);
+    for (const [id, plugin] of previous) running.set(id, plugin!);
+    for (const id of ids) {
+      renderFaults.delete(id);
+      quarantined.add(id);
+    }
+    yield* Option.match(recoveryStore, {
+      onNone: () => Effect.void,
+      onSome: (store) =>
+        store.read.pipe(
+          Effect.orElseSucceed(() => Option.none()),
+          Effect.flatMap((saved) =>
+            Option.match(saved, {
+              onNone: () => Effect.void,
+              onSome: (value) => store.write({ ...value, quarantined: true }).pipe(Effect.ignore),
+            }),
           ),
-      });
-      rollingBack.delete(event.pluginId);
+        ),
     });
+    rollingBack.delete(event.pluginId);
+  });
 
   return {
     reload,

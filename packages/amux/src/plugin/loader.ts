@@ -282,35 +282,34 @@ function resolvePathEntry(
             Effect.map(Option.some),
             Effect.orElseSucceed(() => Option.none<string>()),
           );
-    const resolveDirectory = () =>
-      Effect.gen(function* () {
-        const dir = filePath.replace(/\/$/, "");
-        const text = yield* fs.readFileString(path.join(dir, "package.json")).pipe(
-          Effect.map(Option.some),
-          Effect.orElseSucceed(() => Option.none<string>()),
-        );
-        const manifest = yield* Option.match(text, {
-          onNone: () => Effect.succeed(Option.none<S.Schema.Type<typeof ManifestExports>>()),
-          onSome: (contents) =>
-            S.decodeEffect(S.fromJsonString(ManifestExports))(contents).pipe(
-              Effect.map(Option.some),
-              Effect.orElseSucceed(() => Option.none<S.Schema.Type<typeof ManifestExports>>()),
-            ),
-        });
-        const target = yield* Option.match(manifest, {
-          onNone: () => Effect.succeed(Option.none<string>()),
-          onSome: (value) =>
-            Option.match(Option.fromUndefinedOr(value.exports), {
-              onNone: () => Effect.succeed(Option.none<string>()),
-              onSome: (exports) =>
-                Effect.succeed(Option.fromUndefinedOr(resolveExportsSubpath(exports, entrypoint))),
-            }),
-        });
-        return Option.match(target, {
-          onNone: () => (entrypoint === "." ? Option.some(filePath) : Option.none()),
-          onSome: (targetPath) => Option.some(path.join(dir, targetPath.replace(/^\.\//, ""))),
-        });
+    const resolveDirectory = Effect.fnUntraced(function* () {
+      const dir = filePath.replace(/\/$/, "");
+      const text = yield* fs.readFileString(path.join(dir, "package.json")).pipe(
+        Effect.map(Option.some),
+        Effect.orElseSucceed(() => Option.none<string>()),
+      );
+      const manifest = yield* Option.match(text, {
+        onNone: () => Effect.succeed(Option.none<S.Schema.Type<typeof ManifestExports>>()),
+        onSome: (contents) =>
+          S.decodeEffect(S.fromJsonString(ManifestExports))(contents).pipe(
+            Effect.map(Option.some),
+            Effect.orElseSucceed(() => Option.none<S.Schema.Type<typeof ManifestExports>>()),
+          ),
       });
+      const target = yield* Option.match(manifest, {
+        onNone: () => Effect.succeed(Option.none<string>()),
+        onSome: (value) =>
+          Option.match(Option.fromUndefinedOr(value.exports), {
+            onNone: () => Effect.succeed(Option.none<string>()),
+            onSome: (exports) =>
+              Effect.succeed(Option.fromUndefinedOr(resolveExportsSubpath(exports, entrypoint))),
+          }),
+      });
+      return Option.match(target, {
+        onNone: () => (entrypoint === "." ? Option.some(filePath) : Option.none()),
+        onSome: (targetPath) => Option.some(path.join(dir, targetPath.replace(/^\.\//, ""))),
+      });
+    });
     const stat = yield* fs.stat(filePath).pipe(
       Effect.map(Option.some),
       Effect.orElseSucceed(() => Option.none()),

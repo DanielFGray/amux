@@ -68,35 +68,34 @@ export type CopilotEndpoints = {
   readonly clientId?: string;
 };
 
-const resolveClientId = (endpoints: CopilotEndpoints) =>
-  Effect.gen(function* () {
-    if (endpoints.clientId !== undefined && endpoints.clientId.length > 0) {
-      return endpoints.clientId;
-    }
-    const configured = yield* Config.option(Config.string(GITHUB_COPILOT_CLIENT_ID_CONFIG)).pipe(
-      Effect.mapError(
-        () =>
-          new OAuthFailed({
-            message: MISSING_CLIENT_ID,
-            kind: "device-auth",
-          }),
-      ),
-    );
-    return yield* Option.match(configured, {
-      onNone: () =>
+const resolveClientId = Effect.fnUntraced(function* (endpoints: CopilotEndpoints) {
+  if (endpoints.clientId !== undefined && endpoints.clientId.length > 0) {
+    return endpoints.clientId;
+  }
+  const configured = yield* Config.option(Config.string(GITHUB_COPILOT_CLIENT_ID_CONFIG)).pipe(
+    Effect.mapError(
+      () =>
         new OAuthFailed({
           message: MISSING_CLIENT_ID,
           kind: "device-auth",
         }),
-      onSome: (id) =>
-        id.length > 0
-          ? Effect.succeed(id)
-          : new OAuthFailed({
-              message: MISSING_CLIENT_ID,
-              kind: "device-auth",
-            }),
-    });
+    ),
+  );
+  return yield* Option.match(configured, {
+    onNone: () =>
+      new OAuthFailed({
+        message: MISSING_CLIENT_ID,
+        kind: "device-auth",
+      }),
+    onSome: (id) =>
+      id.length > 0
+        ? Effect.succeed(id)
+        : new OAuthFailed({
+            message: MISSING_CLIENT_ID,
+            kind: "device-auth",
+          }),
   });
+});
 
 export const normalizeDomain = (url: string): string =>
   url.replace(/^https?:\/\//, "").replace(/\/$/, "");

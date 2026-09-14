@@ -666,39 +666,43 @@ const tryTool = <E>(body: Effect.Effect<string, E>) =>
 const fromWorkspace = (workspace: string, path: string) =>
   path.startsWith("/") ? path : `${workspace}/${path}`;
 
-const readTextPreferringStore = (session: string | undefined, absolutePath: string) =>
-  Effect.gen(function* () {
-    if (session) {
-      const open = yield* readOpenDocumentText(session, absolutePath).pipe(
-        Effect.orElseSucceed(() => Option.none()),
-      );
-      if (Option.isSome(open)) return open.value;
-    }
-    const fs = yield* FileSystem.FileSystem;
-    return yield* fs.readFileString(absolutePath);
-  });
-
-const persistText = (session: string | undefined, absolutePath: string, text: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    if (!session) {
-      yield* fs.writeFileString(absolutePath, text);
-      return;
-    }
-    yield* writeDocument(session, absolutePath, text).pipe(
-      Effect.asVoid,
-      Effect.catch(() => fs.writeFileString(absolutePath, text)),
+const readTextPreferringStore = Effect.fnUntraced(function* (
+  session: string | undefined,
+  absolutePath: string,
+) {
+  if (session) {
+    const open = yield* readOpenDocumentText(session, absolutePath).pipe(
+      Effect.orElseSucceed(() => Option.none()),
     );
-  });
+    if (Option.isSome(open)) return open.value;
+  }
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(absolutePath);
+});
 
-const removeFile = (session: string | undefined, absolutePath: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    if (session) {
-      yield* closeDocument(session, absolutePath, true).pipe(Effect.ignore);
-    }
-    yield* fs.remove(absolutePath);
-  });
+const persistText = Effect.fnUntraced(function* (
+  session: string | undefined,
+  absolutePath: string,
+  text: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!session) {
+    yield* fs.writeFileString(absolutePath, text);
+    return;
+  }
+  yield* writeDocument(session, absolutePath, text).pipe(
+    Effect.asVoid,
+    Effect.catch(() => fs.writeFileString(absolutePath, text)),
+  );
+});
+
+const removeFile = Effect.fnUntraced(function* (session: string | undefined, absolutePath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  if (session) {
+    yield* closeDocument(session, absolutePath, true).pipe(Effect.ignore);
+  }
+  yield* fs.remove(absolutePath);
+});
 
 const run = Effect.fnUntraced(function* (args: string[], cwd: string, timeout: number) {
   const process = Bun.spawn(args, { cwd, stdout: "pipe", stderr: "pipe" });
