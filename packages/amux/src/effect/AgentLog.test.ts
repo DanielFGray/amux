@@ -23,3 +23,24 @@ it.effect("watch replays and tails without duplicating the replay seam", () =>
     expect([...values].map((value) => value.sequence)).toEqual([0, 1]);
   }),
 );
+
+it.effect("append assigns a committed sequence starting at zero", () =>
+  Effect.gen(function* () {
+    const log = yield* AgentLog;
+    const first = yield* log.append({
+      _tag: "topic",
+      session: "seq",
+      topic: "session.state",
+      payload: "running",
+    });
+    const second = yield* log.append({
+      _tag: "agent.message",
+      session: "seq",
+      event: { reason: "startup failed" },
+    });
+    expect(first.sequence).toBe(0);
+    expect(second.sequence).toBe(1);
+    const events = yield* log.read("seq");
+    expect(events.map((e) => e.sequence)).toEqual([0, 1]);
+  }),
+);

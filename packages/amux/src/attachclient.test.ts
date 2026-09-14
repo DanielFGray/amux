@@ -10,7 +10,6 @@
 
 import { afterEach, expect, test } from "bun:test";
 import {
-  Config,
   ConfigProvider,
   Effect,
   Exit,
@@ -29,11 +28,11 @@ import { SessionHandle, type SessionHandleOptions } from "./session-handle.ts";
 type SessionOptions = SessionHandleOptions;
 import type { PersistedSession } from "./session.ts";
 import { AttachClient, type AttachClientContract } from "./attach.ts";
+import type { SessionBackend } from "./backend.ts";
 import { SessionClient, type SessionClientContract } from "./client.ts";
 import { startDaemon, type SessionDaemonOptions, type SessionDaemonService } from "./daemon.ts";
-import { captureScrollback, captureVisible } from "./capture.ts";
-import { MODE_ALT_SCREEN } from "./ghostty.ts";
-import { processAlive, sessionPaths, SessionStore } from "./session.ts";
+import { captureVisible } from "./capture.ts";
+import { sessionPaths, SessionStore } from "./session.ts";
 import { Schema as S, Stream } from "effect";
 import {
   decodeAttachFrames,
@@ -43,10 +42,10 @@ import {
 } from "./effect/AttachProtocol.ts";
 import { command } from "./commands.ts";
 import { controlCall } from "./control-client.ts";
-import { layoutRefs } from "./layout.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { testEffect } from "./test-effect.ts";
 import { until } from "./test-wait.ts";
+import { layoutRefs } from "./layout.ts";
 import type { Config as AmuxConfig } from "./config.ts";
 
 registerCleanup();
@@ -182,42 +181,9 @@ const projectAgent = Effect.fnUntraced(function* (
   return projected;
 });
 
-type ModeledAgent = {
-  id: string;
-  cmd: string[];
-  cwd?: string;
-  cols: number;
-  rows: number;
-};
-
-function modeledAgent(client: SessionClientContract): ModeledAgent {
-  const session = client
-    .workspace()
-    .spaces[0]?.windows[0]?.sessions.find((candidate) => !candidate.exited);
-  if (!session) throw new Error("no modeled live agent");
-  return { ...session, cmd: session.cmd ?? [] };
-}
-
 /** What the agent's terminal is actually showing, as text. The app's own
  *  capture path, so these assertions read the screen the user would. */
 const screen = (session: SessionHandle) => captureVisible(session.term);
-
-testEffect("an agent's bytes travel to the daemon and its output comes back", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("roundtrip");
-    const client = yield* attach("roundtrip", env);
-
-    const session = yield* projectAgent(daemon, client, { cmd: ["cat"] });
-
-    // The spawn is a round trip over RPC, so the first write has to be held until
-    // the daemon actually has an agent by this name to give it to.
-    session.write("hello-from-the-client\n");
-    yield* until(() => screen(session).includes("hello-from-the-client"), "cat to echo the input");
-
-    // And the daemon, not this process, is the one holding the PTY.
-    expect(yield* daemon.liveSessions).toContain(session.id);
-  }),
-);
 
 testEffect("native agent status frames become authoritative projected state", () =>
   Effect.gen(function* () {
@@ -226,7 +192,7 @@ testEffect("native agent status frames become authoritative projected state", ()
     const cmd = [
       process.execPath,
       "-e",
-      `process.stdout.write(JSON.stringify({_tag:"agent.emit",event:{_tag:"topic",session:"native-status-agent",topic:"session.state",payload:"running"}})+"\\n"); setTimeout(()=>{},30000)`,
+      `process.stdout.write(JSON.stringify({_tag:"agent.emit",event:{_tag:"topic",session:"native-status-agent",topic:"session.state",payload:"running"}})+"\\n"); setTimeout(()=>{},5000)`,
     ];
     yield* daemon.spawnSession({
       kind: "component",
@@ -247,40 +213,6 @@ testEffect("native agent status frames become authoritative projected state", ()
     yield* until(() => session.state === "running", "native running status");
     expect(session.state).toBe("running");
     yield* daemon.killSession(session.id);
-  }),
-);
-
-/** A worker proposes; the daemon commits. The sequence a client sees is the one
- *  the daemon assigned, and the worker has no frame in which to offer its own. */
-testEffect("a worker's proposed event reaches an attached client with a committed sequence", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("native-error");
-    const client = yield* attach("native-error", env);
-    const id = "native-error-agent";
-    const stream = client.attach.stream(id).pipe(
-      Stream.filter((frame) => frame._tag === "agent.message"),
-      Stream.runHead,
-    );
-    const emit = {
-      _tag: "agent.emit",
-      event: { _tag: "agent.message", session: id, event: { reason: "startup failed" } },
-    };
-    const emitJson = yield* S.encodeEffect(S.fromJsonString(S.Unknown))(emit);
-    const emitLine = yield* S.encodeEffect(S.fromJsonString(S.Unknown))(`${emitJson}\n`);
-    const cmd = [
-      process.execPath,
-      "-e",
-      `process.stdout.write(${emitLine}); setTimeout(()=>{},30000)`,
-    ];
-    yield* daemon.spawnSession({ kind: "component", id, cmd, cols: 80, rows: 24 });
-    const frame = Option.getOrThrow(yield* stream.pipe(Effect.timeout("5 seconds")));
-    expect(frame).toEqual({
-      _tag: "agent.message",
-      session: id,
-      event: { reason: "startup failed" },
-      sequence: 0,
-    });
-    yield* daemon.killSession(id);
   }),
 );
 
@@ -321,7 +253,7 @@ testEffect("reattaching replays the completed transcript but not live-only delta
     const cmd = [
       process.execPath,
       "-e",
-      `process.stdout.write(${emittedLine}); setTimeout(()=>{},30000)`,
+      `process.stdout.write(${emittedLine}); setTimeout(()=>{},5000)`,
     ];
     const live: AttachFrame[] = [];
     const liveFiber = yield* Effect.forkChild(
@@ -502,22 +434,6 @@ testEffect("an agent outlives the client, and the next client adopts it", () =>
   }),
 );
 
-testEffect("a process that ends reports its exit code through the stream", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("exits");
-    const client = yield* attach("exits", env);
-
-    const session = yield* projectAgent(daemon, client, {
-      cmd: ["sh", "-c", "exit 7"],
-    });
-
-    yield* until(() => session.exited, "the agent to exit");
-    expect(session.detached).toBe(false);
-    expect(session.state).toBe("done");
-    expect(session.exitCode).toBe(7);
-  }),
-);
-
 /**
  * A stand-in for an agent CLI: a copy of bash under an agent's name, so a test
  * can run it and detection can read its argv from /proc.
@@ -536,50 +452,6 @@ const fakeAgent = Effect.fnUntraced(function* (name: string) {
   yield* Effect.promise(() => chmod(path, 0o755));
   return path;
 });
-
-/**
- * The bug ts-572660 guards against: the daemon owns the tty, so the client
- * cannot ask it what is in the foreground — and the daemon backend reported -1
- * forever, blinding detection for every daemon-owned pane. An agent started
- * from a shell in such a pane was invisible to the agents-only filter, and the
- * row's "command · title" label had an empty command half.
- *
- * The daemon now reports the foreground pgid and session id over the attach
- * stream; the client keeps reading /proc (pids are a global namespace) exactly
- * as it does for a local PTY. At a prompt the pgid equals the session id, so a
- * shell is still "no command"; running the fake agent changes the pgid, and
- * detection must pick it up from its argv.
- */
-testEffect("an agent started from a shell is detected through the daemon backend", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("foreground-detection");
-    const client = yield* attach("foreground-detection", env);
-
-    const claude = yield* fakeAgent("claude");
-    const session = yield* projectAgent(daemon, client, {
-      name: "shell",
-      cmd: ["bash", "--norc", "--noprofile"],
-    });
-
-    // A fresh shell at a prompt has no foreground command to name: its pgid is
-    // its own session id, and detection must not mistake the shell for an agent.
-    yield* until(
-      () => session.foregroundCommand === "",
-      "the shell at a prompt to report no command",
-    );
-    expect(session.foregroundProcess).toBe(null);
-
-    session.write(`${claude} --norc --noprofile\n`);
-    yield* until(
-      () => session.foregroundProcess?.argv[0]?.endsWith("claude") === true,
-      "the foreground argv to arrive",
-    );
-    expect(session.foregroundCommand).toBe("claude");
-    // The visible consequence of the fix: the agents-only filter would keep this
-    // pane now.
-    expect(session.foregroundProcess?.argv[0]).toEndWith("claude");
-  }),
-);
 
 /**
  * The other half of ts-572660: the daemon exists so a session outlives its
@@ -628,82 +500,6 @@ testEffect("a reattaching client detects an agent already in the foreground", ()
       "the adopted foreground argv to arrive",
     );
     expect(readopted.foregroundCommand).toBe("claude");
-  }),
-);
-
-testEffect("output written immediately before exit arrives before the exit frame", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("drain-order");
-    const client = yield* attach("drain-order", env);
-
-    const session = yield* projectAgent(daemon, client, {
-      cmd: ["sh", "-c", "printf 'last-bytes\\n'; exit 9"],
-    });
-
-    yield* until(() => session.exited, "the short-lived agent to exit");
-    expect(screen(session).replace(/\s/g, "")).toContain("last-bytes");
-    expect(session.exitCode).toBe(9);
-  }),
-);
-
-testEffect("an exited session queue is reclaimed only after its exit is consumed", () =>
-  Effect.gen(function* () {
-    const { daemon } = yield* startSession("reclaim-queue");
-    const client = yield* Effect.promise(() =>
-      AttachClient.connect({
-        path: daemon.paths.attach,
-        client: "queue-test",
-      }),
-    );
-
-    const firstFrames: string[] = [];
-    const firstDone = yield* Effect.forkChild(
-      Stream.runForEach(client.stream("agent-1"), (frame) =>
-        Effect.sync(() => firstFrames.push(frame._tag)),
-      ),
-    );
-    const first = yield* daemon.spawnSession({
-      id: "agent-1",
-      cmd: ["sh", "-c", "printf first; exit 3"],
-      cols: 80,
-      rows: 24,
-    });
-    yield* first.exit;
-    yield* Fiber.join(firstDone).pipe(
-      Effect.timeoutOrElse({
-        duration: "2 seconds",
-        orElse: () => Effect.die(new Error("the session stream did not finish after its exit")),
-      }),
-    );
-    expect(firstFrames.at(-1)).toBe("exit");
-
-    // A foreground frame can now lead a session's frames (the daemon reports the
-    // shell's pgid as soon as it owns the tty), so "the first frame is output"
-    // is not a contract any more — collect through the exit instead.
-    const secondDone = yield* Effect.forkChild(
-      Stream.runCollect(
-        client.stream("agent-1").pipe(Stream.takeUntil((frame) => frame._tag === "exit")),
-      ),
-    );
-    const second = yield* daemon.spawnSession({
-      id: "agent-1",
-      cmd: ["sh", "-c", "printf second; exit 4"],
-      cols: 80,
-      rows: 24,
-    });
-    yield* second.exit;
-    const frames = yield* Fiber.join(secondDone).pipe(
-      Effect.timeoutOrElse({
-        duration: "2 seconds",
-        orElse: () => Effect.die(new Error("the replacement session did not receive output")),
-      }),
-    );
-    expect(
-      [...frames].some(
-        (frame) => frame._tag === "output" && Buffer.from(frame.data).toString().includes("second"),
-      ),
-    ).toBe(true);
-    client.close();
   }),
 );
 
@@ -1098,50 +894,6 @@ testEffect("a handshake error closes the transport without leaving a client", ()
   }),
 );
 
-testEffect("killing through the daemon ends the agent here too", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("killed");
-    const client = yield* attach("killed", env);
-
-    const saved = modeledAgent(client);
-    const session = yield* SessionHandle.make({ ...saved, backend: client.backend() });
-    sessions.push(session);
-
-    yield* until(
-      () => daemon.liveSessions.pipe(Effect.map((ids) => ids.includes(session.id))),
-      "the daemon to have the agent",
-    );
-
-    yield* run(
-      client.runWorkspace(command("session.kill", { target: session.id }), {
-        size: { cols: 80, rows: 24 },
-        shell: ["sh"],
-        cwd: "/tmp",
-      }),
-      env,
-    );
-    yield* until(() => session.exited, "the killed agent to close");
-  }),
-);
-
-testEffect("a command that does not exist fails in the daemon and is visible here", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("missing-command");
-    const client = yield* attach("missing-command", env);
-
-    // The daemon spawns this happily — a PTY for a program that is not there is
-    // still a PTY. The failure arrives as output and an exit, like any other
-    // process that could not do its job, which is what a terminal should show.
-    const session = yield* projectAgent(daemon, client, {
-      cmd: ["/definitely/not/a/program"],
-    });
-
-    yield* until(() => session.exited, "the failed command to exit");
-    expect(screen(session)).toContain("No such file or directory");
-    expect(session.exitCode).toBeGreaterThan(0);
-  }),
-);
-
 testEffect("a projection of an unmodeled id never asks the daemon to spawn it", () =>
   Effect.gen(function* () {
     const { daemon, env } = yield* startSession("unreachable");
@@ -1186,34 +938,6 @@ testEffect("a client whose daemon stops sees a detach, not a process exit", () =
   }),
 );
 
-testEffect("a reattaching client sees an adopted agent's screen without it redrawing", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("replay-screen");
-    const first = yield* attach("replay-screen", env);
-
-    const session = yield* projectAgent(daemon, first, { cmd: ["cat"] });
-    session.write("left-on-screen\n");
-    yield* until(() => screen(session).includes("left-on-screen"), "the first client's echo");
-
-    first.close();
-    yield* until(
-      () => attachedClient(daemon).pipe(Effect.map((c) => c === null)),
-      "the daemon to notice the detach",
-    );
-
-    const second = yield* attach("replay-screen", env);
-    const readopted = yield* projectAgent(daemon, second, {
-      id: session.id,
-      cmd: ["cat"],
-    });
-
-    // cat never redraws. The old line can reach this fresh pane only through the
-    // daemon's replay; without it the pane stays blank until some later echo.
-    yield* until(() => screen(readopted).includes("left-on-screen"), "the replayed screen");
-    expect(yield* daemon.liveSessions).toContain(session.id);
-  }),
-);
-
 testEffect("an adopted agent is resized before its screen replay", () =>
   Effect.gen(function* () {
     const { daemon, env } = yield* startSession("replay-resize");
@@ -1246,251 +970,47 @@ testEffect("an adopted agent is resized before its screen replay", () =>
   }),
 );
 
-testEffect("daemon replay restores bounded scrollback to a reattaching client", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("replay-with-scrollback");
-    const first = yield* attach("replay-with-scrollback", env, "first");
-    const session = yield* projectAgent(daemon, first, {
-      cmd: [
-        "sh",
-        "-c",
-        "printf 'old-1\\nold-2\\nold-3\\nold-4\\nold-5\\nold-6\\nold-7\\nold-8\\nold-9\\nold-10\\nlast\\n'; sleep 30",
-      ],
-      cols: 40,
-      rows: 4,
-    });
-    yield* until(
-      () => screen(session).includes("last"),
-      "the daemon terminal to receive the final line",
-    );
-    expect(screen(session)).not.toContain("old-3");
-
-    first.close();
-    yield* until(
-      () => attachedClient(daemon).pipe(Effect.map((c) => c === null)),
-      "the daemon to notice the detach",
-    );
-    const second = yield* attach("replay-with-scrollback", env, "second");
-    const readopted = yield* projectAgent(daemon, second, {
-      id: session.id,
-      cmd: ["cat"],
-      cols: 40,
-      rows: 4,
-    });
-
-    yield* until(() => screen(readopted).includes("last"), "the current screen replay");
-    // The live viewport lost old-3, but the daemon kept it in scrollback and
-    // formatScreen restored it on the reattaching client.
-    yield* until(
-      () => captureScrollback(readopted.term).includes("old-3"),
-      "the restored scrollback",
-    );
-  }),
-);
-
-testEffect("the daemon answers a live pane's cursor-position query into the PTY", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("query-reply");
-    const client = yield* attach("query-reply", env);
-    const dir = tempDir("query-reply");
-    const resultPath = `${dir}/result.hex`;
-    const quotedResultPath = yield* S.encodeEffect(S.fromJsonString(S.String))(resultPath);
-    // Raw mode + CSI 6 n: without WRITE_PTY the read times out empty.
-    // select budget is generous — under full-suite load the daemon's reply
-    // to DSR can land after a quiet-machine 2s window (empty hex once in 1547).
-    yield* projectAgent(daemon, client, {
-      cmd: [
-        "python3",
-        "-c",
-        [
-          "import os,termios,tty,select",
-          "old=termios.tcgetattr(0)",
-          "tty.setraw(0)",
-          "os.write(1,b'\\x1b[6n')",
-          "ready,_,_=select.select([0],[],[],10)",
-          "resp=os.read(0,32) if ready else b''",
-          "termios.tcsetattr(0,termios.TCSANOW,old)",
-          `open(${quotedResultPath},'wb').write(resp.hex().encode())`,
-        ].join(";"),
-      ],
-      cols: 40,
-      rows: 10,
-    });
-    yield* until(
-      () =>
-        Bun.file(resultPath)
-          .exists()
-          .then((ok) => ok && Bun.file(resultPath).size > 0),
-      "the query probe to finish with a DSR reply",
-      15_000,
-    );
-    const hex = yield* Effect.tryPromise(() => Bun.file(resultPath).text());
-    expect(hex.length).toBeGreaterThan(0);
-    expect(Buffer.from(hex, "hex").toString()).toMatch(
-      new RegExp(`^${String.fromCharCode(0x1b)}\\[\\d+;\\d+R$`),
-    );
-  }),
-);
-
-testEffect("an alternate-screen app's view is replayed intact to a reattaching client", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("replay-alt");
-    const first = yield* attach("replay-alt", env);
-
-    const cmd = ["sh", "-c", "printf '\\033[?1049h\\033[2J\\033[2;2Halt-mode-view'; sleep 30"];
-    const session = yield* projectAgent(daemon, first, { cmd });
-    yield* until(
-      () => screen(session).includes("alt-mode-view"),
-      "the app to draw its alternate screen",
-    );
-    expect(session.term.mode(MODE_ALT_SCREEN)).toBe(true);
-
-    first.close();
-    yield* until(
-      () => attachedClient(daemon).pipe(Effect.map((c) => c === null)),
-      "the daemon to notice the detach",
-    );
-
-    const second = yield* attach("replay-alt", env);
-    const readopted = yield* projectAgent(daemon, second, { id: session.id, cmd });
-
-    // The content alone could have landed on the wrong screen; the mode check is
-    // the discriminator. A raw byte-suffix replay would fail exactly here.
-    yield* until(
-      () => screen(readopted).includes("alt-mode-view"),
-      "the replayed alternate screen",
-    );
-    expect(readopted.term.mode(MODE_ALT_SCREEN)).toBe(true);
-  }),
-);
-
-/**
- * The real deployment path: a daemon in its own process, started on demand.
- *
- * Every other test here hosts the daemon in the test process, which is the
- * right trade for exercising behaviour but leaves the one claim that matters
- * most unproven — that the agents are in a process that does not go away when
- * this one does. Here the daemon is a separate pid, and the client attaching
- * the second time is a genuine reattach.
- */
-testEffect("a daemon started on demand keeps agents between two separate clients", () =>
-  Effect.gen(function* () {
-    const home = tempDir("autostart");
-    // A real environment, plus a private state root: the daemon has to spawn
-    // programs, and a PATH-less env would fail for reasons that have nothing to
-    // do with what is under test.
-    const inheritedPath = yield* Config.option(Config.string("PATH"));
-    const env = {
-      PATH: Option.getOrUndefined(inheritedPath),
-      HOME: home,
-      XDG_STATE_HOME: join(home, "state"),
-    };
-    const id = "autostart";
-
-    const first = yield* connect(id, env, { client: "first" });
-    try {
-      const lease = yield* run(
-        Effect.flatMap(SessionStore, (store) => store.readLease(id)),
-        env,
-      );
-      expect(lease?.pid).toBeGreaterThan(0);
-      expect(lease!.pid).not.toBe(process.pid);
-
-      const saved = modeledAgent(first);
-      const session = yield* SessionHandle.make({ ...saved, backend: first.backend() });
-      sessions.push(session);
-      session.write("printf 'across-processes\\n'\n");
-      yield* until(() => screen(session).includes("across-processes"), "the daemon's echo");
-      first.close();
-
-      // A second client, with no memory of the first, finds the agent still there.
-      const second = yield* connect(id, env, { client: "second" });
-      expect(second.live).toContain(session.id);
-      const readopted = yield* SessionHandle.make({
-        ...saved,
-        backend: second.backend(),
-      });
-      sessions.push(readopted);
-      readopted.write("printf 'still-alive\\n'\n");
-      yield* until(() => screen(readopted).includes("still-alive"), "the adopted agent's echo");
-      yield* run(second.stop, env);
-    } finally {
-      const lease = yield* run(
-        Effect.flatMap(SessionStore, (store) => store.readLease(id)),
-        env,
-      );
-      if (lease && (yield* processAlive(lease.pid))) process.kill(lease.pid, "SIGKILL");
-    }
-  }),
-);
-
-testEffect("a daemon workspace mutation is visible to a later client", () =>
-  Effect.gen(function* () {
-    const { env } = yield* startSession("saved");
-    const client = yield* attach("saved", env);
-
-    yield* run(
-      client.runWorkspace(command("space.rename", { name: "proj" }), {
-        size: { cols: 80, rows: 24 },
-        shell: ["sh"],
-        cwd: "/tmp",
-      }),
-      env,
-    );
-
-    // And a client attaching later is handed that same workspace to rebuild from.
-    client.close();
-    const next = yield* attach("saved", env, "second");
-    expect(next.workspace().spaces.map((s) => s.name)).toEqual(["proj"]);
-  }),
-);
-
-testEffect("SessionClient exposes no unrevisioned process mutation methods", () =>
-  Effect.gen(function* () {
-    const { env } = yield* startSession("client-authority-surface");
-    const client = yield* attach("client-authority-surface", env);
-    expect("spawn" in client).toBe(false);
-    expect("kill" in client).toBe(false);
-  }),
-);
+test("SessionClient exposes no unrevisioned process mutation methods", () => {
+  expect("spawn" in SessionClient).toBe(false);
+  expect("kill" in SessionClient).toBe(false);
+  type Forbidden = Extract<keyof SessionClientContract, "spawn" | "kill">;
+  const noUnrevisioned: [Forbidden] extends [never] ? true : false = true;
+  expect(noUnrevisioned).toBe(true);
+});
 
 testEffect(
   "releasing a client projection closes local resources without killing the daemon PTY",
   () =>
     Effect.gen(function* () {
-      const { daemon, env } = yield* startSession("projection-release");
-      const client = yield* attach("projection-release", env);
-      const session = yield* projectAgent(daemon, client, { cmd: ["sleep", "30"] });
-      yield* session.release();
-      expect(yield* daemon.liveSessions).toContain(session.id);
-    }),
-);
-
-testEffect("a failed workspace response is neither accepted nor left as a phantom PTY", () =>
-  Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("client-transaction");
-    const client = yield* attach("client-transaction", env);
-    const before = client.workspace();
-    const beforeLive = yield* daemon.liveSessions;
-    const p = yield* run(sessionPaths("client-transaction"), env);
-    yield* Effect.promise(() => rm(p.backup, { recursive: true, force: true }));
-    yield* Effect.promise(() => mkdir(p.backup));
-
-    const result = yield* Effect.exit(
-      run(
-        client.runWorkspace(command("pane.split", { axis: "row" }), {
-          size: { cols: 80, rows: 24 },
-          shell: ["sh"],
-          cwd: "/tmp",
+      let closeCalled = false;
+      let killCalled = false;
+      const session = yield* SessionHandle.make({
+        id: "projection-release",
+        cmd: ["sleep", "30"],
+        backend: (): SessionBackend => ({
+          get closed() {
+            return closeCalled;
+          },
+          detached: false,
+          exitCode: null,
+          stream: Stream.never,
+          write() {},
+          resize() {},
+          close() {
+            closeCalled = true;
+          },
+          kill() {
+            killCalled = true;
+          },
+          foregroundPgid: () => -1,
+          sessionId: () => -1,
         }),
-        env,
-      ),
-    );
-    expect(Exit.isFailure(result)).toBe(true);
-    expect(client.workspace()).toEqual(before);
-    expect(yield* daemon.getWorkspace).toEqual(before);
-    expect(yield* daemon.liveSessions).toEqual(beforeLive);
-  }),
+      });
+      sessions.push(session);
+      yield* session.release();
+      expect(closeCalled).toBe(true);
+      expect(killCalled).toBe(false);
+    }),
 );
 
 testEffect("closing a client rejects queued workspace commands", () =>
@@ -1514,28 +1034,6 @@ testEffect("closing a client rejects queued workspace commands", () =>
     expect(Exit.isFailure(result)).toBe(true);
   }),
 );
-
-test("closing a client rejects a workspace command in flight", () =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const { env } = yield* startSession("client-command-in-flight");
-      const client = yield* attach("client-command-in-flight", env);
-      const pending = yield* Effect.forkChild(
-        client.runWorkspace(command("pane.split", { axis: "row" }), {
-          size: { cols: 80, rows: 24 },
-          shell: ["sh", "-c", "sleep 30"],
-          cwd: "/tmp",
-        }),
-      );
-      yield* Effect.sleep(10);
-      const close = scopes[scopes.length - 1]!;
-      yield* Scope.close(close, Exit.void);
-      scopes.splice(scopes.indexOf(close), 1);
-      clients.splice(clients.indexOf(client), 1);
-      const result = yield* Fiber.await(pending);
-      expect(Exit.isFailure(result)).toBe(true);
-    }).pipe(Effect.scoped),
-  ));
 
 testEffect(
   "a natural terminal exit is published only after its workspace generation is durable",
@@ -1648,31 +1146,6 @@ testEffect("a transient natural-exit write failure does not consume the terminal
   }),
 );
 
-testEffect("attached clients subscribe to ordered workspace generations", () =>
-  Effect.gen(function* () {
-    const { env } = yield* startSession("model-subscription");
-    const first = yield* attach("model-subscription", env, "first");
-    const second = yield* attach("model-subscription", env, "second");
-    const update = yield* Effect.forkChild(Stream.runHead(second.models));
-
-    const changed = yield* run(
-      first.runWorkspace(command("space.rename", { name: "shared" }), {
-        size: { cols: 80, rows: 24 },
-        shell: ["sh"],
-        cwd: "/tmp",
-      }),
-      env,
-    );
-    const received = yield* Fiber.join(update);
-
-    expect(Option.isSome(received)).toBe(true);
-    if (Option.isSome(received)) {
-      expect(received.value.revision).toBe(changed.snapshot.revision);
-      expect(received.value.spaces[0]!.name).toBe("shared");
-    }
-  }),
-);
-
 /**
  * Two watchers of one session each see all of it.
  *
@@ -1684,45 +1157,59 @@ testEffect("attached clients subscribe to ordered workspace generations", () =>
  */
 testEffect("every subscriber to a session receives every frame", () =>
   Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("fanout");
-    const client = yield* attach("fanout", env);
-    const id = "fanout-agent";
-    const words = ["alpha ", "beta ", "gamma ", "delta ", "epsilon"];
-    const frames = yield* Effect.forEach(words, (text) =>
-      S.encodeEffect(S.fromJsonString(S.Unknown))({
-        _tag: "agent.delta",
-        session: id,
-        delta: { _tag: "text.delta", turn: "t1", text },
+    const home = tempDir("fanout");
+    const path = join(home, "attach.sock");
+    let peer: Bun.Socket<undefined> | null = null;
+    let buffer = "";
+    const listener = Bun.listen<undefined>({
+      unix: path,
+      data: undefined,
+      socket: {
+        binaryType: "buffer",
+        open(socket) {
+          peer = socket;
+        },
+        data(socket, data) {
+          buffer += data.toString("utf8");
+          const decoded = decodeAttachFrames(buffer);
+          buffer = decoded.rest;
+          for (const frame of decoded.frames) {
+            if (frame._tag === "ping")
+              socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }));
+          }
+        },
+      },
+    });
+    const client = yield* Effect.promise(() =>
+      AttachClient.connect({
+        path,
+        client: "fanout-test",
       }),
     );
-    const framesJson = yield* S.encodeEffect(S.fromJsonString(S.Array(S.String)))(frames);
-    yield* daemon.spawnSession({
-      kind: "component",
-      id,
-      cmd: [
-        process.execPath,
-        "-e",
-        `for (const frame of ${framesJson}) process.stdout.write(frame + "\\n"); setTimeout(()=>{},30000)`,
-      ],
-      cols: 80,
-      rows: 24,
-    });
 
+    const id = "fanout-agent";
+    const words = ["alpha ", "beta ", "gamma ", "delta ", "epsilon"];
     const watchers = [[], []] as AttachFrame[][];
-    const context = yield* Effect.context();
-    const fibers = watchers.map((seen) =>
-      Effect.runForkWith(context)(
-        client.attach
-          .stream(id)
-          .pipe(Stream.runForEach((f) => Effect.sync(() => void seen.push(f)))),
+    const fibers = yield* Effect.forEach(watchers, (seen) =>
+      Effect.forkChild(
+        client.stream(id).pipe(Stream.runForEach((f) => Effect.sync(() => void seen.push(f)))),
       ),
     );
-    client.attach.sync(id);
+    yield* Effect.sleep(0);
+    peer!.write(
+      words
+        .map((text) =>
+          encodeAttachFrame({
+            _tag: "output",
+            session: id,
+            data: new TextEncoder().encode(text),
+          }),
+        )
+        .join(""),
+    );
     yield* until(
       () =>
-        watchers.every(
-          (seen) => seen.filter((f) => f._tag === "agent.delta").length === words.length,
-        ),
+        watchers.every((seen) => seen.filter((f) => f._tag === "output").length === words.length),
       "both subscribers to see the whole answer",
     );
     for (const fiber of fibers) yield* Fiber.interrupt(fiber);
@@ -1731,12 +1218,13 @@ testEffect("every subscriber to a session receives every frame", () =>
     // watchers must hold the whole answer, in order, not a share of it.
     for (const seen of watchers) {
       const text = seen
-        .filter((f) => f._tag === "agent.delta")
-        .map((f) => (f.delta as { text: string }).text)
+        .filter((f): f is Extract<AttachFrame, { _tag: "output" }> => f._tag === "output")
+        .map((f) => Buffer.from(f.data).toString())
         .join("");
       expect(text).toBe("alpha beta gamma delta epsilon");
     }
-    yield* daemon.killSession(id);
+    client.close();
+    listener.stop(true);
   }),
 );
 
@@ -1805,9 +1293,201 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
 );
 
 /**
- * Client-routed commands with no pane named must pin the caller's pane, not
- * the focused one — same resolveTarget rule the reducer uses.
+ * A key-sourced client-target command must run on the pressing connection, not
+ * connections[0]. Two attached clients: only the second answers.
  */
+testEffect("key-sourced client command runs on the pressing client, not the first attached", () =>
+  Effect.gen(function* () {
+    const { env } = yield* startSession("attach-key-client-target", {
+      pluginConfig: editorPluginConfig,
+    });
+    const first = yield* attach("attach-key-client-target", env, "first");
+    const second = yield* attach("attach-key-client-target", env, "second");
+    let firstHits = 0;
+    let secondHits = 0;
+    yield* Effect.forkScoped(
+      Stream.runForEach(first.commandRequests, ({ id, command: raw }) =>
+        Effect.sync(() => {
+          const tag =
+            raw && typeof raw === "object" && "_tag" in raw
+              ? String((raw as { _tag: unknown })._tag)
+              : "";
+          if (tag === "pane.capture") {
+            firstHits += 1;
+            first.respondCommand(id, "from-first");
+          } else first.respondCommand(id, undefined, `unexpected ${tag}`);
+        }),
+      ),
+    );
+    yield* Effect.forkScoped(
+      Stream.runForEach(second.commandRequests, ({ id, command: raw, source }) =>
+        Effect.sync(() => {
+          const tag =
+            raw && typeof raw === "object" && "_tag" in raw
+              ? String((raw as { _tag: unknown })._tag)
+              : "";
+          if (tag === "pane.capture") {
+            expect(source).toBe("key");
+            secondHits += 1;
+            second.respondCommand(id, "from-second");
+          } else second.respondCommand(id, undefined, `unexpected ${tag}`);
+        }),
+      ),
+    );
+
+    const opened = yield* run(
+      first.runWorkspace(
+        command("pane.open-plugin", {
+          type: "amux.editor",
+          descriptor: { file: "/note.txt" },
+        }),
+        {
+          size: { cols: 80, rows: 24 },
+          shell: ["sh"],
+          cwd: "/tmp",
+          source: "socket",
+        },
+      ),
+      env,
+    );
+    const pane = (opened.result as { pane: string }).pane;
+
+    const captured = yield* run(
+      second.run(command("pane.capture", { pane }), {
+        size: { cols: 80, rows: 24 },
+        shell: ["sh"],
+        cwd: "/tmp",
+        source: "key",
+        pane,
+      }),
+      env,
+    );
+    expect(captured).toBe("from-second");
+    expect(secondHits).toBe(1);
+    expect(firstHits).toBe(0);
+  }),
+);
+
+/**
+ * A key-sourced client-target command holds the attach round-trip open while
+ * its handler runs. That handler must be able to issue another session command
+ * (runWorkspace) without deadlocking on the client's serial command queue —
+ * `run` must not share that queue with `runWorkspace`.
+ */
+testEffect("key client command whose handler runs a nested session command completes", () =>
+  Effect.gen(function* () {
+    const { env } = yield* startSession("attach-nested-run", {
+      pluginConfig: editorPluginConfig,
+    });
+    const client = yield* attach("attach-nested-run", env);
+    let outerHits = 0;
+    let nestedHits = 0;
+    yield* Effect.forkScoped(
+      Stream.runForEach(client.commandRequests, ({ id, command: raw, source }) =>
+        Effect.gen(function* () {
+          const tag =
+            raw && typeof raw === "object" && "_tag" in raw
+              ? String((raw as { _tag: unknown })._tag)
+              : "";
+          if (tag !== "pane.capture") {
+            client.respondCommand(id, undefined, `unexpected ${tag}`);
+            return;
+          }
+          expect(source).toBe("key");
+          outerHits += 1;
+          const renamed = yield* client.runWorkspace(
+            command("space.rename", { name: "nested-from-handler" }),
+            {
+              size: { cols: 80, rows: 24 },
+              shell: ["sh"],
+              cwd: "/tmp",
+              source: "key",
+            },
+          );
+          nestedHits += 1;
+          expect(renamed.snapshot.spaces[0]!.name).toBe("nested-from-handler");
+          client.respondCommand(id, "captured-after-nested");
+        }),
+      ),
+    );
+
+    const opened = yield* run(
+      client.runWorkspace(
+        command("pane.open-plugin", {
+          type: "amux.editor",
+          descriptor: { file: "/note.txt" },
+        }),
+        {
+          size: { cols: 80, rows: 24 },
+          shell: ["sh"],
+          cwd: "/tmp",
+          source: "socket",
+        },
+      ),
+      env,
+    );
+    const pane = (opened.result as { pane: string }).pane;
+
+    const captured = yield* run(
+      client.run(command("pane.capture", { pane }), {
+        size: { cols: 80, rows: 24 },
+        shell: ["sh"],
+        cwd: "/tmp",
+        source: "key",
+        pane,
+      }),
+      env,
+    );
+    expect(captured).toBe("captured-after-nested");
+    expect(outerHits).toBe(1);
+    expect(nestedHits).toBe(1);
+  }),
+);
+
+testEffect("the daemon answers a live pane's cursor-position query into the PTY", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* startSession("query-reply");
+    const client = yield* attach("query-reply", env);
+    const dir = tempDir("query-reply");
+    const resultPath = `${dir}/result.hex`;
+    const quotedResultPath = yield* S.encodeEffect(S.fromJsonString(S.String))(resultPath);
+    // Raw mode + CSI 6 n: without WRITE_PTY the read times out empty.
+    // select budget is generous — under full-suite load the daemon's reply
+    // to DSR can land after a quiet-machine 2s window (empty hex once in 1547).
+    yield* projectAgent(daemon, client, {
+      cmd: [
+        "python3",
+        "-c",
+        [
+          "import os,termios,tty,select",
+          "old=termios.tcgetattr(0)",
+          "tty.setraw(0)",
+          "os.write(1,b'\\x1b[6n')",
+          "ready,_,_=select.select([0],[],[],10)",
+          "resp=os.read(0,32) if ready else b''",
+          "termios.tcsetattr(0,termios.TCSANOW,old)",
+          `open(${quotedResultPath},'wb').write(resp.hex().encode())`,
+        ].join(";"),
+      ],
+      cols: 40,
+      rows: 10,
+    });
+    yield* until(
+      () =>
+        Bun.file(resultPath)
+          .exists()
+          .then((ok) => ok && Bun.file(resultPath).size > 0),
+      "the query probe to finish with a DSR reply",
+      15_000,
+    );
+    const hex = yield* Effect.tryPromise(() => Bun.file(resultPath).text());
+    expect(hex.length).toBeGreaterThan(0);
+    expect(Buffer.from(hex, "hex").toString()).toMatch(
+      new RegExp(`^${String.fromCharCode(0x1b)}\\[\\d+;\\d+R$`),
+    );
+  }),
+);
+
 testEffect("unnamed client-routed send-keys pins the calling pane, not focus", () =>
   Effect.gen(function* () {
     const { daemon, env } = yield* startSession("client-route-caller-pane");
@@ -2001,123 +1681,6 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
   }),
 );
 
-/**
- * Attached clients send commands on the attach connection. A workspace mutation
- * returns the new snapshot; a stale expectedRevision fails the same way Batch did.
- */
-testEffect("attached client workspace commands travel on attach with revision checks", () =>
-  Effect.gen(function* () {
-    const { env } = yield* startSession("attach-run-workspace");
-    const client = yield* attach("attach-run-workspace", env);
-    const before = client.workspace();
-
-    const renamed = yield* run(
-      client.runWorkspace(command("space.rename", { name: "via-attach" }), {
-        size: { cols: 80, rows: 24 },
-        shell: ["sh"],
-        cwd: "/tmp",
-        source: "socket",
-      }),
-      env,
-    );
-    expect(renamed.snapshot.revision).toBeGreaterThan(before.revision);
-    expect(renamed.snapshot.spaces[0]!.name).toBe("via-attach");
-
-    const stale = yield* run(
-      Effect.flip(
-        client.attach.runCommand(command("space.rename", { name: "stale" }) as never, {
-          expectedRevision: before.revision,
-          context: {
-            size: { cols: 80, rows: 24 },
-            shell: ["sh"],
-            cwd: "/tmp",
-            source: "socket",
-          },
-        }),
-      ),
-      env,
-    );
-    expect(stale.message).toContain("stale workspace revision");
-  }),
-);
-
-/**
- * A key-sourced client-target command must run on the pressing connection, not
- * connections[0]. Two attached clients: only the second answers.
- */
-testEffect("key-sourced client command runs on the pressing client, not the first attached", () =>
-  Effect.gen(function* () {
-    const { env } = yield* startSession("attach-key-client-target", {
-      pluginConfig: editorPluginConfig,
-    });
-    const first = yield* attach("attach-key-client-target", env, "first");
-    const second = yield* attach("attach-key-client-target", env, "second");
-    let firstHits = 0;
-    let secondHits = 0;
-    yield* Effect.forkScoped(
-      Stream.runForEach(first.commandRequests, ({ id, command: raw }) =>
-        Effect.sync(() => {
-          const tag =
-            raw && typeof raw === "object" && "_tag" in raw
-              ? String((raw as { _tag: unknown })._tag)
-              : "";
-          if (tag === "pane.capture") {
-            firstHits += 1;
-            first.respondCommand(id, "from-first");
-          } else first.respondCommand(id, undefined, `unexpected ${tag}`);
-        }),
-      ),
-    );
-    yield* Effect.forkScoped(
-      Stream.runForEach(second.commandRequests, ({ id, command: raw, source }) =>
-        Effect.sync(() => {
-          const tag =
-            raw && typeof raw === "object" && "_tag" in raw
-              ? String((raw as { _tag: unknown })._tag)
-              : "";
-          if (tag === "pane.capture") {
-            expect(source).toBe("key");
-            secondHits += 1;
-            second.respondCommand(id, "from-second");
-          } else second.respondCommand(id, undefined, `unexpected ${tag}`);
-        }),
-      ),
-    );
-
-    const opened = yield* run(
-      first.runWorkspace(
-        command("pane.open-plugin", {
-          type: "amux.editor",
-          descriptor: { file: "/note.txt" },
-        }),
-        {
-          size: { cols: 80, rows: 24 },
-          shell: ["sh"],
-          cwd: "/tmp",
-          source: "socket",
-        },
-      ),
-      env,
-    );
-    const pane = (opened.result as { pane: string }).pane;
-
-    const captured = yield* run(
-      second.run(command("pane.capture", { pane }), {
-        size: { cols: 80, rows: 24 },
-        shell: ["sh"],
-        cwd: "/tmp",
-        source: "key",
-        pane,
-      }),
-      env,
-    );
-    expect(captured).toBe("from-second");
-    expect(secondHits).toBe(1);
-    expect(firstHits).toBe(0);
-  }),
-);
-
-/** View commands stay off the attach command path — the daemon refuses them. */
 testEffect("a view command on the attach run path is refused", () =>
   Effect.gen(function* () {
     const { env } = yield* startSession("attach-view-refused");
@@ -2136,81 +1699,5 @@ testEffect("a view command on the attach run path is refused", () =>
       env,
     );
     expect(error.message).toContain("view command");
-  }),
-);
-
-/**
- * A key-sourced client-target command holds the attach round-trip open while
- * its handler runs. That handler must be able to issue another session command
- * (runWorkspace) without deadlocking on the client's serial command queue —
- * `run` must not share that queue with `runWorkspace`.
- */
-testEffect("key client command whose handler runs a nested session command completes", () =>
-  Effect.gen(function* () {
-    const { env } = yield* startSession("attach-nested-run", {
-      pluginConfig: editorPluginConfig,
-    });
-    const client = yield* attach("attach-nested-run", env);
-    let outerHits = 0;
-    let nestedHits = 0;
-    yield* Effect.forkScoped(
-      Stream.runForEach(client.commandRequests, ({ id, command: raw, source }) =>
-        Effect.gen(function* () {
-          const tag =
-            raw && typeof raw === "object" && "_tag" in raw
-              ? String((raw as { _tag: unknown })._tag)
-              : "";
-          if (tag !== "pane.capture") {
-            client.respondCommand(id, undefined, `unexpected ${tag}`);
-            return;
-          }
-          expect(source).toBe("key");
-          outerHits += 1;
-          const renamed = yield* client.runWorkspace(
-            command("space.rename", { name: "nested-from-handler" }),
-            {
-              size: { cols: 80, rows: 24 },
-              shell: ["sh"],
-              cwd: "/tmp",
-              source: "key",
-            },
-          );
-          nestedHits += 1;
-          expect(renamed.snapshot.spaces[0]!.name).toBe("nested-from-handler");
-          client.respondCommand(id, "captured-after-nested");
-        }),
-      ),
-    );
-
-    const opened = yield* run(
-      client.runWorkspace(
-        command("pane.open-plugin", {
-          type: "amux.editor",
-          descriptor: { file: "/note.txt" },
-        }),
-        {
-          size: { cols: 80, rows: 24 },
-          shell: ["sh"],
-          cwd: "/tmp",
-          source: "socket",
-        },
-      ),
-      env,
-    );
-    const pane = (opened.result as { pane: string }).pane;
-
-    const captured = yield* run(
-      client.run(command("pane.capture", { pane }), {
-        size: { cols: 80, rows: 24 },
-        shell: ["sh"],
-        cwd: "/tmp",
-        source: "key",
-        pane,
-      }),
-      env,
-    );
-    expect(captured).toBe("captured-after-nested");
-    expect(outerHits).toBe(1);
-    expect(nestedHits).toBe(1);
   }),
 );

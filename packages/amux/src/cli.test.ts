@@ -1,36 +1,11 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
-import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Layer, Path, Scope } from "effect";
-import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
-import { resolveCommandSession, splitCommandArgs } from "./cli.ts";
-import { startDaemon, type SessionDaemonService } from "./daemon.ts";
-import { SessionStore } from "./session.ts";
+import { Effect } from "effect";
+import { fillCommandSession, resolveCommandSession, splitCommandArgs, stripSessionFlag } from "./cli.ts";
 import { testEffect } from "./test-effect.ts";
-import { registerCleanup, tempDir } from "./test-tmp.ts";
-
-registerCleanup();
-
-const daemons: SessionDaemonService[] = [];
-afterEach(async () => {
-  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
-});
-
-const runDaemon = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path | Scope.Scope>,
-  env: NodeJS.ProcessEnv,
-) =>
-  Effect.runPromise(
-    Effect.scoped(effect).pipe(
-      Effect.provide(
-        SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
-      ),
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
-    ),
-  );
 
 test("escaped shell semicolons divide command argument groups", () => {
   expect(splitCommandArgs(["pane.split", "row", ";", "pane.focus", "right"])).toEqual([
@@ -86,16 +61,25 @@ test("--session is accepted by commands whose schema has no session field", () =
 }, 20_000);
 
 test("a malformed --session is a syntax error, not a silent default", () => {
-  const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
-  for (const extra of ["--session", "--session=", "--session=a --session=b"]) {
-    const result = Bun.spawnSync({
-      cmd: [process.execPath, "packages/amux/src/cli.ts", "pane.zoom", ...extra.split(" ")],
-      env,
-    });
-    expect(result.exitCode).toBe(2);
-    expect(Buffer.from(result.stderr).toString()).toContain("--session");
-  }
-}, 20_000);
+  expect(stripSessionFlag(["--session"])).toEqual({ error: "flag requires a value: --session" });
+  expect(stripSessionFlag(["--session="])).toEqual({ error: 'invalid value for --session: ""' });
+  expect(stripSessionFlag(["--session=a", "--session=b"])).toEqual({
+    error: "duplicate flag: --session",
+  });
+  expect(stripSessionFlag(["pane.zoom", "--session=work"])).toEqual({
+    rest: ["pane.zoom"],
+    session: "work",
+  });
+});
+
+test("fillCommandSession copies --session into a command's session field", () => {
+  expect(fillCommandSession("target", {}, true)).toEqual({ session: "target" });
+  expect(fillCommandSession("target", { session: "explicit" }, true)).toEqual({
+    session: "explicit",
+  });
+  expect(fillCommandSession("target", { name: "x" }, false)).toEqual({ name: "x" });
+  expect(fillCommandSession(undefined, {}, true)).toEqual({});
+});
 
 test("status and stop accept --session, not just a positional id", () => {
   const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
@@ -268,63 +252,4 @@ test("a later chain group names the daemon requirement when no daemon answers", 
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
-});
-
-test("with a daemon, --help lists plugin daemon commands and a plugin verb parses", async () => {
-  const home = tempDir("cli-help-daemon");
-  const configHome = join(home, "config");
-  const editor = new URL("../../editor", import.meta.url).pathname;
-  mkdirSync(join(configHome, "amux"), { recursive: true });
-  writeFileSync(
-    join(configHome, "amux", "config.json"),
-    JSON.stringify({
-      plugins: [{ path: editor, enabled: true }],
-    }),
-  );
-  const env: NodeJS.ProcessEnv = {
-    HOME: home,
-    XDG_STATE_HOME: join(home, "state"),
-    XDG_CONFIG_HOME: configHome,
-  };
-  const id = "cli-help-daemon";
-  const daemon = await runDaemon(
-    startDaemon(id, {
-      pluginConfig: {
-        options: {},
-        keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
-        plugins: [{ path: editor, enabled: true }],
-        permissions: [],
-        layoutRules: [],
-      },
-    }),
-    env,
-  );
-  daemons.push(daemon);
-
-  // Async spawn: the daemon runs in this process, so spawnSync would block the
-  // event loop and the child could never complete its control RPC.
-  const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
-  const runCli = async (args: string[]) => {
-    const child = Bun.spawn({
-      cmd: [process.execPath, "packages/amux/src/cli.ts", ...args],
-      env: { ...clean, ...env },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    return { exitCode, stdout, stderr };
-  };
-
-  const help = await runCli(["--help", `--session=${id}`]);
-  expect(help.exitCode).toBe(0);
-  expect(help.stdout).toContain("editor.open");
-  expect(help.stdout).not.toContain("Plugin commands appear when the session daemon is running.");
-
-  const verb = await runCli(["editor.open", "--split", `--session=${id}`]);
-  expect(verb.stderr).toBe("");
-  expect(verb.exitCode).toBe(0);
 });

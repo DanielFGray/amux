@@ -51,6 +51,18 @@ into the plugin store (`amux plugin add`) or load by path. Shared dependency ver
 the root `package.json`'s `workspaces.catalog`; a package references one with
 `"catalog:"` rather than restating the version.
 
+### Tests
+
+The suite is slow because it has too many tests, not too few. Add a test only when it proves something no other test proves.
+
+- Before you add a test, search for one that already covers the behaviour. Extend it instead of adding another.
+- Test one behaviour once, at the cheapest level that proves it. Do not repeat a unit test at the integration level, or the reverse.
+- Do not test what the type checker already proves, or a private helper that a public behaviour already covers.
+- A bug fix adds one test that fails before the fix.
+- Unit tests do not sleep or wait on the wall clock. Use `TestClock`, a `Deferred`, or the event you are waiting for.
+- Start a real daemon, PTY or child process only when the behaviour exists nowhere else.
+- When you delete a code path, delete its tests.
+
 TypeScript diagnostics include suggestions. Treat suggestions as actionable feedback: fix them when they are correct, **do not** suppress or ignore them such that they accumulate.
 
 ## Task tracking

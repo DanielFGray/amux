@@ -154,12 +154,20 @@ it.effect("touch updates attachLastSeen", () =>
 
     yield* model.attach("client-a", "conn-1", noop);
     const before = yield* model.get;
-    const beforeSeen = before.attachments.get("conn-1")!.attachLastSeen;
+    const att = before.attachments.get("conn-1")!;
+    expect(att.attachLastSeen).toBe(att.attachedSince);
 
     yield* model.touch("client-a", "conn-1");
 
     const after = yield* model.get;
-    expect(after.attachments.get("conn-1")!.attachLastSeen).toBeGreaterThanOrEqual(beforeSeen);
+    expect(after.attachments.get("conn-1")!.attachLastSeen).toBeGreaterThanOrEqual(
+      att.attachLastSeen,
+    );
+
+    yield* model.detach("client-a", "conn-1", noop);
+    const released = yield* model.get;
+    expect(released.attachments.has("conn-1")).toBe(false);
+    expect(released.state.attached).toBe(false);
   }),
 );
 

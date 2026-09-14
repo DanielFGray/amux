@@ -67,6 +67,13 @@ test("parseArgs reports missing required args", () => {
   expect(result.errors.some((e) => e.includes("axis"))).toBe(true);
 });
 
+test("session.reveal's own target field is required even when --session names a daemon", () => {
+  const result = parseArgs("session.reveal", []);
+  expect(result.parsed).toBeNull();
+  expect(result.errors.some((e) => e.includes("target"))).toBe(true);
+  expect(parseArgs("session.reveal", ["agent-a"]).parsed).toEqual({ target: "agent-a" });
+});
+
 test("parseArgs reports unknown flags", () => {
   const result = parseArgs("pane.next", ["--nonexistent=1"]);
   expect(result.parsed).toBeNull();

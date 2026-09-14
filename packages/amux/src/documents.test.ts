@@ -1,10 +1,11 @@
 /**
- * Open documents over the daemon's real control RPC — the same plane as paste
- * buffers. Proves editor and agent clients can share one sequenced store with
- * no client attached.
+ * One wire smoke: DocumentOpen / Apply / Save over the daemon control RPC.
+ *
+ * Apply/stale, subscribe, and contend live in text-buffer buffer.test.ts.
  */
+
 import { afterEach, expect } from "bun:test";
-import { ConfigProvider, Effect, Fiber, Layer, Option, Path, Stream } from "effect";
+import { ConfigProvider, Effect, Layer, Path } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
@@ -105,79 +106,5 @@ testEffect("DocumentOpen loads from disk and DocumentApply sequences generations
     expect(yield* Effect.promise(() => Bun.file(path).text())).toBe("const x = 2\n");
     const saved = yield* rpc("docs-apply", (c) => c.DocumentSnapshot({ uri }), env);
     expect(saved.dirty).toBe(false);
-  }),
-);
-
-testEffect("DocumentWrite from a second client races on generation like an agent would", () =>
-  Effect.gen(function* () {
-    const { env, home } = yield* started("docs-race");
-    const path = join(home, "race.ts");
-    yield* Effect.promise(() => Bun.write(path, "one\n"));
-    const uri = fileUriFromPath(path);
-
-    yield* rpc("docs-race", (c) => c.DocumentOpen({ uri }), env);
-    const human = yield* rpc(
-      "docs-race",
-      (c) => c.DocumentWrite({ uri, baseGeneration: 1, text: "human\n" }),
-      env,
-    );
-    expect(human.generation).toBe(2);
-
-    const agent = yield* Effect.flip(
-      rpc("docs-race", (c) => c.DocumentWrite({ uri, baseGeneration: 1, text: "agent\n" }), env),
-    );
-    expect(String(agent)).toContain("stale generation");
-
-    const retry = yield* rpc(
-      "docs-race",
-      (c) => c.DocumentWrite({ uri, baseGeneration: 2, text: "agent\n" }),
-      env,
-    );
-    expect(retry.generation).toBe(3);
-    expect((yield* rpc("docs-race", (c) => c.DocumentSnapshot({ uri }), env)).text).toBe("agent\n");
-  }),
-);
-
-testEffect("DocumentWatch seeds the open snapshot and streams later writes", () =>
-  Effect.gen(function* () {
-    const { env, home, daemon } = yield* started("docs-watch");
-    const path = join(home, "watch.ts");
-    yield* Effect.promise(() => Bun.write(path, "seed\n"));
-    const uri = fileUriFromPath(path);
-
-    yield* rpc("docs-watch", (c) => c.DocumentOpen({ uri }), env);
-
-    const first = yield* rpc(
-      "docs-watch",
-      (c) =>
-        Effect.gen(function* () {
-          const head = yield* Stream.runHead(c.DocumentWatch({ uri }));
-          return Option.getOrThrow(head);
-        }),
-      env,
-    );
-    expect(first.text).toBe("seed\n");
-    expect(first.generation).toBe(1);
-
-    // Hold the stream open while a concurrent write lands.
-    const seen = yield* rpc(
-      "docs-watch",
-      (c) =>
-        Effect.gen(function* () {
-          const stream = c.DocumentWatch({ uri });
-          const fiber = yield* Effect.forkChild(
-            stream.pipe(Stream.drop(1), Stream.take(1), Stream.runHead),
-          );
-          yield* Effect.sleep("50 millis");
-          yield* c.DocumentWrite({ uri, baseGeneration: 1, text: "live\n" });
-          return Option.getOrThrow(yield* Fiber.join(fiber));
-        }),
-      env,
-    );
-    expect(seen.text).toBe("live\n");
-    expect(seen.generation).toBe(2);
-
-    yield* daemon.stop.pipe(Effect.ignore);
-    daemons.splice(daemons.indexOf(daemon), 1);
   }),
 );

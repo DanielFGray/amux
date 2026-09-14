@@ -16,7 +16,7 @@ import { expect } from "bun:test";
 import * as TestClock from "effect/testing/TestClock";
 import { BunFileSystem } from "@effect/platform-bun";
 import * as FileSystem from "effect/FileSystem";
-import { layerDaemonModel } from "./DaemonModel.ts";
+import { DaemonModel, layerDaemonModel } from "./DaemonModel.ts";
 import {
   WorkspaceTransaction,
   WorkspaceTransactionWorktreeOps,
@@ -343,14 +343,22 @@ function testLayer(
     workspaceFrames: [],
   });
 
-  const layer = Layer.provide(WorkspaceTransaction.layer, layerDaemonModel(initial)).pipe(
-    Layer.provide(
-      Layer.succeed(WorkspaceTransactionSessions, trackingTransactionSessions(sessionRef)),
+  const modelLayer = layerDaemonModel(initial);
+  const layer = Layer.provideMerge(
+    Layer.provide(WorkspaceTransaction.layer, modelLayer).pipe(
+      Layer.provide(
+        Layer.succeed(WorkspaceTransactionSessions, trackingTransactionSessions(sessionRef)),
+      ),
+      Layer.provide(Layer.succeed(DaemonSessions, idleDaemonSessions)),
+      Layer.provide(
+        Layer.succeed(WorkspaceTransactionWorktreeOps, trackingWorktreeOps(worktreeRef)),
+      ),
+      Layer.provide(
+        Layer.succeed(WorkspaceTransactionPersistence, trackingPersistence(persistRef)),
+      ),
+      Layer.provide(Layer.succeed(WorkspaceTransactionEvents, trackingEvents(eventsRef))),
     ),
-    Layer.provide(Layer.succeed(DaemonSessions, idleDaemonSessions)),
-    Layer.provide(Layer.succeed(WorkspaceTransactionWorktreeOps, trackingWorktreeOps(worktreeRef))),
-    Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, trackingPersistence(persistRef))),
-    Layer.provide(Layer.succeed(WorkspaceTransactionEvents, trackingEvents(eventsRef))),
+    modelLayer,
   );
 
   return { layer, sessionRef, worktreeRef, persistRef, eventsRef };
@@ -445,7 +453,7 @@ testEffect("activates prepared sessions after successful commit", () => {
 
 testEffect("rejects worktree removal when dirty", () => {
   const initial = worktreeSpace();
-  const { layer } = testLayer(initial, { worktreeDirty: true });
+  const { layer, worktreeRef, persistRef } = testLayer(initial, { worktreeDirty: true });
   return Effect.gen(function* () {
     const tx = yield* WorkspaceTransaction;
     const result = yield* Effect.exit(
@@ -457,6 +465,54 @@ testEffect("rejects worktree removal when dirty", () => {
       ),
     );
     expect(result._tag).toBe("Failure");
+    // Failed close is a no-op: the space stays and the worktree is not removed.
+    const model = yield* DaemonModel;
+    expect((yield* model.workspace).spaces.some((s) => s.id === "wt-space")).toBe(true);
+    expect((yield* Ref.get(worktreeRef)).removed).toEqual([]);
+    expect((yield* Ref.get(persistRef)).persisted).toEqual([]);
+  }).pipe(Effect.provide(layer));
+});
+
+testEffect("space.close removes the worktree after persisting the model", () => {
+  const initial = worktreeSpace();
+  const { layer, worktreeRef, persistRef } = testLayer(initial);
+  return Effect.gen(function* () {
+    const tx = yield* WorkspaceTransaction;
+    yield* tx.run(
+      command("space.close", { space: "wt-space" }),
+      initial.workspace.revision,
+      context,
+      emptyPluginBehaviour,
+    );
+    const model = yield* DaemonModel;
+    expect((yield* model.workspace).spaces.some((s) => s.id === "wt-space")).toBe(false);
+    const persist = yield* Ref.get(persistRef);
+    const wt = yield* Ref.get(worktreeRef);
+    expect(persist.persisted.length).toBe(1);
+    expect(persist.persisted[0]!.spaces.some((s) => s.id === "wt-space")).toBe(false);
+    expect(wt.removed).toEqual([{ repo: "/tmp/repo", path: "/tmp/wt/feat", force: false }]);
+  }).pipe(Effect.provide(layer));
+});
+
+testEffect("a failed space.new worktree add leaves no committed space", () => {
+  const initial = singlePaneState();
+  const { layer, worktreeRef, persistRef } = testLayer(initial, { worktreeFail: true });
+  const wtContext = { ...context, worktreesRoot: "/tmp/wt-root" };
+  return Effect.gen(function* () {
+    const tx = yield* WorkspaceTransaction;
+    const result = yield* Effect.exit(
+      tx.run(
+        command("space.new", { branch: "feat/new", dir: "/tmp/repo" }),
+        initial.workspace.revision,
+        wtContext,
+        emptyPluginBehaviour,
+      ),
+    );
+    expect(result._tag).toBe("Failure");
+    const model = yield* DaemonModel;
+    expect((yield* model.workspace).spaces).toHaveLength(1);
+    expect((yield* Ref.get(persistRef)).persisted).toEqual([]);
+    expect((yield* Ref.get(worktreeRef)).added).toEqual([]);
   }).pipe(Effect.provide(layer));
 });
 

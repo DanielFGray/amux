@@ -125,7 +125,7 @@ export function resolveCommandSession(
  * Pull a CLI-level `--session` out of a command group, attached or separated.
  * It never reaches `parseArgs`, whose schemas only know their own fields.
  */
-function stripSessionFlag(
+export function stripSessionFlag(
   argv: readonly string[],
 ): { rest: string[]; session?: string } | { error: string } {
   const rest: string[] = [];
@@ -151,6 +151,21 @@ function stripSessionFlag(
     session = value;
   }
   return { rest, session };
+}
+
+/**
+ * A command whose schema carries a `session` field acts on the session the
+ * invocation drives, unless the args already named one. `--session` picks the
+ * daemon; the field is the workspace-side target, and the two default to the
+ * same id because driving one is almost always acting on it.
+ */
+export function fillCommandSession(
+  session: string | undefined,
+  parsed: Record<string, JsonValue>,
+  hasSessionField: boolean,
+) {
+  if (session === undefined || "session" in parsed || !hasSessionField) return parsed;
+  return { ...parsed, session } satisfies Record<string, JsonValue>;
 }
 
 /**
@@ -438,22 +453,6 @@ function main(): Effect.Effect<number> {
       return s in COMMAND_META || daemonCommandByTag.has(s) || isClientPluginCommandTag(s);
     }
 
-    /**
-     * A command whose schema carries a `session` field acts on the session the
-     * invocation drives, unless the args already named one. The field is the
-     * workspace-side target; `--session` picks the daemon, and the two default to
-     * the same session because driving one is almost always acting on it.
-     */
-    function fillCommandSession(
-      tag: CommandTag,
-      session: string | undefined,
-      parsed: Record<string, JsonValue>,
-    ) {
-      if (session === undefined || "session" in parsed || !isCoreCommandTag(tag)) return parsed;
-      if (!fieldNames(tag).some((field) => field.name === "session")) return parsed;
-      return { ...parsed, session };
-    }
-
     function parseCommandGroup(argv: string[]): Effect.Effect<
       | {
           tag: CommandTag;
@@ -485,9 +484,11 @@ function main(): Effect.Effect<number> {
             ? parseFields(tag, daemonCommand.fields, stripped.rest)
             : parsePluginArgs(stripped.rest);
         if (!direct.parsed) return { errors: direct.errors };
+        const hasSessionField =
+          isCoreCommandTag(tag) && fieldNames(tag).some((field) => field.name === "session");
         return {
           tag,
-          parsed: fillCommandSession(tag, stripped.session, direct.parsed),
+          parsed: fillCommandSession(stripped.session, direct.parsed, hasSessionField),
           sessionFlag: stripped.session,
         };
       });

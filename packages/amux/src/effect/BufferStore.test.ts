@@ -82,3 +82,12 @@ test("the stack keeps only the most recent limit buffers", () => {
   // "0" was dropped as the oldest, exactly tmux's buffer-limit behaviour.
   expect(() => buffers.show("0")).toThrow("no buffer '0'");
 });
+
+test("paste-buffer -d is show then delete after the paste target accepts the bytes", () => {
+  const buffers = new PasteBuffers();
+  buffers.set(undefined, "gone after\n");
+  const pasted = text(buffers.show());
+  expect(pasted).toBe("gone after\n");
+  buffers.delete();
+  expect(buffers.list()).toEqual([]);
+});

@@ -11,7 +11,6 @@ import {
   connectControl,
   controlCall,
   toControlError,
-  type ControlClient,
 } from "./control-client.ts";
 import type { ControlError } from "./control.ts";
 import { fileUriFromPath } from "./document-uri.ts";
@@ -28,11 +27,52 @@ export const openDocument = (
   );
 };
 
-const currentGeneration = (control: ControlClient, uri: string) =>
+/** The control calls a document replace makes. */
+export interface DocumentControl {
+  readonly DocumentSnapshot: (input: {
+    readonly uri: string;
+  }) => Effect.Effect<DocumentMeta & { readonly text: string }, ControlError | RpcClientError>;
+  readonly DocumentOpen: (input: {
+    readonly uri: string;
+  }) => Effect.Effect<DocumentMeta, ControlError | RpcClientError>;
+  readonly DocumentWrite: (input: {
+    readonly uri: string;
+    readonly baseGeneration: number;
+    readonly text: string;
+  }) => Effect.Effect<DocumentMeta, ControlError | RpcClientError>;
+}
+
+const currentGeneration = (control: DocumentControl, uri: string) =>
   control.DocumentSnapshot({ uri }).pipe(
     Effect.map((snap) => snap.generation),
     Effect.catch(() => control.DocumentOpen({ uri }).pipe(Effect.map((meta) => meta.generation))),
   );
+
+/**
+ * Replace buffer contents on an open control client without persisting. One
+ * stale-generation rebase retry keeps a coalesced keystroke flush from losing
+ * to an agent write.
+ */
+export const replaceDocumentOn = (
+  control: DocumentControl,
+  absolutePath: string,
+  text: string,
+  baseGeneration?: number,
+): Effect.Effect<DocumentMeta, ControlError | RpcClientError> => {
+  const uri = fileUriFromPath(absolutePath);
+  return Effect.gen(function* () {
+    const generation =
+      baseGeneration === undefined ? yield* currentGeneration(control, uri) : baseGeneration;
+    return yield* control.DocumentWrite({ uri, baseGeneration: generation, text }).pipe(
+      Effect.catch((error) => {
+        if (!String(error).includes("stale generation")) return Effect.fail(error);
+        return currentGeneration(control, uri).pipe(
+          Effect.flatMap((next) => control.DocumentWrite({ uri, baseGeneration: next, text })),
+        );
+      }),
+    );
+  });
+};
 
 /**
  * Replace buffer contents without persisting. One stale-generation rebase
@@ -43,23 +83,10 @@ export const replaceDocument = (
   absolutePath: string,
   text: string,
   baseGeneration?: number,
-): Effect.Effect<DocumentMeta, ControlError> => {
-  const uri = fileUriFromPath(absolutePath);
-  return controlCall(session, (control) =>
-    Effect.gen(function* () {
-      const generation =
-        baseGeneration === undefined ? yield* currentGeneration(control, uri) : baseGeneration;
-      return yield* control.DocumentWrite({ uri, baseGeneration: generation, text }).pipe(
-        Effect.catch((error) => {
-          if (!String(error).includes("stale generation")) return Effect.fail(error);
-          return currentGeneration(control, uri).pipe(
-            Effect.flatMap((next) => control.DocumentWrite({ uri, baseGeneration: next, text })),
-          );
-        }),
-      );
-    }),
+): Effect.Effect<DocumentMeta, ControlError> =>
+  controlCall(session, (control) =>
+    replaceDocumentOn(control, absolutePath, text, baseGeneration),
   ).pipe(Effect.mapError(toControlError));
-};
 
 /** Persist the open buffer to disk and clear dirty. */
 export const saveDocument = (

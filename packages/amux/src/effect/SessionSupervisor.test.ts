@@ -603,3 +603,59 @@ testEffect("a crashed native agent exits with a neutral state and a nonzero code
     ),
   ),
 );
+
+testEffect("paste wraps bytes when the session screen has bracketed paste enabled", () =>
+  Effect.gen(function* () {
+    const hub = yield* AttachHub;
+    const subscription = yield* hub.subscribe("client");
+    const supervisor = yield* SessionSupervisor;
+    const ready = yield* Deferred.make<void>();
+    const wrapped = yield* Deferred.make<void>();
+    const waiter = yield* Effect.forkChild(
+      Stream.runForEach(subscription.frames, (frame) =>
+        frame._tag === "output"
+          ? Effect.gen(function* () {
+              const text = new TextDecoder().decode(frame.data);
+              if (text.includes("ready"))
+                yield* Deferred.succeed(ready, void 0).pipe(Effect.ignore);
+              if (text.includes("\x1b[200~bracketed"))
+                yield* Deferred.succeed(wrapped, void 0).pipe(Effect.ignore);
+            })
+          : Effect.void,
+      ),
+    );
+    yield* supervisor.spawn({
+      id: "bracket-pane",
+      cmd: ["sh", "-c", "printf '\\x1b[?2004hready\\n'; stty -echo -icanon; cat"],
+      cols: 80,
+      rows: 24,
+    });
+    yield* Deferred.await(ready).pipe(Effect.timeout("5 seconds"));
+    yield* supervisor.paste("bracket-pane", new TextEncoder().encode("bracketed\n"));
+    yield* Deferred.await(wrapped).pipe(Effect.timeout("5 seconds"));
+    yield* Fiber.interrupt(waiter);
+    yield* supervisor.kill("bracket-pane");
+  }).pipe(
+    Effect.provide(
+      SessionSupervisor.layer.pipe(
+        Layer.provideMerge(Layer.mergeAll(AgentLogDefault, AttachHub.layer)),
+      ),
+    ),
+  ),
+);
+
+testEffect("paste to an unknown session is a BufferError, not a crash", () =>
+  Effect.gen(function* () {
+    const supervisor = yield* SessionSupervisor;
+    const failed = yield* supervisor.paste("missing", new TextEncoder().encode("x")).pipe(
+      Effect.flip,
+    );
+    expect(String(failed)).toContain("unknown session");
+  }).pipe(
+    Effect.provide(
+      SessionSupervisor.layer.pipe(
+        Layer.provideMerge(Layer.mergeAll(AgentLogDefault, AttachHub.layer)),
+      ),
+    ),
+  ),
+);
