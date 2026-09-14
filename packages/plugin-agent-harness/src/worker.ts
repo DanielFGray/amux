@@ -26,6 +26,7 @@ import { AGENT_AWARENESS_IDENTITY_TOPIC } from "@danielfgray/amux-agent-awarenes
 import {
   emit as toAgentMessage,
   delta as toAgentDelta,
+  decodeOpaqueJsonText,
   type HarnessDelta,
   type HarnessEvent,
 } from "./protocol.ts";
@@ -147,22 +148,28 @@ export function harnessEventForPart(
   switch (part.type) {
     case "reasoning-delta":
       return { _tag: "reasoning.delta", turn, text: part.delta };
-    case "tool-call":
+    case "tool-call": {
+      const input = decodeOpaqueJsonText(part.params);
+      if (Option.isNone(input)) return undefined;
       return {
         _tag: "tool.start",
         turn,
         call: part.id,
         tool: part.name,
-        input: part.params as JsonValue,
+        input: input.value,
       };
-    case "tool-result":
+    }
+    case "tool-result": {
+      const output = decodeOpaqueJsonText(part.result);
+      if (Option.isNone(output)) return undefined;
       return {
         _tag: "tool.result",
         turn,
         call: part.id,
-        output: part.result as JsonValue,
+        output: output.value,
         isError: part.isFailure,
       };
+    }
     default:
       return undefined;
   }

@@ -199,14 +199,15 @@ const exchangeCode = Effect.fnUntraced(function* (args: {
   }
   const now = yield* Effect.clockWith((c) => c.currentTimeMillis);
   const email = parseJwtClaims(decoded.id_token ?? "")?.email;
-  const metadata: unknown = email !== undefined ? { accountId, email } : { accountId };
+  const metadata =
+    email !== undefined ? { accountId, email } : { accountId };
   return {
     type: "oauth" as const,
     methodID: METHOD_ID,
     access: Redacted.make(decoded.access_token),
     refresh: Redacted.make(decoded.refresh_token),
     expires: now + decoded.expires_in * 1_000,
-    metadata: metadata as Credential.OAuth["metadata"],
+    metadata,
   } satisfies Credential.OAuth;
 });
 
@@ -482,10 +483,7 @@ export const refreshCodex = (
       ),
     );
     const accountId =
-      extractAccountId(decoded.access_token, decoded.id_token) ??
-      (typeof credential.metadata?.accountId === "string"
-        ? credential.metadata.accountId
-        : undefined);
+      extractAccountId(decoded.access_token, decoded.id_token) ?? credential.metadata?.accountId;
     const now = yield* Effect.clockWith((c) => c.currentTimeMillis);
     const metadata =
       accountId !== undefined ? { ...credential.metadata, accountId } : { ...credential.metadata };

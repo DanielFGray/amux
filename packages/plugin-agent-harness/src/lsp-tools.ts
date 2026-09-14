@@ -1,5 +1,4 @@
 import { Tool } from "effect/unstable/ai";
-import type { JsonValue } from "@danielfgray/amux";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { Duration, Effect, Option, Schema as S, Stream } from "effect";
 import {
@@ -127,11 +126,11 @@ export const drainDiagnostics = (
 export const lspToolkitHandlers = (
   workspace: string,
   lsp: AgentLsp,
-  gated: <E>(
+  gated: <E, Input>(
     tool: string,
     action: string,
     resources: readonly string[],
-    input: JsonValue,
+    input: Input,
     body: Effect.Effect<string, E>,
     call?: string,
   ) => Effect.Effect<string, string>,

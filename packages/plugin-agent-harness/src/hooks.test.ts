@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { Option } from "effect";
+import { OpaqueJsonText, decodeOpaqueJsonText } from "./protocol.ts";
+const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 import { Effect, Scope } from "effect";
 import { makeHarnessHooks } from "./hooks.ts";
 import { appendEntry, checkout, emptySessionTree, forkAt, pathToLeaf } from "./session-tree.ts";
@@ -30,7 +33,7 @@ test("tool_call handlers: first block wins", async () => {
           tool: "bash",
           action: "bash",
           resources: [],
-          input: { command: "rm -rf /" },
+          input: jp({ command: "rm -rf /" }),
         });
         return { outcome, seen };
       }),

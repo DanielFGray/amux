@@ -33,21 +33,64 @@ type Recorded = {
   readonly chunks?: number;
 };
 
-type JsonValue = string | number | boolean | null | JsonValue[] | JsonRecord;
-type JsonRecord = { [key: string]: JsonValue };
+/** Fields these tests read from Chat Completions request bodies. */
+const WireToolFunction = S.Struct({
+  name: S.String,
+  description: S.optional(S.String),
+  parameters: S.optional(
+    S.Struct({
+      type: S.String,
+      properties: S.optional(
+        S.Record(S.String, S.Struct({ type: S.String })),
+      ),
+      required: S.optional(S.Array(S.String)),
+      additionalProperties: S.optional(S.Boolean),
+    }),
+  ),
+});
+const WireTool = S.Struct({
+  type: S.String,
+  function: WireToolFunction,
+});
+const WireToolCall = S.Struct({
+  id: S.String,
+  type: S.String,
+  function: S.Struct({ name: S.String, arguments: S.String }),
+});
+const WireMessage = S.Struct({
+  role: S.String,
+  content: S.optional(S.Union([S.String, S.Null])),
+  tool_calls: S.optional(S.Array(WireToolCall)),
+  reasoning_content: S.optional(S.String),
+  tool_call_id: S.optional(S.String),
+});
+const ChatCompletionsRequest = S.Struct({
+  model: S.optional(S.String),
+  stream: S.optional(S.Boolean),
+  stream_options: S.optional(S.Struct({ include_usage: S.optional(S.Boolean) })),
+  reasoning_effort: S.optional(S.String),
+  messages: S.optional(S.Array(WireMessage)),
+  tools: S.optional(S.Array(WireTool)),
+  tool_choice: S.optional(
+    S.Union([
+      S.String,
+      S.Struct({ type: S.String, function: S.Struct({ name: S.String }) }),
+    ]),
+  ),
+});
+type ChatCompletionsRequest = typeof ChatCompletionsRequest.Type;
+const decodeChatRequest = S.decodeOption(S.fromJsonString(ChatCompletionsRequest));
 
 /** The requests a run made, and the client that answers them. */
 const gateway = (recorded: Recorded) => {
-  const sent: JsonRecord[] = [];
+  const sent: ChatCompletionsRequest[] = [];
   let attempt = 0;
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
       if (request.body._tag !== "Uint8Array") throw new Error("expected a JSON request body");
-      const decoded = S.decodeOption(S.fromJsonString(S.Record(S.String, S.Unknown)))(
-        new TextDecoder().decode(request.body.body),
-      );
+      const decoded = decodeChatRequest(new TextDecoder().decode(request.body.body));
       if (Option.isNone(decoded)) throw new Error("expected a JSON request body");
-      sent.push(decoded.value as JsonRecord);
+      sent.push(decoded.value);
       const bytes = new TextEncoder().encode(recorded.body);
       const size = Math.ceil(bytes.length / (recorded.chunks ?? 1));
       // Delivered in pieces, because a real socket does: a decoder that splits
@@ -114,13 +157,14 @@ const parts = <Tools extends Record<string, Tool.Any> = {}>(
   return Stream.runCollect(stream).pipe(Effect.map((all) => all.map(fixture)));
 };
 
-const fixture = <Tools extends Record<string, Tool.Any>>(
-  part: AiResponse.StreamPart<Tools>,
-): JsonRecord => {
-  const { metadata: _metadata, ...rest } = JSON.parse(JSON.stringify(part)) as JsonRecord;
-  delete rest["~effect/ai/Content/Part"];
-  return rest;
+const fixture = <Tools extends Record<string, Tool.Any>>(part: AiResponse.StreamPart<Tools>) => {
+  const { metadata: _metadata, ...rest } = part;
+  const entries = Object.entries(rest).filter(([key]) => key !== "~effect/ai/Content/Part");
+  return Object.fromEntries(entries);
 };
+
+const without = (type: string) => (all: ReadonlyArray<ReturnType<typeof fixture>>) =>
+  all.filter((part) => part.type !== type);
 
 const sse = (...frames: ReadonlyArray<string>) =>
   frames.map((frame) => `data: ${frame}\n\n`).join("") + "data: [DONE]\n\n";
@@ -157,9 +201,6 @@ const toolkit: Toolkit.WithHandler<TestTools> = {
       never
     >,
 };
-
-const without = (type: string) => (all: ReadonlyArray<JsonRecord>) =>
-  all.filter((part) => part.type !== type);
 
 function only(name: "read"): Toolkit.WithHandler<{ read: typeof read }>;
 function only(name: "list"): Toolkit.WithHandler<{ list: typeof list }>;

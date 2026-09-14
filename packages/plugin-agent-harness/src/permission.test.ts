@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { ConfigProvider, Effect, Fiber, Layer, Option, Schedule, Stream } from "effect";
+import { ConfigProvider, Effect, Fiber, Layer, Option, Schedule, Stream, Schema as S } from "effect";
+import { NativeControl } from "./native-control.ts";
 import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -30,8 +31,10 @@ import {
   type AgentDelta,
   type AgentEventPayload,
 } from "@danielfgray/amux/protocol";
-import { readEvent, type SequencedHarnessEvent } from "./protocol.ts";
+import { readEvent, OpaqueJsonText, decodeOpaqueJsonText, type SequencedHarnessEvent } from "./protocol.ts";
 import { testEffect } from "@danielfgray/amux/testing";
+
+const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 
 const withGate = <A, E, R>(gate: PermissionGate, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provideService(PermissionGateTag, gate));
@@ -438,19 +441,23 @@ testEffect("the second answer to a resolved request is dropped", () =>
           encodeAttachFrame({
             _tag: "session.message",
             session: "agent-1",
-            message: { _tag: "agent.permission", request, decision: "once" },
+            message: S.encodeSync(S.fromJsonString(NativeControl))({
+              _tag: "agent.permission",
+              request,
+              decision: "once",
+            }),
           }),
         ).frames[0]!;
         const later = decodeAttachFrames(
           encodeAttachFrame({
             _tag: "session.message",
             session: "agent-1",
-            message: {
+            message: S.encodeSync(S.fromJsonString(NativeControl))({
               _tag: "agent.permission",
               request,
               decision: "reject",
               feedback: "too late",
-            },
+            }),
           }),
         ).frames[0]!;
         if (first._tag !== "session.message" || later._tag !== "session.message")
@@ -502,12 +509,12 @@ testEffect(
             encodeAttachFrame({
               _tag: "session.message",
               session: "agent-1",
-              message: {
+              message: S.encodeSync(S.fromJsonString(NativeControl))({
                 _tag: "agent.permission",
                 request,
                 decision: "reject",
                 feedback: "Use notes.md instead.",
-              },
+              }),
             }),
           ).frames[0]!;
           if (response._tag !== "session.message")
@@ -548,7 +555,7 @@ const assertion = (
   resources,
   tool: action,
   tier,
-  input: { resources: [...resources] },
+  input: jp({ resources: [...resources] }),
 });
 
 /** A gate wired to a recorded emit stream and a store that only remembers. */

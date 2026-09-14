@@ -49,35 +49,22 @@ const mtimeOf = (file: string): FsEffect<number> =>
     return Option.match(info.mtime, { onNone: () => -1, onSome: (d) => d.getTime() });
   }).pipe(Effect.orElseSucceed(() => -1));
 
-const decodeJson = S.decodeUnknownOption(S.fromJsonString(S.Json));
-
-function parseJsonLines(content: string): S.Json[] {
-  const parsed: S.Json[] = [];
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue;
-    Option.match(decodeJson(line), {
-      onNone: () => undefined,
-      onSome: (value) => parsed.push(value),
-    });
-  }
-  return parsed;
+function parseJsonLines(content: string): readonly string[] {
+  return content.split("\n").filter((line) => line.trim().length > 0);
 }
 
-const readJsonLines = (file: string): FsEffect<S.Json[]> =>
+const readJsonLines = (file: string): FsEffect<readonly string[]> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const content = yield* fs.readFileString(file);
     return parseJsonLines(content);
-  }).pipe(Effect.orElseSucceed((): S.Json[] => []));
-
-const tryParseJson = (text: string): Option.Option<S.Json> => decodeJson(text);
+  }).pipe(Effect.orElseSucceed((): readonly string[] => []));
 
 // The one content shape shared by every harness: plain text, or a list of
 // blocks (tool calls, tool results, text) where only the text ones matter.
 const ContentBlockSchema = S.Struct({ text: S.optionalKey(S.String) });
 const ContentSchema = S.Union([S.String, S.Array(ContentBlockSchema)]);
 type Content = typeof ContentSchema.Type;
-const decodeContentBlock = S.decodeUnknownOption(ContentBlockSchema);
 
 function textOfContent(content: Content): string {
   if (typeof content === "string") return content.trim();
@@ -94,23 +81,24 @@ const ClaudeLineSchema = S.Struct({
   timestamp: S.String,
   message: S.Struct({ role: S.String, content: ContentSchema }),
 });
-const decodeClaudeLine = S.decodeUnknownOption(ClaudeLineSchema);
+const decodeClaudeLine = S.decodeOption(S.fromJsonString(ClaudeLineSchema));
 
 const CodexMetaSchema = S.Struct({
   type: S.Literal("session_meta"),
   payload: S.Struct({ cwd: S.String }),
 });
-const decodeCodexMeta = S.decodeUnknownOption(CodexMetaSchema);
+const decodeCodexMeta = S.decodeOption(S.fromJsonString(CodexMetaSchema));
 
 const CodexMessageSchema = S.Struct({
   type: S.Literal("response_item"),
   timestamp: S.String,
   payload: S.Struct({ type: S.Literal("message"), role: S.String, content: ContentSchema }),
 });
-const decodeCodexMessage = S.decodeUnknownOption(CodexMessageSchema);
+const decodeCodexMessage = S.decodeOption(S.fromJsonString(CodexMessageSchema));
 
 const OpencodeMessageSchema = S.Struct({ role: S.String });
-const decodeOpencodeMessage = S.decodeUnknownOption(OpencodeMessageSchema);
+const decodeOpencodeMessage = S.decodeOption(S.fromJsonString(OpencodeMessageSchema));
+const decodeContentBlockText = S.decodeOption(S.fromJsonString(ContentBlockSchema));
 
 // ---- claude-code: ~/.claude/projects/<cwd with / and . -> ->/*.jsonl ----
 const CLAUDE_CODE: HarnessLogAdapter = {
@@ -188,13 +176,13 @@ function readOpencodeLast(dbFiles: string[], cwd: string, limit: number): Harnes
     const partStmt = db.query("SELECT data FROM part WHERE message_id = ? ORDER BY id");
     const messages: HarnessLogMessage[] = [];
     for (const row of rows.reverse()) {
-      Option.match(Option.flatMap(tryParseJson(row.data), decodeOpencodeMessage), {
+      Option.match(decodeOpencodeMessage(row.data), {
         onNone: () => undefined,
         onSome: (message) => {
           const parts = partStmt.all(row.id) as { data: string }[];
           const text = parts
             .map((p) =>
-              Option.match(Option.flatMap(tryParseJson(p.data), decodeContentBlock), {
+              Option.match(decodeContentBlockText(p.data), {
                 onNone: () => "",
                 onSome: (block) => block.text ?? "",
               }),

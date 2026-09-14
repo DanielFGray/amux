@@ -4,8 +4,7 @@ import * as Path from "effect/Path";
 import { Context, Duration, Effect, Layer, Option, Redacted, Schema as S } from "effect";
 import { stateRoot } from "@danielfgray/amux/session.ts";
 import { flock, flockUnlock } from "@danielfgray/amux/shim.ts";
-import type { JsonValue } from "@danielfgray/amux/protocol";
-import { JsonValueSchema } from "@danielfgray/amux/protocol";
+import { softArray } from "@danielfgray/amux/soft-schema.ts";
 import type { ServiceInterception } from "@danielfgray/amux";
 
 export * as Credential from "./credential.ts";
@@ -14,18 +13,26 @@ export const ID = S.String.pipe(S.brand("Credential.ID"));
 export type ID = typeof ID.Type;
 export type Secret = Redacted.Redacted<string>;
 
+/** Credential provider metadata fields this package reads (codex accountId, copilot enterpriseUrl). */
+export const CredentialMetadata = S.Struct({
+  accountId: S.optional(S.String),
+  enterpriseUrl: S.optional(S.String),
+  email: S.optional(S.String),
+});
+export type CredentialMetadata = typeof CredentialMetadata.Type;
+
 export interface OAuth {
   readonly type: "oauth";
   readonly methodID: string;
   readonly refresh: Secret;
   readonly access: Secret;
   readonly expires: number;
-  readonly metadata?: Readonly<Record<string, JsonValue>>;
+  readonly metadata?: CredentialMetadata;
 }
 export interface Key {
   readonly type: "key";
   readonly key: Secret;
-  readonly metadata?: Readonly<Record<string, JsonValue>>;
+  readonly metadata?: CredentialMetadata;
 }
 export type Value = OAuth | Key;
 
@@ -139,7 +146,7 @@ const PersistedValue = S.Union([
   S.Struct({
     type: S.Literals(["key"]),
     key: S.String,
-    metadata: S.optional(S.Record(S.String, JsonValueSchema)),
+    metadata: S.optional(CredentialMetadata),
   }),
   S.Struct({
     type: S.Literals(["oauth"]),
@@ -147,7 +154,7 @@ const PersistedValue = S.Union([
     refresh: S.String,
     access: S.String,
     expires: S.Int.check(S.isGreaterThanOrEqualTo(0)),
-    metadata: S.optional(S.Record(S.String, JsonValueSchema)),
+    metadata: S.optional(CredentialMetadata),
   }),
 ]);
 const PersistedInfo = S.Struct({
@@ -157,6 +164,8 @@ const PersistedInfo = S.Struct({
   value: PersistedValue,
 });
 type Persisted = Readonly<S.Schema.Type<typeof PersistedInfo>>;
+
+const PersistedRows = softArray(PersistedInfo);
 
 const redact = (value: Persisted["value"]): Value =>
   value.type === "key"
@@ -171,17 +180,9 @@ const unredact = (value: Value): Persisted["value"] =>
 const present = (row: Persisted): Info => ({ ...row, id: row.id as ID, value: redact(row.value) });
 
 const decodeText = (text: string) => {
-  const parsed = S.decodeOption(S.fromJsonString(S.Array(S.Json)))(text);
+  const parsed = S.decodeOption(S.fromJsonString(PersistedRows))(text);
   if (Option.isNone(parsed)) return { valid: false, rows: [] as Persisted[] };
-  return {
-    valid: true,
-    rows: parsed.value.flatMap((row) =>
-      Option.match(S.decodeUnknownOption(PersistedInfo)(row), {
-        onNone: () => [],
-        onSome: (decoded) => [decoded],
-      }),
-    ),
-  };
+  return { valid: true, rows: [...parsed.value] };
 };
 
 const paths = Effect.fnUntraced(function* (root: string) {

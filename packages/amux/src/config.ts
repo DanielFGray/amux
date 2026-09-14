@@ -15,6 +15,7 @@ import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
 import { LayoutRuleSchema, type LayoutRule } from "./layout-rules.ts";
 import { errorMessage } from "./error-message.ts";
 import { NonEmptyString } from "./schema-primitives.ts";
+import { softArray } from "./soft-schema.ts";
 
 /**
  * One entry in config's `plugins` array, naming a plugin and whether it is
@@ -126,20 +127,8 @@ export const configPath: Effect.Effect<string> = Effect.map(configDir, (dir) =>
 /**
  * Decode an array item with its owner Schema; a failure becomes a skipped
  * entry rather than failing the whole array (hand-edited config tolerance).
+ * See soft-schema.ts.
  */
-function softArray<Item extends S.Top>(item: Item) {
-  const SoftItem = S.Union([item, S.Null]).pipe(
-    S.catchDecoding(() => Effect.succeed(Option.some(null))),
-  );
-  return S.Array(SoftItem).pipe(
-    S.decodeTo(S.mutable(S.Array(item)), {
-      decode: SchemaGetter.transform((items: ReadonlyArray<Item["Type"] | null>) =>
-        items.flatMap((entry) => (entry === null ? [] : [entry])),
-      ),
-      encode: SchemaGetter.transform((items: Item["Type"][]) => items),
-    }),
-  );
-}
 
 /** Accept any string; wrong types become empty so migration can apply defaults. */
 const LooseString = S.String.pipe(

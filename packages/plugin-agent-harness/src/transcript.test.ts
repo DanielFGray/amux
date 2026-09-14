@@ -10,7 +10,9 @@ import {
   wrapText,
   type TranscriptBlock,
 } from "./transcript.ts";
-import { emit, delta, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+import { emit, delta, OpaqueJsonText, decodeOpaqueJsonText, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+import { Option } from "effect";
+const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 import type { AgentFrame } from "@danielfgray/amux/protocol";
 
 /** Wrap a harness event or fragment the way core actually delivers it — a
@@ -50,7 +52,7 @@ test("transcript reduction joins text deltas and attaches tool results", () => {
       turn: "t1",
       call: "c1",
       tool: "shell",
-      input: { command: "bun test" },
+      input: jp({ command: "bun test" }),
     }),
   );
   blocks = appendTranscriptFrame(
@@ -59,7 +61,7 @@ test("transcript reduction joins text deltas and attaches tool results", () => {
       _tag: "tool.result",
       turn: "t1",
       call: "c1",
-      output: "ok",
+      output: jp("ok"),
       isError: false,
     }),
   );
@@ -72,8 +74,8 @@ test("transcript reduction joins text deltas and attaches tool results", () => {
       turn: "t1",
       call: "c1",
       name: "shell",
-      input: { command: "bun test" },
-      output: "ok",
+      input: jp({ command: "bun test" }),
+      output: jp("ok"),
       isError: false,
     },
   ]);
@@ -107,7 +109,7 @@ test("transcript serialization reflows semantic blocks at the requested width", 
       call: "c1",
       name: "grep",
       input: "src",
-      output: "12 matches",
+      output: jp("12 matches"),
     },
   ];
   expect(serializeTranscript(blocks, 20)).toEqual([
@@ -180,7 +182,7 @@ test("tool.start after partial streaming replaces the accumulated input", () => 
       turn: "t1",
       call: "c1",
       tool: "grep",
-      input: { pattern: "real" },
+      input: jp({ pattern: "real" }),
     }),
   );
   expect(blocks).toEqual([
@@ -189,7 +191,7 @@ test("tool.start after partial streaming replaces the accumulated input", () => 
       turn: "t1",
       call: "c1",
       name: "grep",
-      input: { pattern: "real" },
+      input: jp({ pattern: "real" }),
       streaming: false,
     },
   ]);
@@ -220,7 +222,7 @@ test("tool.params-delta after tool.start does not corrupt the resolved input", (
       turn: "t1",
       call: "c1",
       tool: "grep",
-      input: { ready: true },
+      input: jp({ ready: true }),
     }),
   );
   blocks = appendTranscriptFrame(
@@ -233,7 +235,7 @@ test("tool.params-delta after tool.start does not corrupt the resolved input", (
       turn: "t1",
       call: "c1",
       name: "grep",
-      input: { ready: true },
+      input: jp({ ready: true }),
     },
   ]);
 });
@@ -247,7 +249,7 @@ test("tool lookups match on both turn and call to prevent cross-turn collisions"
       turn: "t1",
       call: "c1",
       tool: "grep",
-      input: { a: 1 },
+      input: jp({ a: 1 }),
     }),
   );
   blocks = appendTranscriptFrame(
@@ -256,7 +258,7 @@ test("tool lookups match on both turn and call to prevent cross-turn collisions"
       _tag: "tool.result",
       turn: "t1",
       call: "c1",
-      output: "ok",
+      output: jp("ok"),
       isError: false,
     }),
   );
@@ -267,7 +269,7 @@ test("tool lookups match on both turn and call to prevent cross-turn collisions"
       turn: "t2",
       call: "c1",
       tool: "shell",
-      input: { cmd: "ls" },
+      input: jp({ cmd: "ls" }),
     }),
   );
   blocks = appendTranscriptFrame(
@@ -276,7 +278,7 @@ test("tool lookups match on both turn and call to prevent cross-turn collisions"
       _tag: "tool.result",
       turn: "t2",
       call: "c1",
-      output: "done",
+      output: jp("done"),
       isError: false,
     }),
   );
@@ -286,8 +288,8 @@ test("tool lookups match on both turn and call to prevent cross-turn collisions"
       turn: "t1",
       call: "c1",
       name: "grep",
-      input: { a: 1 },
-      output: "ok",
+      input: jp({ a: 1 }),
+      output: jp("ok"),
       isError: false,
     },
     {
@@ -295,8 +297,8 @@ test("tool lookups match on both turn and call to prevent cross-turn collisions"
       turn: "t2",
       call: "c1",
       name: "shell",
-      input: { cmd: "ls" },
-      output: "done",
+      input: jp({ cmd: "ls" }),
+      output: jp("done"),
       isError: false,
     },
   ]);
@@ -384,7 +386,7 @@ const toolBlock = (overrides: Partial<Extract<TranscriptBlock, { kind: "tool" }>
   turn: "t1",
   call: "c1",
   name: "bash",
-  input: {},
+  input: jp({}),
   ...overrides,
 });
 
@@ -398,12 +400,12 @@ test("a streaming bash tool renders the writing placeholder, then the command", 
   expect(toolSummary(toolBlock({ name: "bash", streaming: true, input: "" }))).toBe(
     "~ Writing command...",
   );
-  expect(toolSummary(toolBlock({ name: "bash", input: { command: "bun test" } }))).toBe(
+  expect(toolSummary(toolBlock({ name: "bash", input: jp({ command: "bun test" }) }))).toBe(
     "$ bun test",
   );
   expect(
     toolSummary(
-      toolBlock({ name: "bash", input: { command: "bun test" }, output: "ok", isError: false }),
+      toolBlock({ name: "bash", input: jp({ command: "bun test" }), output: jp("ok"), isError: false }),
     ),
   ).toBe("$ bun test");
 });
@@ -412,19 +414,19 @@ test("write and read tools reveal their paths, grep its pattern", () => {
   expect(toolSummary(toolBlock({ name: "write", streaming: true, input: "" }))).toBe(
     "~ Preparing write...",
   );
-  expect(toolSummary(toolBlock({ name: "write", input: { path: "src/a.ts", content: "x" } }))).toBe(
+  expect(toolSummary(toolBlock({ name: "write", input: jp({ path: "src/a.ts", content: "x" }) }))).toBe(
     "write src/a.ts",
   );
-  expect(toolSummary(toolBlock({ name: "read", input: { path: "ARCHITECTURE.md" } }))).toBe(
+  expect(toolSummary(toolBlock({ name: "read", input: jp({ path: "ARCHITECTURE.md" }) }))).toBe(
     "read ARCHITECTURE.md",
   );
-  expect(toolSummary(toolBlock({ name: "grep", input: { pattern: "createSignal" } }))).toBe(
+  expect(toolSummary(toolBlock({ name: "grep", input: jp({ pattern: "createSignal" }) }))).toBe(
     "grep createSignal",
   );
 });
 
 test("a resolved string input is not mistaken for streaming", () => {
-  expect(toolSummary(toolBlock({ name: "grep", input: "src", output: "12 matches" }))).toBe(
+  expect(toolSummary(toolBlock({ name: "grep", input: "src", output: jp("12 matches") }))).toBe(
     "grep src",
   );
 });
@@ -444,7 +446,7 @@ test("a permission request is pending until its answer arrives", () => {
     action: "bash",
     resources: ["rm -rf build"],
     save: [{ action: "bash", resource: "rm *", effect: "allow" }],
-    input: { command: "rm -rf build" },
+    input: jp({ command: "rm -rf build" }),
   });
   const asked = appendTranscriptFrame([], request);
   expect(pendingPermission(asked)).toMatchObject({ request: "r1", action: "bash" });
@@ -468,7 +470,7 @@ test("a permission joins the tool it gates without removing either raw event", (
   let blocks: readonly TranscriptBlock[] = [];
   blocks = appendTranscriptFrame(
     blocks,
-    frame({ _tag: "tool.start", turn: "t1", call: "c1", tool: "bash", input: { command: "ls" } }),
+    frame({ _tag: "tool.start", turn: "t1", call: "c1", tool: "bash", input: jp({ command: "ls" }) }),
   );
   blocks = appendTranscriptFrame(
     blocks,
@@ -480,7 +482,7 @@ test("a permission joins the tool it gates without removing either raw event", (
       action: "bash",
       resources: ["ls"],
       save: [],
-      input: { command: "ls" },
+      input: jp({ command: "ls" }),
     }),
   );
 
@@ -508,7 +510,7 @@ test("permissions with a call id join that tool even when inputs collide", () =>
         turn: "t1",
         call,
         tool: "bash",
-        input: { command },
+        input: jp({ command }),
       }),
     );
     blocks = appendTranscriptFrame(
@@ -522,7 +524,7 @@ test("permissions with a call id join that tool even when inputs collide", () =>
         action: "bash",
         resources: [command],
         save: [],
-        input: { command },
+        input: jp({ command }),
       }),
     );
   }

@@ -13,8 +13,6 @@ import {
 } from "./permission.ts";
 import { nestedInstructions } from "./context.ts";
 import type { Interface as ProjectStoreInterface } from "@danielfgray/amux/project-store.ts";
-import type { JsonValue } from "@danielfgray/amux";
-import { JsonValueSchema } from "@danielfgray/amux/protocol";
 import {
   closeDocument,
   readOpenDocumentText,
@@ -25,6 +23,7 @@ import { applyExactEdits, conciseDiff } from "./edit-core.ts";
 import { parsePatch, planPatch } from "./apply-patch.ts";
 import { withFileMutation } from "./file-mutation-queue.ts";
 import { formatFileRead } from "./read-format.ts";
+import { decodeOpaqueJsonText } from "./protocol.ts";
 
 /** What `agentToolkit` needs from a project store to attach nested instructions. */
 type InstructionStore = Pick<ProjectStoreInterface, "attachedInstructions" | "attachInstructions">;
@@ -47,9 +46,13 @@ export type { AgentLsp };
  */
 export interface AgentToolkit {
   readonly tools: Readonly<Record<string, Tool.Any>>;
+  /**
+   * Params are the model's encoded tool arguments. Toolkit.handle decodes them
+   * with the named tool's parameters schema — that is the decode boundary.
+   */
   readonly handle: (
     name: string,
-    params: JsonValue,
+    params: Tool.ParametersEncoded<Tool.Any>,
     toolCallId?: string,
   ) => Effect.Effect<Stream.Stream<Tool.HandlerResult<Tool.Any>>, AiError.AiError>;
 }
@@ -190,13 +193,10 @@ const lspToolkit = Toolkit.make(LspHover, LspReferences, LspSymbols, LspCompleti
  * `Toolkit.WithHandler<Tools>` keeps `Tool.HandlerServices` on every `handle`
  * stream (→ `any` in R for open maps). The double cast is the FFI edge that
  * drops those phantom requirements after `toLayer` has already provided them.
- * Prefer this over `as Effect<…>` at call sites.
  */
 export const eraseInstalledToolkit = <Tools extends Record<string, Tool.Any>>(
   installed: Effect.Effect<Toolkit.WithHandler<Tools>>,
 ): Effect.Effect<AgentToolkit> => {
-  // `never` bridge: single `as never` (not a broad type) + one assertion on the binding.
-  // Neither no-chained-type-assertions nor no-widen-then-assert fires on this pattern.
   const erased = installed as never;
   return erased as Effect.Effect<AgentToolkit>;
 };
@@ -211,28 +211,14 @@ const installToolkit = <Tools extends Record<string, Tool.Any>>(
 
 /**
  * Adapt `AgentToolkit` for `Chat.streamText` / `LanguageModel` toolkit input.
- * Decodes model `unknown` params through `JsonValueSchema` — no `as` on params.
+ * Forwards model params unchanged; Toolkit.handle is the decode boundary.
  */
 export const agentToolkitForChat = (
   toolkit: Effect.Effect<AgentToolkit>,
 ): Effect.Effect<Toolkit.WithHandler<Record<string, Tool.Any>>> =>
   Effect.map(toolkit, (tk) => ({
     tools: tk.tools,
-    handle: (name, params, toolCallId) =>
-      S.decodeUnknownEffect(JsonValueSchema)(params).pipe(
-        Effect.mapError(() =>
-          AiError.make({
-            module: "AgentToolkit",
-            method: "handle",
-            reason: new AiError.ToolParameterValidationError({
-              toolName: String(name),
-              toolParams: params,
-              description: "Tool parameters were not JSON",
-            }),
-          }),
-        ),
-        Effect.flatMap((json) => tk.handle(String(name), json, toolCallId)),
-      ),
+    handle: (name, params, toolCallId) => tk.handle(String(name), params, toolCallId),
   }));
 
 /**
@@ -266,28 +252,32 @@ export const agentToolkit = Effect.fnUntraced(function* (
   );
   const interceptBash = options.bashInterceptor !== false;
   /** Clear the call, then run it. A refusal is the tool's failure text. */
-  const gated = <E>(
+  const gated = <Input, E>(
     tool: string,
     action: string,
     tier: ApprovalTier,
     resources: readonly string[],
-    input: JsonValue,
+    input: Input,
     body: Effect.Effect<string, E, FileSystem.FileSystem | Path.Path>,
     extras: { readonly call?: string; readonly diff?: string } = {},
-  ) => {
-    const assertion: Assertion = {
-      tool,
-      action,
-      tier,
-      resources,
-      input,
-      call: extras.call,
-      diff: extras.diff,
-    };
-    return gate
-      .assert(assertion)
-      .pipe(Effect.andThen(tryTool(body.pipe(Effect.provide(fileServices)))));
-  };
+  ) =>
+    Option.match(decodeOpaqueJsonText(input), {
+      onNone: () => Effect.fail("tool input was not JSON"),
+      onSome: (text) => {
+        const assertion: Assertion = {
+          tool,
+          action,
+          tier,
+          resources,
+          input: text,
+          call: extras.call,
+          diff: extras.diff,
+        };
+        return gate
+          .assert(assertion)
+          .pipe(Effect.andThen(tryTool(body.pipe(Effect.provide(fileServices)))));
+      },
+    });
   const paths = (...values: string[]) =>
     Effect.forEach(values, (value) =>
       pathResource(workspace, fromWorkspace(workspace, value)),
@@ -651,7 +641,7 @@ export const agentToolkit = Effect.fnUntraced(function* (
           workspace,
           options.lsp,
           (tool, action, resources, input, body, call) =>
-            gated(tool, action, "read", resources, input as JsonValue, body, { call }),
+            gated(tool, action, "read", resources, input, body, { call }),
           paths,
         ),
       }),

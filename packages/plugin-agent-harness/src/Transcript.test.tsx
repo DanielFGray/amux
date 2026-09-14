@@ -5,7 +5,9 @@ import { expect, test } from "bun:test";
 import { createTestRenderer, createMockMouse } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Transcript } from "./Transcript.tsx";
-import { emit, delta, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+import { emit, delta, OpaqueJsonText, decodeOpaqueJsonText, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+import { Option } from "effect";
+const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 import type { AgentFrame, JsonValue } from "@danielfgray/amux/protocol";
 
 /** Wrap a harness event/fragment the way core actually delivers it — this
@@ -47,7 +49,7 @@ test("native transcript renders semantic text and tool results", async () => {
       turn: "t1",
       call: "c1",
       tool: "grep",
-      input: "src",
+      input: jp("src"),
     }),
     wrap({
       _tag: "tool.result" as const,
@@ -55,7 +57,7 @@ test("native transcript renders semantic text and tool results", async () => {
       sequence: 2,
       turn: "t1",
       call: "c1",
-      output: "12 matches",
+      output: jp("12 matches"),
       isError: false,
     }),
   ]);
@@ -194,7 +196,7 @@ test("raw transcript renders protocol events that chat presents elsewhere", asyn
       turn: "t1",
       call: "c1",
       tool: "bash",
-      input: { command: "ls" },
+      input: jp({ command: "ls" }),
     }),
     wrap({
       _tag: "permission.request" as const,
@@ -206,7 +208,7 @@ test("raw transcript renders protocol events that chat presents elsewhere", asyn
       action: "bash",
       resources: ["ls"],
       save: [],
-      input: { command: "ls" },
+      input: jp({ command: "ls" }),
     }),
     wrap({
       _tag: "topic" as const,
@@ -245,7 +247,7 @@ test("clicking a collapsed bash card expands its full output", async () => {
       turn: "t1",
       call: "c1",
       tool: "bash",
-      input: { command: "printf lines" },
+      input: jp({ command: "printf lines" }),
     }),
     wrap({
       _tag: "tool.result" as const,
@@ -253,7 +255,7 @@ test("clicking a collapsed bash card expands its full output", async () => {
       sequence: 2,
       turn: "t1",
       call: "c1",
-      output: longOutput,
+      output: jp(longOutput),
       isError: false,
     }),
   ]);
@@ -289,7 +291,7 @@ test("read tool card is headline-only (no output body dump)", async () => {
       turn: "t1",
       call: "c1",
       tool: "read",
-      input: { path: "ARCHITECTURE.md" },
+      input: jp({ path: "ARCHITECTURE.md" }),
     }),
     wrap({
       _tag: "tool.result" as const,
@@ -297,7 +299,7 @@ test("read tool card is headline-only (no output body dump)", async () => {
       sequence: 2,
       turn: "t1",
       call: "c1",
-      output: "# Architecture\n\nLots of prose the chat must not dump.",
+      output: jp("# Architecture\n\nLots of prose the chat must not dump."),
       isError: false,
     }),
   ]);
@@ -326,7 +328,7 @@ test("edit tool card shows path title and diff body", async () => {
       turn: "t1",
       call: "c1",
       tool: "edit",
-      input: { path: "src/foo.ts" },
+      input: jp({ path: "src/foo.ts" }),
     }),
     wrap({
       _tag: "tool.result" as const,
@@ -334,7 +336,7 @@ test("edit tool card shows path title and diff body", async () => {
       sequence: 2,
       turn: "t1",
       call: "c1",
-      output: `Successfully replaced 1 block(s) in src/foo.ts.\n\n${diff}`,
+      output: jp(`Successfully replaced 1 block(s) in src/foo.ts.\n\n${diff}`),
       isError: false,
     }),
   ]);

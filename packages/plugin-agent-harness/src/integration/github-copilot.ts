@@ -322,7 +322,7 @@ export const authorizeCopilot = (
   next = HttpClientRequest.removeHeader("x-api-key")(next);
   if (credential.type === "oauth") {
     const enterpriseUrl = credential.metadata?.enterpriseUrl;
-    if (typeof enterpriseUrl === "string" && enterpriseUrl.length > 0) {
+    if (enterpriseUrl !== undefined && enterpriseUrl.length > 0) {
       try {
         const current = new URL(request.url);
         const target = new URL(copilotApiBase(enterpriseUrl));

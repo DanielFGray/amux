@@ -1,7 +1,17 @@
 import { Schema as S } from "effect";
-import { JsonValueSchema } from "@danielfgray/amux/protocol";
 import type { AgentDelta, AgentEvent, JsonValue } from "@danielfgray/amux/protocol";
 import { PermissionDecisionSchema, PermissionRuleSchema } from "@danielfgray/amux/permission.ts";
+
+/**
+ * Opaque JSON held as text by a non-owner. Encoded side nests real JSON in
+ * frames (flip of fromJsonString); only the owner decodes the text. Precedent:
+ * plugin-lsp LspJsonText (commit 9888955); ts-a6fbba wave 2 container shape.
+ */
+export const OpaqueJsonText = S.flip(S.fromJsonString(S.Unknown));
+export type OpaqueJsonText = typeof OpaqueJsonText.Type;
+
+/** Nested JSON → opaque JSON text at a boundary. */
+export const decodeOpaqueJsonText = S.decodeUnknownOption(OpaqueJsonText);
 
 /**
  * The turn loop's vocabulary, owned here rather than by core.
@@ -39,13 +49,13 @@ const ToolStart = S.TaggedStruct("tool.start", {
   turn: S.String,
   call: S.String,
   tool: S.String,
-  input: JsonValueSchema,
+  input: OpaqueJsonText,
 });
 
 const ToolResult = S.TaggedStruct("tool.result", {
   turn: S.String,
   call: S.String,
-  output: JsonValueSchema,
+  output: OpaqueJsonText,
   isError: S.Boolean,
 });
 
@@ -56,14 +66,13 @@ const PermissionRequest = S.TaggedStruct("permission.request", {
   action: S.String,
   resources: S.Array(S.String),
   save: S.Array(PermissionRuleSchema),
-  input: JsonValueSchema,
+  input: OpaqueJsonText,
   // Joins this ask to the tool.start that spawned it. Optional so older
   // durable events still decode; the pane falls back to input equality.
   call: S.optional(S.String),
   /** Unified diff preview for write/edit/apply_patch asks (OpenTUI `<diff>`). */
   diff: S.optional(S.String),
 });
-
 const PermissionResponse = S.TaggedStruct("permission.response", {
   request: S.String,
   decision: PermissionDecisionSchema,

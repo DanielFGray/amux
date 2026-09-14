@@ -1,9 +1,15 @@
 import type { AgentFrame } from "@danielfgray/amux/protocol";
-import type { JsonValue } from "@danielfgray/amux/protocol";
 import type { PermissionDecision, PermissionRule } from "@danielfgray/amux/permission.ts";
 import { ProcessState } from "@danielfgray/amux";
+import { Option, Schema as S } from "effect";
 import { agentStateFromTopic } from "./state-topic.ts";
-import { readDelta, readEvent, type HarnessDelta, type SequencedHarnessEvent } from "./protocol.ts";
+import {
+  readDelta,
+  readEvent,
+  type HarnessDelta,
+  type OpaqueJsonText,
+  type SequencedHarnessEvent,
+} from "./protocol.ts";
 export type TranscriptBlock =
   | { readonly kind: "reasoning"; readonly turn: string; readonly text: string }
   | {
@@ -19,11 +25,11 @@ export type TranscriptBlock =
       readonly turn: string;
       readonly call: string;
       readonly name: string;
-      readonly input: JsonValue;
-      /** Params are still arriving as partial JSON fragments. A resolved input
-       *  can legitimately be a bare string, so type alone cannot say pending. */
+      /** Opaque JSON text (partial while streaming; complete after tool.start). */
+      readonly input: OpaqueJsonText;
+      /** Params are still arriving as partial JSON fragments. */
       readonly streaming?: boolean;
-      readonly output?: JsonValue;
+      readonly output?: OpaqueJsonText;
       readonly isError?: boolean;
     }
   | {
@@ -35,7 +41,7 @@ export type TranscriptBlock =
       readonly resources: readonly string[];
       /** What "always" would record, so the human approves a rule they can read. */
       readonly save: readonly PermissionRule[];
-      readonly input: JsonValue;
+      readonly input: OpaqueJsonText;
       /** Provider tool-call id when the gate was told which call this is. */
       readonly call?: string;
       /** Unified diff preview when the tool computed one before asking. */
@@ -131,7 +137,7 @@ export function toolPermission(
       block.turn === tool.turn &&
       block.tool === tool.name &&
       block.call === undefined &&
-      sameJson(block.input, tool.input),
+      block.input === tool.input,
   );
 }
 
@@ -214,12 +220,8 @@ function appendHarnessEvent(
       const index = blocks.findLastIndex(
         (block) => block.kind === "tool" && block.turn === frame.turn && block.call === frame.call,
       );
-      // Replace a block that was built from tool.params-delta (string input).
-      if (
-        index >= 0 &&
-        blocks[index]!.kind === "tool" &&
-        typeof blocks[index]!.input === "string"
-      ) {
+      // Replace a block that was built from tool.params-delta (still streaming).
+      if (index >= 0 && blocks[index]!.kind === "tool" && blocks[index]!.streaming) {
         const prev = blocks[index]!;
         if (prev.kind !== "tool") return blocks;
         return [
@@ -319,9 +321,8 @@ function appendHarnessDelta(
       if (index >= 0 && blocks[index]!.kind === "tool") {
         const tool = blocks[index]!;
         if (tool.kind !== "tool") return blocks;
-        // Append if the input is still a string (partial streaming) but not if
-        // a later tool.start already installed a parsed object.
-        if (typeof tool.input !== "string") return blocks;
+        // Append while still streaming; ignore after tool.start resolved the call.
+        if (!tool.streaming) return blocks;
         return [
           ...blocks.slice(0, index),
           { ...tool, input: tool.input + frame.delta },
@@ -352,12 +353,12 @@ export function serializeTranscript(blocks: readonly TranscriptBlock[], width: n
 }
 
 export function toolDetails(block: Extract<TranscriptBlock, { kind: "tool" }>): string {
-  return `${json(block.input)}${block.output === undefined ? "" : ` -> ${json(block.output)}`}`;
+  return `${displayJsonText(block.input)}${block.output === undefined ? "" : ` -> ${displayJsonText(block.output)}`}`;
 }
 
-/** Plain result text for a tool card. Non-string results retain their JSON form. */
+/** Plain result text for a tool card. */
 export function toolOutput(block: Extract<TranscriptBlock, { kind: "tool" }>): string | undefined {
-  return block.output === undefined ? undefined : json(block.output);
+  return block.output === undefined ? undefined : displayJsonText(block.output);
 }
 
 /**
@@ -370,36 +371,28 @@ export function toolOutput(block: Extract<TranscriptBlock, { kind: "tool" }>): s
  */
 type ToolFace = {
   readonly pending: string;
-  readonly reveal: (input: { readonly [key: string]: JsonValue }) => string;
+  readonly field?: "command" | "path" | "pattern";
+  readonly prefix: string;
 };
 
 const toolFaces = new Map<string, ToolFace>([
-  [
-    "bash",
-    { pending: "Writing command...", reveal: (input) => `$ ${stringField(input, "command")}` },
-  ],
-  [
-    "write",
-    { pending: "Preparing write...", reveal: (input) => `write ${stringField(input, "path")}` },
-  ],
-  [
-    "edit",
-    { pending: "Preparing edit...", reveal: (input) => `edit ${stringField(input, "path")}` },
-  ],
-  ["apply_patch", { pending: "Preparing patch...", reveal: () => "patch" }],
-  ["read", { pending: "Reading file...", reveal: (input) => `read ${stringField(input, "path")}` }],
-  [
-    "glob",
-    { pending: "Finding files...", reveal: (input) => `glob ${stringField(input, "pattern")}` },
-  ],
-  [
-    "grep",
-    {
-      pending: "Searching content...",
-      reveal: (input) => `grep ${stringField(input, "pattern")}`,
-    },
-  ],
+  ["bash", { pending: "Writing command...", field: "command", prefix: "$ " }],
+  ["write", { pending: "Preparing write...", field: "path", prefix: "write " }],
+  ["edit", { pending: "Preparing edit...", field: "path", prefix: "edit " }],
+  ["apply_patch", { pending: "Preparing patch...", prefix: "patch" }],
+  ["read", { pending: "Reading file...", field: "path", prefix: "read " }],
+  ["glob", { pending: "Finding files...", field: "pattern", prefix: "glob " }],
+  ["grep", { pending: "Searching content...", field: "pattern", prefix: "grep " }],
 ]);
+
+/** Fields tool faces may read from opaque JSON text. */
+const ToolRevealFields = S.Struct({
+  command: S.optional(S.String),
+  path: S.optional(S.String),
+  pattern: S.optional(S.String),
+});
+const decodeRevealFields = S.decodeOption(S.fromJsonString(ToolRevealFields));
+const decodeJsonString = S.decodeOption(S.fromJsonString(S.String));
 
 /** Chat headline for a tool — face only, never `-> output` (that is raw). */
 export function toolSummary(block: Extract<TranscriptBlock, { kind: "tool" }>): string {
@@ -416,24 +409,18 @@ export function permissionSummary(block: PermissionBlock): string {
   return `${block.tool}: ${describeCall(block.tool, block.input)}`;
 }
 
-function describeCall(tool: string, input: JsonValue): string {
+function describeCall(tool: string, input: OpaqueJsonText): string {
   const face = toolFaces.get(tool);
-  if (isJsonObject(input) && face) {
-    const revealed = face.reveal(input);
-    if (revealed) return revealed;
+  if (face) {
+    if (face.field === undefined) return face.prefix;
+    const fields = decodeRevealFields(input);
+    if (Option.isSome(fields)) {
+      const value = fields.value[face.field] ?? "";
+      return `${face.prefix}${value}`;
+    }
   }
-  const rendered = json(input);
-  // Named tools without a structured reveal still lead with the verb so chat
-  // does not show a bare fragment the way raw `tool> …` lines do.
+  const rendered = displayJsonText(input);
   return face ? `${tool} ${rendered}` : rendered;
-}
-
-function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringField(input: { readonly [key: string]: JsonValue }, key: string): string {
-  return typeof input[key] === "string" ? input[key] : "";
 }
 
 function transcriptLine(block: TranscriptBlock): string {
@@ -445,7 +432,7 @@ function transcriptLine(block: TranscriptBlock): string {
     case "reasoning":
       return `thinking> ${block.text}`;
     case "tool":
-      return `tool> ${block.name} ${json(block.input)}${block.output === undefined ? "" : ` -> ${json(block.output)}`}`;
+      return `tool> ${block.name} ${displayJsonText(block.input)}${block.output === undefined ? "" : ` -> ${displayJsonText(block.output)}`}`;
     case "permission":
       return `permission> ${permissionSummary(block)}${block.decision === undefined ? "" : ` [${block.decision}]`}`;
     case "status":
@@ -479,19 +466,7 @@ function wrapLine(line: string, width: number): string[] {
   return lines;
 }
 
-function json(value: JsonValue): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "[unserializable]";
-  }
-}
-
-function sameJson(left: JsonValue, right: JsonValue): boolean {
-  try {
-    return JSON.stringify(left) === JSON.stringify(right);
-  } catch {
-    return false;
-  }
+/** Show JSON text: string primitives without quotes; otherwise the text itself. */
+function displayJsonText(text: OpaqueJsonText): string {
+  return Option.getOrElse(decodeJsonString(text), () => text);
 }

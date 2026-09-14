@@ -9,7 +9,9 @@ import { Chat } from "./Chat.tsx";
 import { AttachFrame, type JsonValue } from "@danielfgray/amux/protocol";
 import { ProcessState } from "@danielfgray/amux";
 import { waitFor } from "@danielfgray/amux/testing";
-import { emit, delta, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+import { emit, delta, OpaqueJsonText, decodeOpaqueJsonText, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+import { Option } from "effect";
+const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 import { agentStateTopic } from "./state-topic.ts";
 
 /** Wrap a harness event/fragment the way core actually delivers it — this
@@ -68,7 +70,7 @@ async function chat(
         sessionId={session.id}
         paneId="pane-native"
         paneType="test"
-        descriptor={{}}
+        descriptor="{}"
         model="openai/gpt-4o-mini"
         width={width}
         height={() => height}
@@ -212,7 +214,7 @@ async function blocked() {
       action: "bash",
       resources: ["git status"],
       save: [{ action: "bash", resource: "git status *", effect: "allow" }],
-      input: { command: "git status" },
+      input: jp({ command: "git status" }),
     }),
   );
   await waitFrame(world.t, (frame) => frame.includes("[o]"), "the approval bar");
@@ -538,7 +540,7 @@ test("composer reclaim does not steal focus released by another component pane",
               sessionId="native"
               paneId="chat-pane"
               paneType="test"
-              descriptor={{}}
+              descriptor="{}"
               model="openai/gpt-4o-mini"
               width={() => 40}
               height={() => 12}
@@ -591,7 +593,7 @@ test("composer reclaim still takes focus back after a non-pane overlay releases 
               sessionId="native"
               paneId="chat-pane"
               paneType="test"
-              descriptor={{}}
+              descriptor="{}"
               model="openai/gpt-4o-mini"
               width={() => 40}
               height={() => 10}
@@ -643,7 +645,7 @@ test("a submitted message is answered by the agent in the transcript", async () 
         sessionId="native"
         paneId="pane-native"
         paneType="test"
-        descriptor={{}}
+        descriptor="{}"
         model="openai/gpt-4o-mini"
         width={() => 40}
         height={() => 20}
@@ -728,7 +730,7 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
         sessionId="native"
         paneId="pane-native"
         paneType="test"
-        descriptor={{}}
+        descriptor="{}"
         model="openai/gpt-4o-mini"
         width={() => 40}
         height={() => 20}
@@ -790,7 +792,7 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
       turn: "t1",
       call: "c1",
       tool: "bash",
-      input: { command: "git status" },
+      input: jp({ command: "git status" }),
     }),
   );
   await waitFrame(t, (frame) => frame.includes("$ git status"), "the revealed command");
@@ -814,7 +816,7 @@ test("chat joins an approved permission to its tool instead of rendering a secon
       turn: "t1",
       call: "c1",
       tool: "bash",
-      input: { command: "ls" },
+      input: jp({ command: "ls" }),
     }),
   );
   push(
@@ -828,7 +830,7 @@ test("chat joins an approved permission to its tool instead of rendering a secon
       action: "bash",
       resources: ["ls"],
       save: [],
-      input: { command: "ls" },
+      input: jp({ command: "ls" }),
     }),
   );
   await waitFrame(t, (rendered) => rendered.includes("$ ls"), "the approval request");
@@ -848,7 +850,7 @@ test("chat joins an approved permission to its tool instead of rendering a secon
       sequence: 4,
       turn: "t1",
       call: "c1",
-      output: "AGENTS.md",
+      output: jp("AGENTS.md"),
       isError: false,
     }),
   );

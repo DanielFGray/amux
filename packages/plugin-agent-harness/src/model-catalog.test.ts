@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import type { JsonValue } from "@danielfgray/amux";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { ConfigProvider, Effect, Layer, Option, Schema as S, Stream } from "effect";
@@ -26,8 +25,7 @@ const baseModel = {
   limit: { context: 1000, output: 500 },
 } as const;
 
-const decodeModel = (raw: Record<string, JsonValue>) =>
-  Option.getOrThrow(S.decodeUnknownOption(Model)(raw));
+const decodeModel = (raw: typeof Model.Encoded) => Option.getOrThrow(S.decodeOption(Model)(raw));
 
 test("availableThinkingLevels prefers catalog effort values in order", () => {
   const model = decodeModel({
@@ -69,14 +67,11 @@ test("availableThinkingLevels is undefined without controllable effort", () => {
 });
 
 test("unknown reasoning_options variants do not drop the model", () => {
-  const model = decodeModel({
-    ...baseModel,
-    reasoning_options: [
-      { type: "future_knob", magnitude: 3 },
-      { type: "effort", values: ["low", "high"] },
-      { type: "toggle" },
-    ],
-  });
+  const model = Option.getOrThrow(
+    S.decodeOption(S.fromJsonString(Model))(
+      '{"id":"gpt-test","name":"GPT Test","release_date":"2026-01-01","attachment":false,"reasoning":true,"temperature":true,"tool_call":true,"limit":{"context":1000,"output":500},"reasoning_options":[{"type":"future_knob","magnitude":3},{"type":"effort","values":["low","high"]},{"type":"toggle"}]}',
+    ),
+  );
   expect(model.reasoning_options).toEqual([
     { type: "effort", values: ["low", "high"] },
     { type: "toggle" },

@@ -24,10 +24,9 @@ import {
 } from "@danielfgray/amux/permission.ts";
 import type { AgentDelta, AgentEventPayload } from "@danielfgray/amux/protocol";
 import type { Interface as ProjectStore } from "@danielfgray/amux/project-store.ts";
-import type { JsonValue } from "@danielfgray/amux";
 import type { ApprovalMode } from "./options.ts";
 import type { HarnessHooks } from "./hooks.ts";
-import { emit as toAgentMessage, type HarnessEvent } from "./protocol.ts";
+import { emit as toAgentMessage, type HarnessEvent, type OpaqueJsonText } from "./protocol.ts";
 
 type PermissionStore = Pick<ProjectStore, "addRules">;
 
@@ -49,7 +48,7 @@ export interface Assertion {
   readonly tool: string;
   /** Declared tier; omitted or unknown is treated as `exec`. */
   readonly tier: ApprovalTier;
-  readonly input: JsonValue;
+  readonly input: OpaqueJsonText;
   /** The tool-call id from the provider turn, when the handler has one. */
   readonly call?: string;
   /** Prospective unified diff shown in the approve pane before the mutate. */

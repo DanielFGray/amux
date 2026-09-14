@@ -19,7 +19,7 @@
  * `on` installs a finalizer; there is no manual unsubscribe return value.
  */
 import { Effect, Scope } from "effect";
-import type { JsonValue } from "@danielfgray/amux";
+import type { OpaqueJsonText } from "./protocol.ts";
 
 export type HarnessHookEvent =
   | {
@@ -44,7 +44,7 @@ export type HarnessHookEvent =
       readonly tool: string;
       readonly action: string;
       readonly resources: readonly string[];
-      readonly input: JsonValue;
+      readonly input: OpaqueJsonText;
       readonly call?: string;
     }
   | {

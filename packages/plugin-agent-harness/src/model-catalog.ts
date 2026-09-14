@@ -3,10 +3,10 @@ import * as Path from "effect/Path";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
-import * as SchemaGetter from "effect/SchemaGetter";
 import { Clock, Context, Duration, Effect, Layer, Option, Schedule, Schema as S } from "effect";
 import { stateRoot } from "@danielfgray/amux/session.ts";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
+import { softArray, softItem } from "@danielfgray/amux/soft-schema.ts";
 
 export * as ModelCatalog from "./model-catalog.ts";
 
@@ -37,21 +37,7 @@ export const ReasoningOption = S.Union([
 ]);
 export type ReasoningOption = typeof ReasoningOption.Type;
 
-const ReasoningOptions = S.Array(S.Json).pipe(
-  S.decodeTo(S.Array(ReasoningOption), {
-    decode: SchemaGetter.transform((items: readonly S.Json[]) =>
-      items.flatMap((item) =>
-        Option.match(S.decodeUnknownOption(ReasoningOption)(item), {
-          onNone: () => [],
-          onSome: (option) => [option],
-        }),
-      ),
-    ),
-    encode: SchemaGetter.transform(
-      (items: readonly ReasoningOption[]) => items as readonly S.Json[],
-    ),
-  }),
-);
+const ReasoningOptions = softArray(ReasoningOption);
 
 export const Model = S.Struct({
   id: S.String,
@@ -147,7 +133,7 @@ export class Service extends Context.Service<Service, Interface>()("amux/ModelCa
 
 const CACHE_TTL = Duration.minutes(5);
 const SOURCE = "https://models.opencode.ai/api.json";
-const RawCatalog = S.fromJsonString(S.Record(S.String, S.Json));
+const RawCatalog = S.fromJsonString(S.Record(S.String, softItem(Provider)));
 
 const httpFetcher = Layer.effect(
   Fetcher,
@@ -177,16 +163,16 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
       const directory = path.join(root, "amux", "cache");
       const file = path.join(directory, "models.json");
 
-      const decode = (text: string): Readonly<Record<string, Provider>> | undefined => {
-        const raw = S.decodeOption(RawCatalog)(text);
-        if (Option.isNone(raw)) return undefined;
-        const providers: Record<string, Provider> = {};
-        for (const [id, value] of Object.entries(raw.value)) {
-          const provider = S.decodeUnknownOption(Provider)(value);
-          if (Option.isSome(provider)) providers[id] = provider.value;
-        }
-        return providers;
-      };
+      const decode = (text: string): Readonly<Record<string, Provider>> | undefined =>
+        Option.getOrUndefined(
+          Option.map(S.decodeOption(RawCatalog)(text), (raw) => {
+            const providers: Record<string, Provider> = {};
+            for (const [id, provider] of Object.entries(raw)) {
+              if (provider !== null) providers[id] = provider;
+            }
+            return providers;
+          }),
+        );
       const readDisk = Effect.gen(function* () {
         const text = yield* fs
           .readFileString(file)
