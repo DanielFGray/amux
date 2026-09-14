@@ -818,6 +818,8 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
     },
   ];
   createBindings(t.renderer, commands, {
+    // Explicit prefix: product default is ctrl+s (bindings.ts DEFAULT_PREFIX).
+    keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
     onUnhandled: (event) => {
       if (mode.active && mode.pane === pane) return mode.onKey(event);
       return true;
@@ -830,7 +832,7 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
   t.mockInput.pressKey("l");
   expect(mode.cursor).toEqual({ x: 1, y: 0 });
 
-  // The leader is a keymap sequence, so ^a h still dispatches its command
+  // The prefix is a keymap sequence, so ^a h still dispatches its command
   // instead of being swallowed by the mode.
   t.mockInput.pressKey("a", { ctrl: true });
   t.mockInput.pressKey("h");
