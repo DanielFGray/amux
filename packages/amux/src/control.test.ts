@@ -1108,6 +1108,8 @@ testEffect("client projection of a deferred resume sends resize and flushes the 
     );
     daemons.push(reloaded);
     expect(reloaded.pendingAgentResumeSessions()).toContain(sessionId);
+    const statusBeforeProject = yield* Effect.promise(() => ctl(daemon.id, env, (c) => c.Status()));
+    expect(statusBeforeProject.agents).toContain(sessionId);
 
     const scope = yield* Scope.make();
     const client = yield* Effect.promise(() =>

@@ -163,7 +163,7 @@ const foregroundArgv = (pid: number, sid: number): readonly string[] => {
  * not "the process died" — and the same agent is still there to be adopted
  * when a client comes back.
  *
- * `live` is the set of agents the daemon is already running. An id in it is
+ * `live` is the set of agents the daemon already owns. An id in it is
  * adopted rather than started: reattaching must never re-run a command, and the
  * only thing that distinguishes reattaching from starting fresh is this set.
  */

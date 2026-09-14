@@ -1791,12 +1791,16 @@ export const makeDaemonService = Effect.fnUntraced(
             const degraded = obligation ?? cur.heartbeatError ?? undefined;
             const live = yield* liveSessions;
             const pluginHost = yield* SubscriptionRef.get(pluginHostStatus);
+            // Running PTYs plus parked resumes: every session the daemon owns
+            // for client adoption. liveSessions stays PTYs only.
+            const agents = new Set(live);
+            for (const id of pendingResumes.sessionIds()) agents.add(id);
             const baseStatus = {
               attached: cur.state.attached,
               ...(yield* attachTimes()),
               session: structuredClone(cur.state),
               workspace: encodeJson(cur.workspace),
-              agents: [...live],
+              agents: [...agents],
               pluginHost,
             };
             return degraded === undefined ? baseStatus : { ...baseStatus, degraded };

@@ -63,6 +63,8 @@ const StatusSchema = S.Struct({
   ...AttachInfoSchema.fields,
   session: SessionStateSchema,
   workspace: WorkspaceJson,
+  /** Sessions the daemon owns for client adoption: running PTYs plus
+   *  parked foreign-agent resumes. Not "has a PTY right now". */
   agents: S.Array(S.String),
   /** Supervised plugin-host child: state, restart count, last error. */
   pluginHost: PluginHostStatusSchema,
