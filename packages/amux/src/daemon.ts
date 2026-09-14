@@ -113,14 +113,15 @@ import {
   markSessionExited,
   markSessionUnavailable,
   parseWorkspaceCommandContext,
+  assertWorkspaceCommandContextAgents,
   applyPaneAgentSession,
   resolveTarget,
   workspaceFromSession,
   workspaceSession,
   workspaceSessions,
-  type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import { paneAgentSessionSnapshot, type AgentSessionRecord } from "./agent-session.ts";
 import { AgentResumeClaimsLive, AgentResumeClaimsTag } from "./agent-resume.ts";
 import {
@@ -1964,7 +1965,7 @@ export const makeDaemonService = Effect.fnUntraced(
         const context =
           request.context === undefined
             ? undefined
-            : yield* parseWorkspaceCommandContext(request.context, cur.workspace).pipe(
+            : yield* assertWorkspaceCommandContextAgents(request.context, cur.workspace).pipe(
                 Effect.mapError((error) => error.message),
               );
         return yield* runRemote(decoded, request.expectedRevision, context, {

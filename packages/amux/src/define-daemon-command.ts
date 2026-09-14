@@ -10,7 +10,8 @@ import type { DaemonSessionCommandContext, DefinedDaemonCommand } from "./plugin
 import type { PluginActionRegistration } from "./effect/WorkspaceTransaction.ts";
 import type { PaneTypeRegistration } from "./pane-descriptors.ts";
 import type { ProviderMessageRegistration } from "./session-provider-messages.ts";
-import type { PluginWorkspaceReducer, WorkspaceCommandContext } from "./workspace.ts";
+import type { PluginWorkspaceReducer } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import {
   PluginReducerError,
   type WorkspaceReadPackage,

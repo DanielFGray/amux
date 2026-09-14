@@ -10,9 +10,9 @@ import type { JsonValue } from "./effect/AttachProtocol.ts";
 import {
   parseWorkspaceJson,
   workspaceSessions,
-  type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import {
   processAlive,
   optionalEnvVar,

@@ -24,7 +24,7 @@ import { PluginDeclarationsSchema, PluginPublicationRevisionSchema } from "./plu
 import { PluginPublicationAnnouncementSchema } from "./plugin/ui-announcement.ts";
 import { PluginHostStatusSchema } from "./plugin-host/rpc.ts";
 import { SessionStateSchema } from "./session.ts";
-import { WorkspaceCommandContextSchema } from "./workspace.ts";
+import { WorkspaceCommandContextSchema } from "./workspace-command-context.ts";
 
 /** The single failure channel of every control procedure. */
 export class ControlError extends S.TaggedError<ControlError>()("ControlError", {

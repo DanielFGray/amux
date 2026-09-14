@@ -10,10 +10,10 @@ import {
   viewportSizeForCommand,
   workspaceFromSession,
   workspaceSession,
-  type WorkspaceCommandContext,
   type WorkspaceSnapshot,
   type WorkspaceMutation,
 } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { layoutPanes, makeLayout, DescriptorSchema } from "./layout.ts";
 import { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";

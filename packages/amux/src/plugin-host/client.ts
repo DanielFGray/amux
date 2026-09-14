@@ -28,7 +28,7 @@ import type {
   WorkspaceReadPackage,
   WorkspaceReducerAnswer,
 } from "../workspace-changes.ts";
-import type { WorkspaceCommandContext } from "../workspace.ts";
+import type { WorkspaceCommandContext } from "../workspace-command-context.ts";
 import type {
   PluginHostError,
   PluginHostPrepareResult,

@@ -23,7 +23,7 @@ import { gitWorktreeExists, worktreeDirname } from "../packages/amux/src/git.ts"
 import { waitFor, until } from "../packages/amux/src/test-wait.ts";
 import { testEffect } from "../packages/amux/src/test-effect.ts";
 import { registerCleanup, tempDir } from "../packages/amux/src/test-tmp.ts";
-import type { WorkspaceCommandContext } from "../packages/amux/src/workspace.ts";
+import type { WorkspaceCommandContext } from "../packages/amux/src/workspace-command-context.ts";
 
 registerCleanup();
 

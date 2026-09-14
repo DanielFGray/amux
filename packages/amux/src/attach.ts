@@ -39,9 +39,9 @@ import {
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts";
 import {
   parseWorkspaceJson,
-  type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import { captureRootRuntime, type RootRuntimeContext, defaultRootRuntime } from "./env.ts";
 
 /**
@@ -330,11 +330,11 @@ class AttachClientConnection {
       >();
       this._pendingRuns.set(id, done);
       this._send({
-        _tag: "run.request" as const,
+        _tag: "run.request",
         id,
         command,
         ...options,
-      } as Extract<AttachFrame, { readonly _tag: "run.request" }>);
+      });
       return yield* Deferred.await(done).pipe(
         Effect.ensuring(Effect.sync(() => this._pendingRuns.delete(id))),
       );

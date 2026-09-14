@@ -45,11 +45,8 @@ import {
   PLUGIN_DESCRIPTOR_CHECK_TIMEOUT_MS,
   PLUGIN_REDUCE_TIMEOUT_MS,
 } from "./workspace-changes.ts";
-import {
-  buildWorkspaceReadPackage,
-  workspaceFromSession,
-  type WorkspaceCommandContext,
-} from "./workspace.ts";
+import { buildWorkspaceReadPackage, workspaceFromSession } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import type { SessionState } from "./session.ts";
 import { makeLayout } from "./layout.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";

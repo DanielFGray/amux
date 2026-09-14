@@ -35,7 +35,7 @@ import {
   type WorkspaceReadPackage,
   type WorkspaceReducerAnswer,
 } from "./workspace-changes.ts";
-import type { WorkspaceCommandContext } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import type { PluginHostBehaviourCalls, PluginPublication } from "./plugin-host/client.ts";
 
 /** Budget for one session-target plugin `run` (aligned with action execute). */

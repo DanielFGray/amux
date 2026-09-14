@@ -34,7 +34,7 @@ import {
   WorkspaceReadPackageSchema,
   WorkspaceReducerAnswerSchema,
 } from "../workspace-changes.ts";
-import { WorkspaceCommandContextSchema } from "../workspace.ts";
+import { WorkspaceCommandContextSchema } from "../workspace-command-context.ts";
 
 export class PluginHostError extends S.TaggedError<PluginHostError>()("PluginHostError", {
   message: S.String,

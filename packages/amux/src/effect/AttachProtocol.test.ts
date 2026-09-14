@@ -115,7 +115,7 @@ test("command.request carries a key source across the wire", () => {
 });
 
 test("run.request and run.response round-trip with workspace output", () => {
-  const request: AttachFrame = {
+  const requestAbsentInput: AttachFrame = {
     _tag: "run.request",
     id: "run-1",
     command: { _tag: "pane.zoom" },
@@ -128,13 +128,32 @@ test("run.request and run.response round-trip with workspace output", () => {
       pane: "s1:p1",
     },
   };
+  const requestWithInput: AttachFrame = {
+    _tag: "run.request",
+    id: "run-2",
+    command: { _tag: "pane.zoom" },
+    expectedRevision: 3,
+    context: {
+      size: { cols: 80, rows: 24 },
+      shell: ["sh"],
+      cwd: "/tmp",
+      source: "key",
+      pane: "s1:p1",
+      input: "hello",
+    },
+  };
   const response: AttachFrame = {
     _tag: "run.response",
     id: "run-1",
     workspace: '{"revision":4}',
     result: null,
   };
-  expect(decodeAttachFrames(encodeAttachFrame(request)).frames).toEqual([request]);
+  expect(decodeAttachFrames(encodeAttachFrame(requestAbsentInput)).frames).toEqual([
+    requestAbsentInput,
+  ]);
+  expect(decodeAttachFrames(encodeAttachFrame(requestWithInput)).frames).toEqual([
+    requestWithInput,
+  ]);
   expect(decodeAttachFrames(encodeAttachFrame(response)).frames).toEqual([response]);
 });
 

@@ -1,9 +1,6 @@
 import { paneSession } from "../layout.ts";
-import {
-  resolveTarget,
-  type WorkspaceCommandContext,
-  type WorkspaceSnapshot,
-} from "../workspace.ts";
+import { resolveTarget, type WorkspaceSnapshot } from "../workspace.ts";
+import type { WorkspaceCommandContext } from "../workspace-command-context.ts";
 import type { ProcessPluginInvocationContext } from "./env.ts";
 
 export interface ProcessPluginContextOptions {

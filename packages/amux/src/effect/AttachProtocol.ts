@@ -1,6 +1,7 @@
 import { Result, Schema as S, SchemaAST as AST } from "effect";
 import { PermissionDecisionSchema } from "../permission.ts";
 import { errorMessage } from "../error-message.ts";
+import { WorkspaceCommandContextSchema } from "../workspace-command-context.ts";
 
 export const SESSION_STATE_TOPIC = "session.state";
 
@@ -269,8 +270,7 @@ const RunRequest = S.TaggedStruct("run.request", {
   id: S.String,
   command: JsonValueSchema,
   expectedRevision: S.optional(S.Int),
-  /** {@link WorkspaceCommandContext} as JSON; decoded at the daemon entry. */
-  context: S.optional(JsonValueSchema),
+  context: S.optional(WorkspaceCommandContextSchema),
 });
 
 /** Daemon → client: answer to a {@link RunRequest}, correlated by `id`. */

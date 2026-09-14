@@ -121,8 +121,8 @@ export type {
   CoreWorkspaceAction,
   WorkspaceSnapshot,
   PluginWorkspaceReducer,
-  WorkspaceCommandContext,
 } from "./workspace.ts";
+export type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 export type { PermissionAnswer, JsonValue } from "./effect/AttachProtocol.ts";
 export { JsonValueSchema } from "./effect/AttachProtocol.ts";
 export {

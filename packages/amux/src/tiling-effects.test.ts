@@ -19,9 +19,9 @@ import { PLUGIN_TILING_TIMEOUT_MS } from "./workspace-changes.ts";
 import {
   applyWorkspaceCommand,
   workspaceFromSession,
-  type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import { niriTilingMethods } from "../../plugin-niri/src/niri.ts";
 import type { SessionState } from "./session.ts";
 import { withCollectingLogger } from "./test-logger.ts";

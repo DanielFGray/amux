@@ -24,10 +24,10 @@ import {
   isCoreWorkspaceAction,
   markSessionExited,
   workspaceSession,
-  type WorkspaceCommandContext,
   type WorkspaceSnapshot,
   type WorkspaceSpace,
 } from "../workspace.ts";
+import type { WorkspaceCommandContext } from "../workspace-command-context.ts";
 import type { TilingAlgorithm } from "../tiling-algorithm.ts";
 import { TilingAlgorithmError } from "../tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "../tiling-algorithm-default.ts";

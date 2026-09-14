@@ -9,10 +9,10 @@ import {
   applyWorkspaceCommand as applyWorkspaceCommandWithPath,
   resolveTarget,
   workspaceFromSession,
-  type WorkspaceCommandContext,
   type WorkspaceMutation,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
+import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import type { DaemonCommandRegistration } from "./plugin/services.ts";
 import { preparePluginCommandApply } from "./effect/WorkspaceTransaction.ts";
 import { PluginBehaviour } from "./plugin-behaviour.ts";
