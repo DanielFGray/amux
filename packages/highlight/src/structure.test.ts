@@ -73,11 +73,14 @@ test("nodeAt finds a jsx_element under the cursor in TSX", () => {
   expect(tree).not.toBeNull();
   if (tree === null) return;
   try {
+    expect(tree.root.type).toBe("program");
     const node = tree.nodeAt(2, 8);
     expect(node).not.toBeNull();
     if (node === null) return;
     const types = [...node.ancestors()].map((n) => n.type);
     expect(types).toContain("jsx_element");
+    const again = tree.nodeAt(2, 8);
+    expect(again?.id).toBe(node.id);
   } finally {
     tree.delete();
   }

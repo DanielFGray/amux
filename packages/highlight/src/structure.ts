@@ -36,6 +36,11 @@ export type StructurePoint = {
 };
 
 export type StructureNode = {
+  /**
+   * Tree-sitter node id — unique within one tree. Equal nodes (same
+   * underlying node reached via different wrappers) share this id.
+   */
+  readonly id: number;
   readonly type: string;
   readonly start: StructurePoint;
   readonly end: StructurePoint;
@@ -50,6 +55,8 @@ export type StructureNode = {
 
 export type StructureTree = {
   readonly content: string;
+  /** Program / document root. Valid until `delete()`. */
+  readonly root: StructureNode;
   readonly nodeAt: (row: number, col: number) => StructureNode | null;
   /** Free the underlying wasm tree. Safe to call once. */
   readonly delete: () => void;
@@ -169,6 +176,7 @@ const wrapNode = (node: Node, content: string): StructureNode => {
   const start = pointFromTreeSitter(content, node.startPosition.row, node.startPosition.column);
   const end = pointFromTreeSitter(content, node.endPosition.row, node.endPosition.column);
   return {
+    id: node.id,
     type: node.type,
     start,
     end,
@@ -198,8 +206,10 @@ const wrapNode = (node: Node, content: string): StructureNode => {
 
 const makeStructureTree = (content: string, tree: Tree): StructureTree => {
   let live: Tree | null = tree;
+  const root = wrapNode(tree.rootNode, content);
   return {
     content,
+    root,
     nodeAt: (row, col) => {
       if (live === null) return null;
       const line = lineAt(content, row);

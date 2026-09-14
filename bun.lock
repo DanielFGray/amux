@@ -98,6 +98,7 @@
       },
       "devDependencies": {
         "@danielfgray/amux": "workspace:*",
+        "@effect/platform-bun": "catalog:",
       },
       "peerDependencies": {
         "@danielfgray/amux": "workspace:*",
@@ -145,6 +146,21 @@
       "optionalPeers": [
         "@danielfgray/amux-plugin-search",
       ],
+    },
+    "packages/plugin-codemap": {
+      "name": "@danielfgray/amux-plugin-codemap",
+      "version": "0.1.0",
+      "dependencies": {
+        "@danielfgray/amux-highlight": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+      "peerDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
     },
     "packages/plugin-completion": {
       "name": "@danielfgray/amux-plugin-completion",
@@ -362,6 +378,8 @@
     "@danielfgray/amux-plugin-agent-continuity": ["@danielfgray/amux-plugin-agent-continuity@workspace:packages/plugin-agent-continuity"],
 
     "@danielfgray/amux-plugin-agent-harness": ["@danielfgray/amux-plugin-agent-harness@workspace:packages/plugin-agent-harness"],
+
+    "@danielfgray/amux-plugin-codemap": ["@danielfgray/amux-plugin-codemap@workspace:packages/plugin-codemap"],
 
     "@danielfgray/amux-plugin-completion": ["@danielfgray/amux-plugin-completion@workspace:packages/plugin-completion"],
 

@@ -1,0 +1,35 @@
+{
+  "name": "@danielfgray/amux-plugin-codemap",
+  "version": "0.1.0",
+  "keywords": [
+    "amux-plugin"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/plugin-codemap"
+  },
+  "type": "module",
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./extract": "./src/extract.ts",
+    "./schema": "./src/schema.ts",
+    "./service": "./src/service.ts"
+  },
+  "dependencies": {
+    "@danielfgray/amux-highlight": "workspace:*",
+    "@effect/platform-bun": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "engines": {
+    "amux": "^0.1.0"
+  }
+}
