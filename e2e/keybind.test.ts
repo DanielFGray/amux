@@ -46,16 +46,22 @@ beforeAll(async () => {
   );
   afterSplit = await configured.workspaceSummary();
 
-  // The settings window's keybind tab: row 0 is the prefix, so j lands on the
-  // first real command (panes/pane.split-row). Enter captures the next
-  // keystroke, u resets the row, s writes the config.
+  // Move down until the selected-row hint names pane.split-row; the list grows
+  // when rows are added, so no fixed count. Each move waits for the redraw so
+  // a press never lands on a stale screen. Enter opens the rebind picker,
+  // Enter again starts capture; u resets the row, s writes the config.
   edited = await launch("e2e-keybind-edit");
   await edited.press(`${LEADER}?`);
   await edited.until(
     () => edited.screen().includes(" settings ") && edited.screen().includes("split left/right"),
     "the keybind settings to open",
   );
-  await edited.press("j");
+  for (let moves = 0; !edited.screen().includes("pane.split-row ·"); moves += 1) {
+    expect(moves).toBeLessThan(200);
+    const before = edited.screen();
+    await edited.press("j");
+    await edited.until(() => edited.screen() !== before, "the keybind selection to move");
+  }
   await edited.press("\r");
   await edited.press("\r");
   await edited.until(

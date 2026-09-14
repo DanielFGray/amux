@@ -316,6 +316,16 @@ test("the keybinds tab lists the prefix alongside the commands it prefixes", asy
   expect(frame).toContain("close pane *");
 });
 
+test("the selected keybind row shows its hint as text", async () => {
+  const prefix = await draw({ selected: 0 });
+  expect(prefix).toContain("prefix · ⏎ rebind");
+
+  const command = await draw({ selected: 2 });
+  expect(command).toContain("pane.zoom · ⏎ rebind");
+  // Unselected rows do not repeat the hint.
+  expect(command).not.toContain("prefix · ⏎ rebind");
+});
+
 test("a rebound prefix is what the whole list reads as", async () => {
   const frame = await draw({ prefix: "ctrl+b" });
 

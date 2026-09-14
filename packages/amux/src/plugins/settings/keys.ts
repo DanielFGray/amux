@@ -84,10 +84,13 @@ function moveKeybind(chrome: SettingsChrome, delta: number) {
   if (!box) return;
   // The list is several screens long, so follow the selection rather than
   // leaving it to be moved off the top of a window it cannot scroll itself.
+  // The selected row draws a hint on the next line (Settings keybindHint);
+  // keep both in view, same as scrolling to a two-line option field.
   const line = keybindLine(groups, index);
+  const bottom = line + 1;
   const height = box.viewport?.height ?? box.height;
   if (line < box.scrollTop) box.scrollTop = line;
-  else if (line >= box.scrollTop + height) box.scrollTop = line - height + 1;
+  else if (bottom >= box.scrollTop + height) box.scrollTop = bottom - height + 1;
 }
 
 function keybindsKey(chrome: SettingsChrome, event: KeyEvent) {

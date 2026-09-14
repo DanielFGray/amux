@@ -203,7 +203,9 @@ export function keybindGroups(
  * The list is several screens long, so the caller keeps the selected row in
  * view — and it can only do that if it knows where the row was drawn. Mirrors
  * the layout below: one line per group heading, one per entry, one blank
- * between groups.
+ * between groups. The selected row's hint sits on the line after this one; it
+ * does not shift this return because only the selected entry grows, and the
+ * caller asks for the selected index.
  */
 export function keybindLine(groups: HelpGroup[], index: number): number {
   let line = 0;
@@ -216,6 +218,17 @@ export function keybindLine(groups: HelpGroup[], index: number): number {
     line++;
   }
   return 0;
+}
+
+/**
+ * Hint under the selected keybind row — same role as a field's `hint`: names
+ * the target and the keys that act on it (`keybindsKey` in
+ * plugins/settings/keys.ts). Prefix and leader are not command ids; they use
+ * the short labels the list already teaches.
+ */
+export function keybindHint(name: string | null): string {
+  const id = name === null ? "prefix" : name === LEADER_TARGET ? "leader" : name;
+  return `${id} · ⏎ rebind · a add · u default · d unbind · s saves`;
 }
 
 /**
@@ -350,26 +363,35 @@ export function Settings(props: {
                       return (
                         <box
                           style={{
-                            flexDirection: "row",
-                            height: 1,
+                            flexDirection: "column",
                             flexShrink: 0,
                             backgroundColor: active() ? theme.surface1 : theme.base,
                           }}
                         >
-                          <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
-                            {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
-                          </text>
-                          <text
-                            style={{
-                              fg: entry.index === null ? theme.overlay1 : theme.text,
-                              flexGrow: 1,
-                            }}
-                          >
-                            {entry.desc + (entry.custom ? " *" : "")}
-                          </text>
-                          <Show when={entry.context}>
-                            <text style={{ fg: theme.overlay1, width: 14, flexShrink: 0 }}>
-                              {entry.context}
+                          <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                            <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
+                              {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
+                            </text>
+                            <text
+                              style={{
+                                fg: entry.index === null ? theme.overlay1 : theme.text,
+                                flexGrow: 1,
+                              }}
+                            >
+                              {entry.desc + (entry.custom ? " *" : "")}
+                            </text>
+                            <Show when={entry.context}>
+                              <text style={{ fg: theme.overlay1, width: 14, flexShrink: 0 }}>
+                                {entry.context}
+                              </text>
+                            </Show>
+                          </box>
+                          {/* Same mechanism as the option-tab hint: only while the
+                              item list has the keyboard, so browsing sections does
+                              not imply a row is "selected" for action keys. */}
+                          <Show when={active() && props.focus !== "sections"}>
+                            <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
+                              {`   ${keybindHint(entry.name)}`}
                             </text>
                           </Show>
                         </box>
