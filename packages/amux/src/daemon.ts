@@ -57,11 +57,11 @@ import {
 import { DaemonSessions, buildDaemonSessions } from "./daemon-sessions.ts";
 import {
   PluginBehaviour,
-  asHostFailure,
   bindPluginBehaviour,
   runPluginSessionCommand,
   type PluginBehaviourService,
 } from "./plugin-behaviour.ts";
+import { makePublicationGate } from "./plugin-publication-gate.ts";
 import { configPath, loadConfig, type Config } from "./config.ts";
 import { createPluginContributions } from "./plugin/contributions.ts";
 import type { DaemonKernelPhase } from "./daemon-kernel.ts";
@@ -452,7 +452,11 @@ export const makeDaemonService = Effect.fnUntraced(
         : provideRootServices(loadConfig());
 
     const pluginContributions = createPluginContributions();
-    const bindBehaviour = bindPluginBehaviour(pluginHostPublication);
+    const publicationGate = yield* makePublicationGate();
+    const withBoundBehaviour = <A, E, R>(
+      use: (behaviour: PluginBehaviourService) => Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> =>
+      publicationGate.admit(bindPluginBehaviour(pluginHostPublication).pipe(Effect.flatMap(use)));
 
     const activeSaveRef = {
       current: null as Fiber.Fiber<void, WorkspaceTransactionError> | null,
@@ -725,14 +729,26 @@ export const makeDaemonService = Effect.fnUntraced(
             loadGeneration: (client) =>
               readPluginConfig().pipe(
                 Effect.flatMap((pluginConfig) =>
-                  client.Load({
-                    plugins: pluginConfig.plugins,
-                    configDirectory,
-                  }),
-                ),
-                Effect.tap((loaded) =>
-                  Effect.forEach(loaded.failures, (failure) =>
-                    Effect.logWarning(`Could not load plugin '${failure.spec}': ${failure.reason}`),
+                  publicationGate.withPublish(
+                    client.Prepare({
+                      plugins: pluginConfig.plugins,
+                      configDirectory,
+                    }),
+                    (prepared) =>
+                      client.Publish().pipe(
+                        Effect.tap(() =>
+                          Effect.forEach(prepared.failures, (failure) =>
+                            Effect.logWarning(
+                              `Could not load plugin '${failure.spec}': ${failure.reason}`,
+                            ),
+                          ),
+                        ),
+                        Effect.map((published) => ({
+                          declarations: published.declarations,
+                          revision: published.revision,
+                        })),
+                      ),
+                    client.Discard().pipe(Effect.ignore),
                   ),
                 ),
                 Effect.mapError(
@@ -794,12 +810,11 @@ export const makeDaemonService = Effect.fnUntraced(
           // Ask adapters before the spawn loop so a plugin-host socket round
           // trip stays off the claim-order path. Claims still run below in
           // loop order so the first pane wins.
-          const plansBySession = yield* Effect.gen(function* () {
-            const behaviour = yield* bindBehaviour;
-            return yield* collectSessionResumePlans(planCandidates).pipe(
+          const plansBySession = yield* withBoundBehaviour((behaviour) =>
+            collectSessionResumePlans(planCandidates).pipe(
               Effect.provideService(PluginBehaviour, behaviour),
-            );
-          });
+            ),
+          );
           for (const { session: a, pane } of restoreEntries) {
             // Native agent resume: park the plan until a client resize
             // settles geometry. Spawning at persisted cols/rows now would
@@ -1374,10 +1389,8 @@ export const makeDaemonService = Effect.fnUntraced(
       expectedRevision: number,
       context: WorkspaceCommandContext,
     ): Effect.Effect<WorkspaceTransactionResult, DaemonError> =>
-      bindBehaviour.pipe(
-        Effect.flatMap((behaviour) =>
-          runWorkspaceWithBehaviour(value, expectedRevision, context, behaviour),
-        ),
+      withBoundBehaviour((behaviour) =>
+        runWorkspaceWithBehaviour(value, expectedRevision, context, behaviour),
       );
 
     /**
@@ -1476,46 +1489,75 @@ export const makeDaemonService = Effect.fnUntraced(
       context?: WorkspaceCommandRequestContext,
       caller?: { readonly client: string; readonly connection: string },
     ) {
-      const behaviour = yield* bindBehaviour;
       const meta = (COMMAND_META as Record<string, CommandMeta>)[value._tag];
       if (!meta) {
-        const declarations = yield* behaviour.declarations;
-        const registration = declarations.commands.find((entry) => entry.tag === value._tag);
-        if (registration) {
-          if (registration.meta.target === "workspace") {
-            const cur = yield* model.get;
-            const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
-            const output = yield* runWorkspaceWithBehaviour(
-              value,
-              expectedRevision ?? cur.workspace.revision,
-              ctx,
-              behaviour,
-            );
-            if (output.result === undefined) return { workspace: encodeJson(output.snapshot) };
-            return { workspace: encodeJson(output.snapshot), result: output.result };
-          }
-          if (registration.meta.target === "session") {
-            const cur = yield* model.get;
-            const commandContext = {
-              snapshot: structuredClone(cur.workspace),
-            };
-            const result = yield* runPluginSessionCommand(value, commandContext).pipe(
-              Effect.provideService(PluginBehaviour, behaviour),
-              Effect.mapError(
-                (error) =>
-                  new ControlError({
-                    message: error.message,
-                  }),
-              ),
-            );
-            return result === undefined ? {} : { result };
-          }
-          if (registration.meta.target !== "client") {
-            return yield* controlFail(`daemon command '${value._tag}' has no handler`);
-          }
-          // Client-target declaration: fall through to runOnClient below.
-        } else if (!isClientPluginCommandTag(value._tag)) {
-          // Neither core, declared, nor a client-only plugin verb.
+        type PluginRemoteRoute =
+          | {
+              readonly _tag: "done";
+              readonly output: { readonly workspace?: string; readonly result?: JsonValue };
+            }
+          | { readonly _tag: "client" }
+          | { readonly _tag: "unknown" };
+
+        const route: PluginRemoteRoute = yield* withBoundBehaviour((behaviour) =>
+          Effect.gen(function* () {
+            const declarations = yield* behaviour.declarations;
+            const registration = declarations.commands.find((entry) => entry.tag === value._tag);
+            if (registration) {
+              if (registration.meta.target === "workspace") {
+                const cur = yield* model.get;
+                const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+                const output = yield* runWorkspaceWithBehaviour(
+                  value,
+                  expectedRevision ?? cur.workspace.revision,
+                  ctx,
+                  behaviour,
+                );
+                if (output.result === undefined)
+                  return {
+                    _tag: "done",
+                    output: { workspace: encodeJson(output.snapshot) },
+                  } satisfies PluginRemoteRoute;
+                return {
+                  _tag: "done",
+                  output: { workspace: encodeJson(output.snapshot), result: output.result },
+                } satisfies PluginRemoteRoute;
+              }
+              if (registration.meta.target === "session") {
+                const cur = yield* model.get;
+                const commandContext = {
+                  snapshot: structuredClone(cur.workspace),
+                };
+                const result = yield* runPluginSessionCommand(value, commandContext).pipe(
+                  Effect.provideService(PluginBehaviour, behaviour),
+                  Effect.mapError(
+                    (error) =>
+                      new ControlError({
+                        message: error.message,
+                      }),
+                  ),
+                );
+                return {
+                  _tag: "done",
+                  output: result === undefined ? {} : { result },
+                } satisfies PluginRemoteRoute;
+              }
+              if (registration.meta.target !== "client") {
+                return yield* controlFail(`daemon command '${value._tag}' has no handler`);
+              }
+              // Client-target declaration: release admission before runOnClient.
+              return { _tag: "client" } satisfies PluginRemoteRoute;
+            }
+            if (!isClientPluginCommandTag(value._tag)) {
+              // Neither core, declared, nor a client-only plugin verb.
+              return { _tag: "unknown" } satisfies PluginRemoteRoute;
+            }
+            return { _tag: "client" } satisfies PluginRemoteRoute;
+          }),
+        );
+
+        if (route._tag === "done") return route.output;
+        if (route._tag === "unknown") {
           const host = yield* SubscriptionRef.get(pluginHostStatus);
           const hostNote = host.state === "ready" ? "" : ` (plugin host not ready: ${host.state})`;
           return yield* controlFail(`unknown command '${value._tag}'${hostNote}`);
@@ -1630,49 +1672,53 @@ export const makeDaemonService = Effect.fnUntraced(
         return result === undefined ? {} : { result };
       }
       if (meta.target === "workspace") {
-        const cur = yield* model.get;
-        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
-        let workspaceCommand: Command | RuntimeCommand = command;
-        if (command._tag === "process-plugin.pane.open") {
-          const pluginContext = processPluginInvocationContextFromWorkspace({
-            workspace: cur.workspace,
-            commandContext: ctx,
-            invocationSource: "daemon",
-            correlationId: "process-plugin-pane",
-          });
-          const resolved = yield* resolveProcessPluginPane(command.plugin, command.entrypoint, {
-            binPath: fileURLToPath(new URL("./cli.ts", import.meta.url)),
-            controlSocket: paths.socket,
-            processStateSocket: paths.processState,
-            daemonSession: id,
-            context: pluginContext,
-          }).pipe(
-            Effect.provide(BunServices.layer),
-            Effect.mapError((message) => new ControlError({ message })),
-          );
-          workspaceCommand = {
-            ...command,
-            command: [...resolved.argv],
-            env: enrichProcessPluginPaneEnv(resolved.env, {
-              context: pluginContext,
-              controlSocket: paths.socket,
-              processStateSocket: paths.processState,
-              binPath: fileURLToPath(new URL("./cli.ts", import.meta.url)),
-            }),
-            cwd: resolved.cwd,
-            title: resolved.title,
-            placement: resolved.placement,
-            transient: resolved.transient,
-          };
-        }
-        const output = yield* runWorkspaceWithBehaviour(
-          workspaceCommand,
-          expectedRevision ?? cur.workspace.revision,
-          ctx,
-          behaviour,
+        return yield* withBoundBehaviour((behaviour) =>
+          Effect.gen(function* () {
+            const cur = yield* model.get;
+            const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+            let workspaceCommand: Command | RuntimeCommand = command;
+            if (command._tag === "process-plugin.pane.open") {
+              const pluginContext = processPluginInvocationContextFromWorkspace({
+                workspace: cur.workspace,
+                commandContext: ctx,
+                invocationSource: "daemon",
+                correlationId: "process-plugin-pane",
+              });
+              const resolved = yield* resolveProcessPluginPane(command.plugin, command.entrypoint, {
+                binPath: fileURLToPath(new URL("./cli.ts", import.meta.url)),
+                controlSocket: paths.socket,
+                processStateSocket: paths.processState,
+                daemonSession: id,
+                context: pluginContext,
+              }).pipe(
+                Effect.provide(BunServices.layer),
+                Effect.mapError((message) => new ControlError({ message })),
+              );
+              workspaceCommand = {
+                ...command,
+                command: [...resolved.argv],
+                env: enrichProcessPluginPaneEnv(resolved.env, {
+                  context: pluginContext,
+                  controlSocket: paths.socket,
+                  processStateSocket: paths.processState,
+                  binPath: fileURLToPath(new URL("./cli.ts", import.meta.url)),
+                }),
+                cwd: resolved.cwd,
+                title: resolved.title,
+                placement: resolved.placement,
+                transient: resolved.transient,
+              };
+            }
+            const output = yield* runWorkspaceWithBehaviour(
+              workspaceCommand,
+              expectedRevision ?? cur.workspace.revision,
+              ctx,
+              behaviour,
+            );
+            if (output.result === undefined) return { workspace: encodeJson(output.snapshot) };
+            return { workspace: encodeJson(output.snapshot), result: output.result };
+          }),
         );
-        if (output.result === undefined) return { workspace: encodeJson(output.snapshot) };
-        return { workspace: encodeJson(output.snapshot), result: output.result };
       }
       if (meta.target === "buffers") {
         switch (command._tag) {
@@ -1698,16 +1744,27 @@ export const makeDaemonService = Effect.fnUntraced(
               }
               const client = live.value.client;
               const config = yield* readPluginConfig();
-              const loaded = yield* asHostFailure(
-                S.is(ControlError),
-                (message) => new ControlError({ message }),
-                client
-                  .Load({
-                    plugins: config.plugins,
-                    configDirectory,
-                  })
-                  .pipe(Effect.mapError((error) => new ControlError({ message: error.message }))),
-              );
+              const outcome = yield* publicationGate
+                .withPublish(
+                  client
+                    .Prepare({
+                      plugins: config.plugins,
+                      configDirectory,
+                    })
+                    .pipe(Effect.mapError((error) => new ControlError({ message: error.message }))),
+                  (prepared) =>
+                    client.Publish().pipe(
+                      Effect.mapError((error) => new ControlError({ message: error.message })),
+                      Effect.map((published) => ({
+                        published,
+                        failures: prepared.failures,
+                      })),
+                    ),
+                  client.Discard().pipe(Effect.ignore),
+                )
+                .pipe(
+                  Effect.catchTag("PluginPublishTimedOut", (error) => controlFail(error.message)),
+                );
               yield* SubscriptionRef.update(pluginHostPublication, (current) =>
                 Option.match(current, {
                   onNone: () => Option.none(),
@@ -1715,15 +1772,15 @@ export const makeDaemonService = Effect.fnUntraced(
                     publication.client === client
                       ? Option.some({
                           client,
-                          revision: loaded.revision,
-                          declarations: loaded.declarations,
+                          revision: outcome.published.revision,
+                          declarations: outcome.published.declarations,
                         })
                       : current,
                 }),
               );
               if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
               else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
-              return { result: loaded.failures };
+              return { result: outcome.failures };
             }),
           ),
           Match.tag("process-plugin.action.invoke", (invoke) =>
@@ -1838,8 +1895,7 @@ export const makeDaemonService = Effect.fnUntraced(
           }),
         ),
 
-      PluginDeclarations: () =>
-        guard(bindBehaviour.pipe(Effect.flatMap((behaviour) => behaviour.declarations))),
+      PluginDeclarations: () => guard(withBoundBehaviour((behaviour) => behaviour.declarations)),
 
       // The response must be written before shutdown closes the server that is
       // serving this very request, so the stop runs on a detached fiber.

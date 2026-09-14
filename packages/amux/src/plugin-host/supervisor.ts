@@ -36,7 +36,7 @@ import {
   PluginHostError,
   PluginHostRpcs,
   PluginHostSerialization,
-  type PluginHostLoadResult,
+  type PluginHostPublishResult,
   type PluginHostStatus,
 } from "./rpc.ts";
 
@@ -72,7 +72,7 @@ export interface PluginHostSupervisorOptions {
    */
   readonly loadGeneration: (
     client: PluginHostClient,
-  ) => Effect.Effect<PluginHostLoadResult, PluginHostError>;
+  ) => Effect.Effect<PluginHostPublishResult, PluginHostError>;
   /** Override the host argv (tests: hang fixture). Default: this package's CLI. */
   readonly argv?: readonly string[];
   readonly pingIntervalMs?: number;

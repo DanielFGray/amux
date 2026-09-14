@@ -247,10 +247,11 @@ test("behaviour RPC revision must match the host publication over the wire", asy
           const stale = yield* client
             .RunTiling({ revision: 0, algorithmId: "niri", operation: niriInit })
             .pipe(Effect.exit);
-          const loaded = yield* client.Load({
+          yield* client.Prepare({
             plugins: pluginConfig.plugins,
             configDirectory: configHome,
           });
+          const loaded = yield* client.Publish();
           const staleAfterReload = yield* client
             .RunTiling({ revision: 1, algorithmId: "niri", operation: niriInit })
             .pipe(Effect.exit);

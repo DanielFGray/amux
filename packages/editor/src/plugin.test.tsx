@@ -27,6 +27,9 @@ import { makeHighlightProvider, type HighlightProviderService } from "@danielfgr
 import { makeTestEditorIo, type TestEditorIoState } from "./test/io.ts";
 import type { EditorService } from "./api.ts";
 
+const applyHostConfig = (host: PluginHost, entries: Parameters<PluginHost["prepare"]>[0]) =>
+  host.prepare(entries).pipe(Effect.tap(() => host.publish));
+
 const WIDTH = 60;
 const HEIGHT = 16;
 
@@ -107,8 +110,8 @@ const activate = (sent: SentCommand[], seenBindings: string[] = [], lineNumbers 
       registries: { bindings: bindingsOverride },
     });
     const host: PluginHost = yield* createPluginHost(environment);
-    const refused = yield* host.reconcile([...environment.registryEntries, editorPlugin]);
-    expect(refused).toEqual([]);
+    const prepared = yield* applyHostConfig(host, [...environment.registryEntries, editorPlugin]);
+    expect(prepared.refused).toEqual([]);
     // Registration rides a forked activation fiber; wait for its side effect
     // rather than sleeping a fixed beat.
     yield* Effect.promise(() =>

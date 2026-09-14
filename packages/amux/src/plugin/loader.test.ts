@@ -8,8 +8,8 @@ import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
 import { createPluginHost, type PluginHost } from "./host.ts";
 import {
-  loadDaemonPlugins,
   loadPlugins as loadConfiguredPlugins,
+  prepareDaemonPlugins,
   PluginReconcileError,
   type PluginEntry,
 } from "./loader.ts";
@@ -85,6 +85,17 @@ const loadPlugins = (
     [...(registryEntriesByHost.get(host) ?? []), ...entries],
     previous,
     ...(storeDir === undefined ? [] : [storeDir]),
+  );
+
+const loadAndPublishDaemonPlugins = (
+  plugins: Config["plugins"],
+  host: PluginHost,
+  configDir: string,
+) =>
+  prepareDaemonPlugins(plugins, host, configDir).pipe(
+    Effect.tap(() =>
+      host.publish.pipe(Effect.mapError((message) => new PluginReconcileError({ message }))),
+    ),
   );
 
 function baseConfig(overrides: Partial<Config> = {}): Config {
@@ -204,7 +215,7 @@ testEffect("loads a path plugin's daemon entrypoint", () =>
     const config = baseConfig({ plugins: [spec(join(dir, "index.ts"))] });
     const { host } = yield* makeHost();
 
-    yield* loadDaemonPlugins(config.plugins, host, dir);
+    yield* loadAndPublishDaemonPlugins(config.plugins, host, dir);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["daemon-plugin"]);
   }).pipe(Effect.provide(BunFileSystem.layer)),
@@ -235,7 +246,7 @@ testEffect(
       expect(pluginStatuses(clientHost).map((status) => status.id)).toEqual(["client-plugin"]);
 
       const { host: daemonHost } = yield* makeHost();
-      yield* loadDaemonPlugins(config.plugins, daemonHost, dir);
+      yield* loadAndPublishDaemonPlugins(config.plugins, daemonHost, dir);
       expect(pluginStatuses(daemonHost).map((status) => status.id)).toEqual(["daemon-plugin"]);
     }).pipe(Effect.provide(BunFileSystem.layer)),
 );

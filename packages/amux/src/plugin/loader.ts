@@ -23,7 +23,7 @@ export interface PluginEntry {
   readonly definition: PluginDefinition;
 }
 
-/** Host `reconcile` rejected the configuration; the previous one is unchanged. */
+/** Host `prepare`/`publish` rejected the configuration; the previous one is unchanged. */
 export class PluginReconcileError extends S.TaggedError<PluginReconcileError>()(
   "PluginReconcileError",
   { message: S.String },
@@ -153,13 +153,17 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
 
   // One configuration, not a plugin at a time: whether an injected key has any
   // provider is only answerable once every entry has been read, and a provider
-  // listed after its consumer is still a provider.
-  const refused = yield* host
-    .reconcile([...coreEntries, ...enabled])
+  // listed after its consumer is still a provider. Staging only — callers that
+  // need the tables visible must `publish` (or use loadPlugins / loadCliPlugins).
+  const { refused } = yield* host
+    .prepare([...coreEntries, ...enabled])
     .pipe(Effect.mapError((message) => new PluginReconcileError({ message })));
 
   return { entries, recovered: restored.size > 0, refused, failures } satisfies LoadedPlugins;
 });
+
+const publishLoaded = (host: PluginHost) =>
+  host.publish.pipe(Effect.mapError((message) => new PluginReconcileError({ message })));
 
 export const loadPlugins = (
   plugins: readonly PluginSpec[],
@@ -170,11 +174,12 @@ export const loadPlugins = (
   storeDir?: string,
 ) =>
   loadPluginsEffect(plugins, host, configDir, coreEntries, previous, storeDir, ".").pipe(
+    Effect.tap(() => publishLoaded(host)),
     Effect.provide(BunServices.layer),
   );
 
-/** Load only the privileged package export used by a daemon host. */
-export const loadDaemonPlugins = (
+/** Stage daemon plugins without publishing — host Prepare RPC. */
+export const prepareDaemonPlugins = (
   plugins: readonly PluginSpec[],
   host: PluginHost,
   configDir: string,
@@ -198,6 +203,7 @@ export const loadCliPlugins = (
   storeDir?: string,
 ) =>
   loadPluginsEffect(plugins, host, configDir, coreEntries, previous, storeDir, "./cli").pipe(
+    Effect.tap(() => publishLoaded(host)),
     Effect.provide(BunServices.layer),
   );
 

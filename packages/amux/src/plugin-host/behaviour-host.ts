@@ -1,7 +1,7 @@
 /**
  * Plugin-host process ownership of daemon command / tiling / adapter tables
  * and the PluginBehaviour built over them. The daemon reaches this only via
- * PluginHostRpcs (Load + behaviour methods).
+ * PluginHostRpcs (Prepare/Publish/Discard + behaviour methods).
  */
 import { Config, Context, Deferred, Effect, Layer, Option, Ref } from "effect";
 import type { PluginHostLoadInput } from "../config.ts";
@@ -20,7 +20,7 @@ import {
 } from "../plugin-behaviour.ts";
 import { createPluginContributions } from "../plugin/contributions.ts";
 import { createPluginHost } from "../plugin/host.ts";
-import { loadDaemonPlugins, type PluginEntry } from "../plugin/loader.ts";
+import { prepareDaemonPlugins, type PluginEntry } from "../plugin/loader.ts";
 import {
   DaemonCommandsTag,
   scopedRegistry,
@@ -36,7 +36,8 @@ import {
   PluginHostError,
   PluginHostRpcs,
   type PluginHostHandlers,
-  type PluginHostLoadResult,
+  type PluginHostPrepareResult,
+  type PluginHostPublishResult,
 } from "./rpc.ts";
 
 const registryCoreEntries = (
@@ -64,16 +65,18 @@ const registryCoreEntries = (
 
 export type BehaviourHostRuntime = {
   readonly behaviour: PluginBehaviourService;
-  readonly load: (
+  readonly prepare: (
     input: PluginHostLoadInput,
-  ) => Effect.Effect<PluginHostLoadResult, PluginHostError>;
+  ) => Effect.Effect<PluginHostPrepareResult, PluginHostError>;
+  readonly publish: () => Effect.Effect<PluginHostPublishResult, PluginHostError>;
+  readonly discard: () => Effect.Effect<void, PluginHostError>;
   readonly revision: Ref.Ref<PluginPublicationRevision>;
 };
 
 /**
  * Build the host-side tables, PluginHost, DaemonSessions, and behaviour once
  * per process. Missing AMUX_PLUGIN_CAPABILITIES_SOCKET fails as ConfigError.
- * Owns the publication revision Ref: each successful Load increments it.
+ * Owns the publication revision Ref: each successful Publish increments it.
  */
 export const createBehaviourHostRuntime = Effect.gen(function* () {
   const socket = yield* Config.string("AMUX_PLUGIN_CAPABILITIES_SOCKET");
@@ -105,12 +108,15 @@ export const createBehaviourHostRuntime = Effect.gen(function* () {
   );
   const revision = yield* Ref.make<PluginPublicationRevision>(0);
 
-  // Last successful load's entries — a failed Load leaves this alone so the
+  // Last successful prepare's entries — a failed Prepare leaves this alone so the
   // next attempt can keep a working plugin when its edited source will not import.
   let previousEntries: readonly PluginEntry[] = [];
+  let preparedEntries: readonly PluginEntry[] | undefined;
 
-  const load = (input: PluginHostLoadInput): Effect.Effect<PluginHostLoadResult, PluginHostError> =>
-    loadDaemonPlugins(
+  const prepare = (
+    input: PluginHostLoadInput,
+  ): Effect.Effect<PluginHostPrepareResult, PluginHostError> =>
+    prepareDaemonPlugins(
       input.plugins,
       host,
       input.configDirectory,
@@ -118,23 +124,43 @@ export const createBehaviourHostRuntime = Effect.gen(function* () {
       previousEntries,
     ).pipe(
       Effect.mapError((error) => new PluginHostError({ message: errorMessage(error) })),
-      Effect.flatMap((loaded) =>
+      Effect.map((loaded) => {
+        preparedEntries = loaded.entries;
+        return { failures: loaded.failures };
+      }),
+    );
+
+  const publish = (): Effect.Effect<PluginHostPublishResult, PluginHostError> =>
+    host.publish.pipe(
+      Effect.mapError((error) => new PluginHostError({ message: errorMessage(error) })),
+      Effect.flatMap(() =>
         Effect.gen(function* () {
-          previousEntries = loaded.entries;
+          if (preparedEntries !== undefined) {
+            previousEntries = preparedEntries;
+            preparedEntries = undefined;
+          }
           const declarations = yield* behaviour.declarations;
           const next = yield* Ref.updateAndGet(revision, (current) => current + 1);
-          return { declarations, failures: loaded.failures, revision: next };
+          return { declarations, revision: next };
         }),
       ),
     );
 
-  return { behaviour, load, revision };
+  const discard = (): Effect.Effect<void, PluginHostError> =>
+    host.discard.pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          preparedEntries = undefined;
+        }),
+      ),
+    );
+
+  return { behaviour, prepare, publish, discard, revision };
 });
 
 /**
- * Default host handlers: Ping/Stop plus Load and the PluginBehaviour RPCs.
- * RunAction / RunSession use the process-scoped DaemonSessions from runtime.
- * Each behaviour method checks the bound revision against the host Ref.
+ * Default host handlers: Ping/Stop plus Prepare/Publish/Discard and the
+ * PluginBehaviour RPCs. Each behaviour method checks the bound revision.
  */
 export const behaviourPluginHostHandlers = (
   stopped: Deferred.Deferred<void>,
@@ -155,7 +181,9 @@ export const behaviourPluginHostHandlers = (
   return PluginHostRpcs.toLayer({
     Ping: () => Effect.void,
     Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
-    Load: (input) => runtime.load(input),
+    Prepare: (input) => runtime.prepare(input),
+    Publish: () => runtime.publish(),
+    Discard: () => runtime.discard(),
     Reduce: ({ revision: expected, command, context, reads }) =>
       guardRevision(expected, runtime.behaviour.reduce(command, context, reads)),
     CheckDescriptor: ({ revision: expected, type, descriptor }) =>

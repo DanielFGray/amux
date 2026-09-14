@@ -79,7 +79,8 @@ export const startDaemonKernel = Effect.fnUntraced(function* (input: StartDaemon
   const host = yield* createPluginHost({ contributions: input.contributions }).pipe(
     Effect.provideService(Scope.Scope, phaseScope),
   );
-  const phase = yield* host.reconcile([...kernelEntries(input)]).pipe(
+  const phase = yield* host.prepare([...kernelEntries(input)]).pipe(
+    Effect.andThen(host.publish),
     Effect.andThen(host.await(AttachHost)),
     Effect.map((attachHost) => ({
       attachHost,

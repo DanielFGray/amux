@@ -1,5 +1,16 @@
 import { afterEach, expect } from "bun:test";
-import { Effect, Exit, Fiber, Queue, Scope, Schema as S, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Option,
+  Queue,
+  Scope,
+  Schema as S,
+  Stream,
+} from "effect";
 import type { Slots } from "../ui/slots.ts";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
@@ -158,7 +169,7 @@ testEffect("plugin panel run accepts session-target commands", () =>
 testEffect("a host without client services refuses UI plugins", () =>
   Effect.gen(function* () {
     const { host } = yield* makeHost();
-    const refused = yield* host.reconcile([
+    const { refused } = yield* host.prepare([
       mkPlugin({
         id: "ui-plugin",
         inject: [PanelTag],
@@ -184,7 +195,7 @@ testEffect(
       );
       const host = yield* createPluginHost({ contributions });
 
-      const refused = yield* host.reconcile([
+      const { refused } = yield* host.prepare([
         definePlugin({
           id: "amux.registry.cli-commands",
           provide: [CliCommandsTag],
@@ -210,6 +221,7 @@ testEffect(
             ),
         }),
       ]);
+      yield* host.publish;
 
       expect(refused).toEqual([{ id: "ui-plugin", key: PanelTag.key }]);
       expect(table.all().map((entry) => entry.value.name)).toEqual(["my-verb"]);
@@ -325,18 +337,219 @@ testEffect("batch replacement keeps every old plugin when one candidate fails", 
 
     yield* host.add(version("one", "old-one"));
     yield* host.add(version("two", "old-two"));
-    const result = yield* Effect.exit(
-      host.replace([version("one", "new-one"), version("two", "new-two", true)]),
-    );
+    // Failed candidate keeps old; Publish commits the rest.
+    const { refused, failed } = yield* host.prepare([
+      version("one", "new-one"),
+      version("two", "new-two", true),
+    ]);
+    yield* host.publish;
 
-    expect(Exit.isFailure(result)).toBe(true);
+    expect(refused).toEqual([]);
+    expect(failed.map((entry) => entry.id)).toEqual(["two"]);
+    expect(failed[0]?.error.message).toBe("candidate failed");
     expect(
       host
         .status()
-        .map((status) => status.id)
-        .sort(),
-    ).toEqual(["one", "two"]);
+        .map((status) => [status.id, status.phase] as const)
+        .sort(([left], [right]) => left.localeCompare(right)),
+    ).toEqual([
+      ["one", "active"],
+      ["two", "active"],
+    ]);
     expect(active).toEqual(["old-one", "old-two", "new-one"]);
+  }),
+);
+
+// --- Prepare / publish / discard barrier ---
+
+testEffect("after Prepare, contribution lookups still show the committed plugins", () =>
+  Effect.gen(function* () {
+    const { host, sessionViews, registryEntries } = yield* makeHost();
+    const registry = registryProviding(registryEntries, SessionViewsTag);
+    yield* host.add(registry);
+    const view = (id: string, name: string) =>
+      mkPlugin({
+        id,
+        inject: [SessionViewsTag],
+        effect: () =>
+          SessionViewsTag.pipe(
+            Effect.flatMap((views) => views.register([name, () => null])),
+            Effect.asVoid,
+          ),
+      });
+
+    yield* host.add(view("kept", "old-view"));
+    expect(sessionViews.has("old-view")).toBe(true);
+
+    yield* host.prepare([registry, view("kept", "new-view"), view("added", "added-view")]);
+
+    expect(sessionViews.has("old-view")).toBe(true);
+    expect(sessionViews.has("new-view")).toBe(false);
+    expect(sessionViews.has("added-view")).toBe(false);
+    expect(host.definitions().map((definition) => definition.id)).toEqual([
+      "amux.registry.session-views",
+      "kept",
+    ]);
+  }),
+);
+
+testEffect("after Publish, replacements and additions are visible and old runs close", () =>
+  Effect.gen(function* () {
+    const { host, sessionViews, registryEntries } = yield* makeHost();
+    const registry = registryProviding(registryEntries, SessionViewsTag);
+    yield* host.add(registry);
+    const closed: string[] = [];
+    const view = (id: string, name: string) =>
+      mkPlugin({
+        id,
+        inject: [SessionViewsTag],
+        effect: () =>
+          Effect.gen(function* () {
+            const views = yield* SessionViewsTag;
+            yield* views.register([name, () => null]);
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                closed.push(name);
+              }),
+            );
+          }),
+      });
+
+    yield* host.add(view("kept", "old-view"));
+    yield* host.add(view("gone", "gone-view"));
+    yield* host.prepare([registry, view("kept", "new-view"), view("added", "added-view")]);
+    yield* host.publish;
+
+    expect(sessionViews.has("old-view")).toBe(false);
+    expect(sessionViews.has("gone-view")).toBe(false);
+    expect(sessionViews.has("new-view")).toBe(true);
+    expect(sessionViews.has("added-view")).toBe(true);
+    expect(closed.sort()).toEqual(["gone-view", "old-view"]);
+    expect(
+      host
+        .definitions()
+        .map((definition) => definition.id)
+        .filter((id) => !id.startsWith("amux.registry."))
+        .sort(),
+    ).toEqual(["added", "kept"]);
+  }),
+);
+
+testEffect("after Discard, committed plugins stay and candidate finalizers run", () =>
+  Effect.gen(function* () {
+    const { host, sessionViews, registryEntries } = yield* makeHost();
+    const registry = registryProviding(registryEntries, SessionViewsTag);
+    yield* host.add(registry);
+    const closed: string[] = [];
+    const view = (id: string, name: string) =>
+      mkPlugin({
+        id,
+        inject: [SessionViewsTag],
+        effect: () =>
+          Effect.gen(function* () {
+            const views = yield* SessionViewsTag;
+            yield* views.register([name, () => null]);
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                closed.push(name);
+              }),
+            );
+          }),
+      });
+
+    yield* host.add(view("kept", "old-view"));
+    yield* host.prepare([registry, view("kept", "new-view"), view("added", "added-view")]);
+    yield* host.discard;
+
+    expect(sessionViews.has("old-view")).toBe(true);
+    expect(sessionViews.has("new-view")).toBe(false);
+    expect(sessionViews.has("added-view")).toBe(false);
+    expect(closed.sort()).toEqual(["added-view", "new-view"]);
+    expect(host.definitions().map((definition) => definition.id)).toEqual([
+      "amux.registry.session-views",
+      "kept",
+    ]);
+  }),
+);
+
+testEffect("Prepare keeps a failed id on the old run; Publish commits the rest", () =>
+  Effect.gen(function* () {
+    const { host, sessionViews, registryEntries } = yield* makeHost();
+    const registry = registryProviding(registryEntries, SessionViewsTag);
+    yield* host.add(registry);
+    const view = (id: string, name: string, fail = false) =>
+      mkPlugin({
+        id,
+        inject: [SessionViewsTag],
+        effect: () =>
+          Effect.gen(function* () {
+            const views = yield* SessionViewsTag;
+            yield* views.register([name, () => null]);
+            if (fail) return yield* new PluginActivateError({ message: "candidate failed" });
+          }),
+      });
+
+    yield* host.add(view("one", "old-one"));
+    yield* host.add(view("two", "old-two"));
+    // Failed candidate keeps old; Publish commits the rest.
+    yield* host.prepare([registry, view("one", "new-one"), view("two", "new-two", true)]);
+    yield* host.publish;
+
+    expect(sessionViews.has("old-one")).toBe(false);
+    expect(sessionViews.has("new-one")).toBe(true);
+    expect(sessionViews.has("old-two")).toBe(true);
+    expect(sessionViews.has("new-two")).toBe(false);
+    expect(
+      host
+        .status()
+        .filter((status) => status.id === "one" || status.id === "two")
+        .map((status) => [status.id, status.phase] as const)
+        .sort(([left], [right]) => left.localeCompare(right)),
+    ).toEqual([
+      ["one", "active"],
+      ["two", "active"],
+    ]);
+  }),
+);
+
+class StagedNumberTag extends Context.Service<StagedNumberTag, number>()("test/StagedNumber") {}
+
+testEffect("host.get does not see add-candidate services before Publish", () =>
+  Effect.gen(function* () {
+    const { host } = yield* makeHost();
+    const seen: number[] = [];
+    const consumerStarted = yield* Deferred.make<void>();
+
+    yield* host.prepare([
+      definePlugin({
+        id: "number-provider",
+        provide: [StagedNumberTag],
+        effect: (ctx) => Effect.sync(() => void ctx.provide(StagedNumberTag, 7)),
+      }),
+      definePlugin({
+        id: "number-consumer",
+        inject: [StagedNumberTag],
+        effect: () =>
+          StagedNumberTag.pipe(
+            Effect.flatMap((value) =>
+              Effect.gen(function* () {
+                seen.push(value);
+                yield* Deferred.succeed(consumerStarted, undefined);
+              }),
+            ),
+          ),
+      }),
+    ]);
+
+    // Co-prepared injectors may activate on the candidate; host.get stays blind
+    // until Publish commits the generation.
+    expect(host.get(StagedNumberTag)).toEqual(Option.none());
+    yield* Deferred.await(consumerStarted);
+    expect(seen).toEqual([7]);
+    expect(host.get(StagedNumberTag)).toEqual(Option.none());
+
+    yield* host.publish;
+    expect(host.get(StagedNumberTag)).toEqual(Option.some(7));
   }),
 );
 
@@ -534,17 +747,23 @@ testEffect("spawn providers are collision-safe and scoped", () =>
       }),
     );
     expect(host.spawnProvider("test")?.argv).toEqual(["one"]);
-    yield* host.add(
-      mkPlugin({
-        id: "provider-two",
-        inject: [SpawnProvidersTag],
-        effect: () =>
-          SpawnProvidersTag.pipe(
-            Effect.flatMap((providers) => providers.register(["test", () => ({ argv: ["two"] })])),
-            Effect.asVoid,
-          ),
-      }),
-    );
+    expect(
+      yield* Effect.flip(
+        host.add(
+          mkPlugin({
+            id: "provider-two",
+            inject: [SpawnProvidersTag],
+            effect: () =>
+              SpawnProvidersTag.pipe(
+                Effect.flatMap((providers) =>
+                  providers.register(["test", () => ({ argv: ["two"] })]),
+                ),
+                Effect.asVoid,
+              ),
+          }),
+        ),
+      ),
+    ).toBe("'test' is already registered by 'provider-one'");
     expect(host.spawnProvider("test")?.argv).toEqual(["one"]);
     yield* host.remove("provider-one");
     expect(host.spawnProvider("test")).toBeUndefined();
@@ -566,24 +785,32 @@ testEffect("a plugin effect that throws a defect reports the error without crash
     );
     yield* Effect.yieldNow;
 
-    yield* host.add(
-      mkPlugin({
-        id: "crasher",
-        inject: [SlotsTag],
-        effect: () =>
-          Effect.gen(function* () {
-            const slots = yield* SlotsTag;
-            yield* slots.register({
-              slot: "left.app",
-              occupant: { id: "crasher.test", size: () => 20, component: () => null as never },
-            });
-            registered = true;
-            return yield* Effect.sync(() => {
-              throw new Error("boom from plugin");
-            });
+    expect(
+      yield* Effect.flip(
+        host.add(
+          mkPlugin({
+            id: "crasher",
+            inject: [SlotsTag],
+            effect: () =>
+              Effect.gen(function* () {
+                const slots = yield* SlotsTag;
+                yield* slots.register({
+                  slot: "left.app",
+                  occupant: {
+                    id: "crasher.test",
+                    size: () => 20,
+                    component: () => null as never,
+                  },
+                });
+                registered = true;
+                return yield* Effect.sync(() => {
+                  throw new Error("boom from plugin");
+                });
+              }),
           }),
-      }),
-    );
+        ),
+      ),
+    ).toBe("boom from plugin");
     yield* Effect.yieldNow;
 
     const reported = yield* Queue.takeAll(errors);
@@ -636,15 +863,19 @@ testEffect("onError delivers events to subscribers after add/remove", () =>
     yield* Effect.yieldNow;
 
     yield* host.add(mkPlugin({ id: "fine" }));
-    yield* host.add(
-      mkPlugin({
-        id: "broken",
-        effect: () =>
-          Effect.sync(() => {
-            throw new Error("no");
+    expect(
+      yield* Effect.flip(
+        host.add(
+          mkPlugin({
+            id: "broken",
+            effect: () =>
+              Effect.sync(() => {
+                throw new Error("no");
+              }),
           }),
-      }),
-    );
+        ),
+      ),
+    ).toBe("no");
     yield* Effect.yieldNow;
 
     const reported = yield* Queue.takeAll(errors);
@@ -727,15 +958,19 @@ testEffect("defect closes the plugin scope so the id can be re-added", () =>
   Effect.gen(function* () {
     const { host } = yield* makeHost();
 
-    yield* host.add(
-      mkPlugin({
-        id: "defected",
-        effect: () =>
-          Effect.sync(() => {
-            throw new Error("boom");
+    expect(
+      yield* Effect.flip(
+        host.add(
+          mkPlugin({
+            id: "defected",
+            effect: () =>
+              Effect.sync(() => {
+                throw new Error("boom");
+              }),
           }),
-      }),
-    );
+        ),
+      ),
+    ).toBe("boom");
 
     // Re-add must succeed — the defect cleaned up state and scope
     yield* host.add(mkPlugin({ id: "defected" }));
@@ -749,22 +984,26 @@ testEffect("defect closes the plugin scope and runs registered finalizers", () =
     const { host, registryEntries } = yield* makeHost();
     yield* host.add(registryProviding(registryEntries, SlotsTag));
 
-    yield* host.add(
-      mkPlugin({
-        id: "finalize",
-        inject: [SlotsTag],
-        effect: () =>
-          Effect.gen(function* () {
-            const slots = yield* SlotsTag;
-            yield* slots.register({
-              slot: "left.app",
-              occupant: { id: "finalize.test", size: () => 20, component: () => null as never },
-            });
-            yield* Effect.addFinalizer(() => Effect.void);
-            throw new Error("defect after registration");
+    expect(
+      yield* Effect.flip(
+        host.add(
+          mkPlugin({
+            id: "finalize",
+            inject: [SlotsTag],
+            effect: () =>
+              Effect.gen(function* () {
+                const slots = yield* SlotsTag;
+                yield* slots.register({
+                  slot: "left.app",
+                  occupant: { id: "finalize.test", size: () => 20, component: () => null as never },
+                });
+                yield* Effect.addFinalizer(() => Effect.void);
+                throw new Error("defect after registration");
+              }),
           }),
-      }),
-    );
+        ),
+      ),
+    ).toBe("defect after registration");
 
     // Re-add must succeed — scope was closed and finalizers ran
     yield* host.add(mkPlugin({ id: "finalize" }));

@@ -43,28 +43,25 @@ export type {
 
 export interface PluginHost {
   /**
-   * Make `entries` the whole configuration, and report the entries it refused.
+   * Stage `entries` as the next configuration without committing contributions.
+   * A second Prepare discards the previous pending change first.
    *
-   * Whether an injected key can ever have a provider is a property of the set,
-   * not of any one entry: a provider may be the next entry in the list. So the
-   * set is what the host takes, and `add` and `remove` are the set plus or
-   * minus one. Order within it carries no meaning.
-   *
-   * The change that creates an unsatisfiable injection is the change refused.
-   * An entry that arrives injecting a key nothing in the configuration provides
-   * is dropped — the rest still load, so one broken plugin does not cost the
-   * user every other one. Dropping an entry that a retained entry depends on is
-   * refused whole, leaving the configuration untouched, because the entry that
-   * would be stranded did nothing wrong. This is what makes a service that
-   * something injects replaceable but not removable, with no flag saying so.
+   * Satisfiability matches the old whole-configuration rule: an entry that
+   * injects a key nothing in the set provides is dropped and reported; dropping
+   * a provider a retained entry still injects refuses the whole Prepare.
+   * Candidates activate beside the running plugins; declarations stay on the
+   * committed tables until {@link publish}.
    */
-  readonly reconcile: (
-    entries: readonly PluginDefinition[],
-  ) => Effect.Effect<readonly RefusedPlugin[], string>;
+  readonly prepare: (entries: readonly PluginDefinition[]) => Effect.Effect<PrepareResult, string>;
+  /**
+   * Commit the pending Prepare in one step: contributions, desired, removals.
+   * Fails when nothing is pending.
+   */
+  readonly publish: Effect.Effect<void, string>;
+  /** Close pending candidates; running plugins stay. No-op when nothing pending. */
+  readonly discard: Effect.Effect<void>;
   /** Add a plugin to the configuration, replacing any entry under its id. */
   readonly add: (plugin: PluginDefinition) => Effect.Effect<void, string>;
-  /** Replace active entries as one commit-or-rollback generation. */
-  readonly replace: (plugins: readonly PluginDefinition[]) => Effect.Effect<void, string>;
   /** Drop a plugin from the configuration. Fails if something still injects it. */
   readonly remove: (id: string) => Effect.Effect<void, string>;
   readonly onError: Stream.Stream<PluginErrorEvent>;
@@ -83,6 +80,8 @@ export interface PluginHost {
   /** The derived context for one realm — see {@link PluginServices.realmContext}. */
   readonly realmContext: PluginServices["realmContext"];
   readonly status: () => readonly PluginStatus[];
+  /** Committed configuration definitions (excludes host-owned consumers). */
+  readonly definitions: () => readonly PluginDefinition[];
   /** The committed instance number, used to reject stale renderer errors. */
   readonly generation: (id: string) => number | undefined;
   readonly spawnProvider: (id: string) => SpawnProvider | undefined;
@@ -93,6 +92,37 @@ export interface PluginHost {
 export interface RefusedPlugin {
   readonly id: string;
   readonly key: string;
+}
+
+/** A candidate Prepare started whose activate failed before Publish. */
+export interface FailedPluginStart {
+  readonly id: string;
+  readonly error: Error;
+}
+
+/** Staging outcome: unsatisfiable drops plus activate failures in the batch. */
+export interface PrepareResult {
+  readonly refused: readonly RefusedPlugin[];
+  readonly failed: readonly FailedPluginStart[];
+}
+
+/**
+ * Plugins whose `inject` declarations name a key in `provider.provide`.
+ * Used when the provider is still the live slot holder — `services.dependentsOf`
+ * only lists injectors whose committed view is already stale after a replace.
+ */
+export function declarationDependentsOf(
+  provider: PluginDefinition,
+  plugins: readonly PluginDefinition[],
+): readonly string[] {
+  const provided = new Set((provider.provide ?? []).map((tag) => tag.key));
+  if (provided.size === 0) return [];
+  return plugins
+    .filter((candidate) => candidate.id !== provider.id)
+    .filter((candidate) =>
+      (candidate.inject ?? []).map(dependencyService).some((tag) => provided.has(tag.key)),
+    )
+    .map((candidate) => candidate.id);
 }
 
 /** Add, remove and re-gate call one another around the dependency graph, so
@@ -135,11 +165,18 @@ interface FailedAttempt {
  * honest to pass. Capabilities are services now, so a host publishes the ones
  * its process actually has and a plugin injects what it needs. One that injects
  * a capability nobody provides is left inactive and reported, which is the same
- * answer `reconcile` already gives for every other unsatisfiable injection.
+ * answer `prepare` already gives for every other unsatisfiable injection.
  */
 export interface PluginEnvironment {
   readonly contributions: PluginContributions;
   readonly consumers?: readonly PluginConsumer[];
+}
+
+interface PendingPublication {
+  /** Configuration to hold after publish, excluding host-owned consumers. */
+  readonly desired: Map<string, PluginDefinition>;
+  readonly removals: ReadonlySet<string>;
+  readonly batch: ReplacementBatch;
 }
 
 export function createPluginHost(
@@ -163,9 +200,27 @@ export function createPluginHost(
       inject: consumer.inject,
       activate: (_context, provided) => consumer.activate(provided),
     }));
-    const services = yield* createPluginServices(env.contributions, (key) => {
-      Queue.offerUnsafe(serviceChangeQueue, key);
-    });
+    let pending: PendingPublication | undefined;
+    const services = yield* createPluginServices(
+      env.contributions,
+      (owner, reader) => {
+        if (env.contributions.isCommitted(owner)) return true;
+        // Add-candidate: only injectors in the same pending batch may read it.
+        // host.get / committed slot.provider pass no reader and stay blind.
+        if (reader === undefined) return false;
+        const candidate = candidates.get(owner.id);
+        if (candidate?.instance !== owner || activePlugins.has(owner.id)) return false;
+        const readerState = candidates.get(reader.id);
+        return (
+          readerState?.instance === reader &&
+          readerState.batch !== undefined &&
+          readerState.batch === candidate.batch
+        );
+      },
+      (key) => {
+        Queue.offerUnsafe(serviceChangeQueue, key);
+      },
+    );
     const hostScope = yield* Scope.make();
     let disposed = false;
 
@@ -217,10 +272,10 @@ export function createPluginHost(
       batch?: ReplacementBatch,
     ) {
       if (disposed) return yield* Effect.fail("Plugin host is disposed");
-      const pending = candidates.get(plugin.id);
-      if (pending) {
+      const pendingCandidate = candidates.get(plugin.id);
+      if (pendingCandidate) {
         candidates.delete(plugin.id);
-        yield* closeRun(pending, "superseded");
+        yield* closeRun(pendingCandidate, "superseded");
       }
       failures.delete(plugin.id);
       const generation = (generations.get(plugin.id) ?? -1) + 1;
@@ -228,7 +283,8 @@ export function createPluginHost(
       const instance: PluginInstance = { id: plugin.id, generation };
       const previous = activePlugins.get(plugin.id);
       const injected = plugin.inject ?? [];
-      if (!previous) env.contributions.commit(instance);
+      // Immediate commit only for a live add outside Prepare: staged work commits at publish.
+      if (!previous && !batch) env.contributions.commit(instance);
       services.declare(instance, injected);
       const pluginScope = yield* Scope.fork(hostScope, "sequential");
       const context = makeContext(instance, pluginScope, plugin.provide ?? []);
@@ -264,9 +320,11 @@ export function createPluginHost(
         batch,
         reactivate: Effect.suspend(() => addPlugin(plugin)).pipe(Effect.asVoid),
       };
-      if (previous) candidates.set(plugin.id, state);
+      if (previous || batch) candidates.set(plugin.id, state);
       else activePlugins.set(plugin.id, state);
       yield* Effect.yieldNow;
+      // Only replacements must settle before Prepare returns: a first-load
+      // activate may run forever (provide then await), same as reconcile's adds.
       return previous ? result : undefined;
     });
 
@@ -355,12 +413,14 @@ export function createPluginHost(
       env.contributions.retire(state.instance);
 
       // Dependents unwind first, one level at a time, so each of them finishes
-      // while the services it holds are still the ones it acquired. Then they
-      // go back to waiting rather than staying stopped: a provider that leaves
-      // is usually a provider being replaced, and a dependent that did not come
-      // back would be a plugin silently lost to a reload.
+      // while the services it holds are still the ones it acquired.
+      const declarationDependents = declarationDependentsOf(
+        state.definition,
+        [...activePlugins.values()].map((candidate) => candidate.definition),
+      );
+
       const regated: Effect.Effect<void>[] = [];
-      for (const dependent of services.dependentsOf(state.instance)) {
+      for (const dependent of declarationDependents) {
         const dependentState = activePlugins.get(dependent);
         if (!dependentState) continue;
         regated.push(dependentState.reactivate.pipe(Effect.ignore));
@@ -383,10 +443,19 @@ export function createPluginHost(
      */
     const desired = new Map<string, PluginDefinition>();
 
-    const reconcile = Effect.fnUntraced(function* (
-      entries: readonly PluginDefinition[],
-      retry: (id: string) => boolean,
-    ) {
+    const discardPending = Effect.fnUntraced(function* () {
+      if (!pending) return;
+      const ids = pending.batch.ids;
+      pending = undefined;
+      for (const id of ids) {
+        const candidate = candidates.get(id);
+        if (!candidate) continue;
+        candidates.delete(id);
+        yield* closeRun(candidate, "pending publication was discarded");
+      }
+    });
+
+    const admitEntries = Effect.fnUntraced(function* (entries: readonly PluginDefinition[]) {
       if (disposed) return yield* Effect.fail("Plugin host is disposed");
       if (entries.some((entry) => consumerIds.has(entry.id)))
         return yield* Effect.fail("a plugin id collides with a host-owned consumer");
@@ -395,8 +464,6 @@ export function createPluginHost(
       );
       const refused: RefusedPlugin[] = [];
 
-      // Dropping one entry can strand the next, so this settles rather than
-      // running a single pass.
       for (;;) {
         const provided = new Set<string>();
         for (const entry of admitted.values())
@@ -410,9 +477,6 @@ export function createPluginHost(
         });
         if (stranded.length === 0) break;
 
-        // An entry the configuration already held, unchanged, cannot have
-        // stranded itself: what changed is that its provider is leaving. So the
-        // departure is what gets refused, and nothing has been applied yet.
         const casualty = stranded.find(({ entry }) => desired.get(entry.id) === entry);
         if (casualty)
           return yield* Effect.fail(
@@ -431,37 +495,44 @@ export function createPluginHost(
         }
       }
 
-      for (const id of [...desired.keys()]) {
+      return { admitted, refused } as const;
+    });
+
+    const stagePrepare = Effect.fnUntraced(function* (
+      entries: readonly PluginDefinition[],
+      retry: (id: string) => boolean,
+    ) {
+      yield* discardPending();
+      const { admitted, refused } = yield* admitEntries(entries);
+
+      const removals = new Set<string>();
+      for (const id of desired.keys()) {
         if (consumerIds.has(id)) continue;
         if (admitted.has(id)) continue;
-        desired.delete(id);
-        failures.delete(id);
-        const candidate = candidates.get(id);
-        if (candidate) {
-          candidates.delete(id);
-          yield* closeRun(candidate, "was removed");
-        }
-        yield* removePlugin(id);
+        removals.add(id);
       }
-      // A plugin whose activation threw is reported and unloaded by `addPlugin`
-      // itself; the failure it returns is the replacement case, where the
-      // version that was already running was kept. Reported once the whole
-      // configuration is applied, so one bad entry does not strand the rest.
-      let startFailure: string | undefined;
-      const replacements: Deferred.Deferred<void, string>[] = [];
+
+      const toStart: PluginDefinition[] = [];
       for (const entry of admitted.values()) {
         if (desired.get(entry.id) === entry && !(failures.has(entry.id) && retry(entry.id)))
           continue;
-        yield* addPlugin(entry).pipe(
-          Effect.tap((result) =>
-            Effect.sync(() => {
-              desired.set(entry.id, entry);
-              if (result) replacements.push(result);
-            }),
-          ),
-          Effect.catch((error) => Effect.sync(() => void (startFailure ??= error))),
-        );
+        toStart.push(entry);
       }
+
+      const batch: ReplacementBatch = { ids: new Set(toStart.map((entry) => entry.id)) };
+      // Consumers stay in desired so a replaced provider can re-gate them; status
+      // and definitions still filter them out of the public surface.
+      const nextDesired = new Map(admitted);
+
+      const results: Deferred.Deferred<void, string>[] = [];
+      for (const entry of toStart) {
+        const result = yield* addPlugin(entry, batch);
+        if (result) results.push(result);
+      }
+
+      // Pending is recorded before activations finish so Discard/second Prepare
+      // can find the batch; failed candidates are pruned after await below.
+      pending = { desired: nextDesired, removals, batch };
 
       for (const { id, key } of refused)
         emitError({
@@ -474,13 +545,170 @@ export function createPluginHost(
           ),
           timestamp: yield* Clock.currentTimeMillis,
         });
-      if (startFailure) return yield* Effect.fail(startFailure);
-      return { refused: refused as readonly RefusedPlugin[], replacements };
+
+      return { refused, results, batch };
+    });
+
+    const finalizePrepare = () => {
+      if (!pending) return;
+      const { desired: nextDesired, batch } = pending;
+      for (const id of batch.ids) {
+        if (candidates.has(id)) continue;
+        const prior = desired.get(id);
+        if (prior) nextDesired.set(id, prior);
+        else nextDesired.delete(id);
+      }
+    };
+
+    const runPrepare = (
+      entries: readonly PluginDefinition[],
+      retry: (id: string) => boolean,
+    ): Effect.Effect<PrepareResult, string> =>
+      submit(Effect.suspend(() => stagePrepare(entries, retry))).pipe(
+        Effect.flatMap(({ refused, results, batch }) =>
+          Effect.gen(function* () {
+            // Flush finishActivation; then await every candidate the way replace did —
+            // a parked activate must keep Prepare open so Publish cannot commit it.
+            yield* submit(Effect.void);
+            for (const result of results) yield* Deferred.await(result).pipe(Effect.ignore);
+            yield* submit(Effect.sync(finalizePrepare));
+            const failed: FailedPluginStart[] = [];
+            for (const id of batch.ids) {
+              const attempt = failures.get(id);
+              if (attempt) failed.push({ id, error: attempt.error });
+            }
+            return { refused, failed };
+          }),
+        ),
+      );
+
+    const publishPending = Effect.fnUntraced(function* () {
+      if (disposed) return yield* Effect.fail("Plugin host is disposed");
+      if (!pending) return yield* Effect.fail("nothing pending to publish");
+      const change = pending;
+      const staged: PluginState[] = [];
+      for (const id of change.batch.ids) {
+        const candidate = candidates.get(id);
+        if (!candidate) continue;
+        // Replacements must finish activate before commit; first-load candidates
+        // commit while waiting/starting the way reconcile committed adds.
+        if (activePlugins.has(id) && candidate.phase !== "active")
+          return yield* Effect.fail(`plugin '${id}' is not ready to publish`);
+        staged.push(candidate);
+      }
+
+      if (staged.length > 0) {
+        const conflicts = env.contributions.commitAll(staged.map((state) => state.instance));
+        if (conflicts.length > 0)
+          return yield* Effect.fail(`publication conflicts: ${conflicts.join(", ")}`);
+      }
+
+      const publishedIds = new Set(staged.map((state) => state.instance.id));
+      const previousRuns: PluginState[] = [];
+      for (const state of staged) {
+        const previous = activePlugins.get(state.instance.id);
+        candidates.delete(state.instance.id);
+        activePlugins.set(state.instance.id, state);
+        if (previous) previousRuns.push(previous);
+      }
+
+      // Leaf-first: dependents unwind while the provider they hold is still open.
+      // Same declaration walk as removePlugin — dependentsOf only sees stale views.
+      const regateIds = new Set<string>();
+      for (const previous of previousRuns) {
+        for (const dependent of declarationDependentsOf(
+          previous.definition,
+          [...activePlugins.values()].map((state) => state.definition),
+        )) {
+          if (publishedIds.has(dependent) || change.removals.has(dependent)) continue;
+          regateIds.add(dependent);
+        }
+      }
+
+      // Leaf-first: dependents unwind while the provider they hold is still open.
+      for (const id of regateIds) {
+        const dependentState = activePlugins.get(id);
+        if (!dependentState) continue;
+        activePlugins.delete(id);
+        yield* closeRun(dependentState, "provider changed");
+      }
+      for (const previous of previousRuns) yield* closeRun(previous, "was replaced");
+
+      // Removals close declaration-dependents before the removed plugin.
+      // dependentsOf only sees stale-after-replace; this walk uses provide/inject
+      // while the provider is still the live slot holder.
+      const declarationDependents = (id: string): readonly string[] => {
+        const state = activePlugins.get(id);
+        if (!state) return [];
+        return declarationDependentsOf(
+          state.definition,
+          [...activePlugins.values()].map((candidate) => candidate.definition),
+        );
+      };
+
+      const removalOrder: string[] = [];
+      const removalPending = new Set(change.removals);
+      while (removalPending.size > 0) {
+        let progressed = false;
+        for (const id of [...removalPending]) {
+          const state = activePlugins.get(id);
+          if (!state) {
+            removalPending.delete(id);
+            progressed = true;
+            continue;
+          }
+          const blocked = declarationDependents(id).some(
+            (dependent) => removalPending.has(dependent) && activePlugins.has(dependent),
+          );
+          if (blocked) continue;
+          removalOrder.push(id);
+          removalPending.delete(id);
+          progressed = true;
+        }
+        if (!progressed) {
+          for (const id of removalPending) removalOrder.push(id);
+          break;
+        }
+      }
+
+      for (const id of removalOrder) {
+        failures.delete(id);
+        const candidate = candidates.get(id);
+        if (candidate) {
+          candidates.delete(id);
+          yield* closeRun(candidate, "was removed");
+        }
+        const state = activePlugins.get(id);
+        if (!state) continue;
+        // Close declaration dependents that are staying (not in this removal set)
+        // before the provider, then queue them for re-gate.
+        for (const dependent of declarationDependents(id)) {
+          if (publishedIds.has(dependent) || change.removals.has(dependent)) continue;
+          regateIds.add(dependent);
+          const dependentState = activePlugins.get(dependent);
+          if (!dependentState) continue;
+          activePlugins.delete(dependent);
+          yield* closeRun(dependentState, "provider changed");
+        }
+        activePlugins.delete(id);
+        yield* closeRun(state, "was removed");
+      }
+
+      desired.clear();
+      for (const [id, entry] of change.desired) desired.set(id, entry);
+      pending = undefined;
+
+      for (const id of regateIds) {
+        const definition = desired.get(id);
+        if (!definition) continue;
+        yield* addPlugin(definition).pipe(Effect.ignore);
+      }
     });
 
     const disposeAll = Effect.fnUntraced(function* () {
       if (disposed) return;
       disposed = true;
+      pending = undefined;
       for (const candidate of candidates.values()) yield* closeRun(candidate, "host was disposed");
       candidates.clear();
       // Plugin by plugin rather than one scope close, so dependents still
@@ -524,70 +752,23 @@ export function createPluginHost(
       entries: () => readonly PluginDefinition[],
       retry: (id: string) => boolean,
     ) =>
-      submit(Effect.suspend(() => reconcile(entries(), retry))).pipe(
-        Effect.flatMap(({ refused, replacements }) =>
-          Effect.gen(function* () {
-            // Flush completion events from immediate activations before returning.
-            yield* submit(Effect.void);
-            for (const result of replacements) yield* Deferred.await(result);
-            return refused;
-          }),
-        ),
-      );
-
-    const replace = Effect.fnUntraced(function* (plugins: readonly PluginDefinition[]) {
-      const ids = new Set(plugins.map((plugin) => plugin.id));
-      if (ids.size !== plugins.length)
-        return yield* Effect.fail("replacement contains duplicate plugin ids");
-      if ([...ids].some((id) => !activePlugins.has(id)))
-        return yield* Effect.fail("replacement names a plugin that is not active");
-      const batch: ReplacementBatch = { ids };
-      const results = yield* submit(
-        Effect.forEach(plugins, (plugin) => addPlugin(plugin, batch)).pipe(
-          Effect.map((values) =>
-            values.filter((value): value is Deferred.Deferred<void, string> => !!value),
+      runPrepare(entries(), retry).pipe(
+        Effect.flatMap((prepared) =>
+          submit(publishPending()).pipe(
+            Effect.map(() => prepared),
+            Effect.catch((error) =>
+              submit(Effect.suspend(() => discardPending())).pipe(
+                Effect.andThen(Effect.fail(error)),
+              ),
+            ),
           ),
         ),
       );
-      yield* submit(Effect.void);
-      const settled = yield* Effect.exit(Effect.all(results.map(Deferred.await)));
-      if (Exit.isFailure(settled)) {
-        yield* submit(
-          Effect.forEach(ids, (id) => {
-            const candidate = candidates.get(id);
-            if (!candidate) return Effect.void;
-            candidates.delete(id);
-            return closeRun(
-              candidate,
-              "batch replacement failed; kept the version that was running",
-            );
-          }),
-        );
-        return yield* Effect.fail(String(Cause.squash(settled.cause)));
-      }
-      yield* submit(
-        Effect.gen(function* () {
-          const next = [...ids].map((id) => candidates.get(id)!);
-          const conflicts = env.contributions.commitAll(next.map((state) => state.instance));
-          if (conflicts.length > 0)
-            return yield* Effect.fail(`replacement conflicts: ${conflicts.join(", ")}`);
-          for (const state of next) {
-            const previous = activePlugins.get(state.instance.id)!;
-            candidates.delete(state.instance.id);
-            activePlugins.set(state.instance.id, state);
-            desired.set(state.instance.id, state.definition);
-            yield* closeRun(previous, "was replaced");
-          }
-        }),
-      );
-    });
 
     return {
-      reconcile: (entries) =>
-        configure(
-          () => entries,
-          () => true,
-        ),
+      prepare: (entries) => runPrepare(entries, () => true),
+      publish: submit(Effect.suspend(() => publishPending())).pipe(Effect.asVoid),
+      discard: submit(Effect.suspend(() => discardPending())),
       add: (plugin) =>
         configure(
           () => [
@@ -596,16 +777,17 @@ export function createPluginHost(
           ],
           (id) => id === plugin.id,
         ).pipe(
-          Effect.flatMap((refused) => {
-            const rejection = refused.find((r) => r.id === plugin.id);
-            return rejection
-              ? Effect.fail(
-                  `plugin '${plugin.id}' injects '${rejection.key}', which nothing in the configuration provides`,
-                )
-              : Effect.void;
+          Effect.flatMap((prepared) => {
+            const rejection = prepared.refused.find((r) => r.id === plugin.id);
+            if (rejection)
+              return Effect.fail(
+                `plugin '${plugin.id}' injects '${rejection.key}', which nothing in the configuration provides`,
+              );
+            const startFailure = prepared.failed.find((entry) => entry.id === plugin.id);
+            if (startFailure) return Effect.fail(startFailure.error.message);
+            return Effect.void;
           }),
         ),
-      replace,
       remove: (id) =>
         configure(
           () =>
@@ -646,6 +828,10 @@ export function createPluginHost(
             return status;
           });
       },
+      definitions: () =>
+        disposed
+          ? []
+          : [...desired.entries()].filter(([id]) => !consumerIds.has(id)).map(([, entry]) => entry),
       generation: (id) => activePlugins.get(id)?.instance.generation,
       spawnProvider: (id) => Option.getOrUndefined(services.get(SpawnProvidersTag))?.get(id),
       dispose: Effect.suspend(() => submit(disposeAll())),

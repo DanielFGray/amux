@@ -28,7 +28,12 @@ import type {
   WorkspaceReducerAnswer,
 } from "../workspace-changes.ts";
 import type { WorkspaceCommandContext } from "../workspace.ts";
-import type { PluginHostError, PluginHostLoadResult, PluginHostRpcs } from "./rpc.ts";
+import type {
+  PluginHostError,
+  PluginHostPrepareResult,
+  PluginHostPublishResult,
+  PluginHostRpcs,
+} from "./rpc.ts";
 
 export type PluginHostClient = RpcClient.RpcClient<
   RpcGroup.Rpcs<typeof PluginHostRpcs>,
@@ -38,8 +43,8 @@ export type PluginHostClient = RpcClient.RpcClient<
 /**
  * Methods a publication binding and the daemon may invoke on the live host
  * client. Hand-written so plain test doubles satisfy it; the real RPC client
- * is assignable at call sites. Includes Load/Stop for reload and generation
- * teardown (supervisor).
+ * is assignable at call sites. Includes Prepare/Publish/Discard/Stop for reload
+ * and generation teardown (supervisor).
  */
 export type PluginHostBehaviourCalls = {
   readonly Reduce: (payload: {
@@ -84,9 +89,11 @@ export type PluginHostBehaviourCalls = {
     Option.Option<AgentResumePlan>,
     ForeignHarnessPlanResumeError | PluginPublicationChanged | RpcClientError
   >;
-  readonly Load: (
+  readonly Prepare: (
     input: PluginHostLoadInput,
-  ) => Effect.Effect<PluginHostLoadResult, PluginHostError | RpcClientError>;
+  ) => Effect.Effect<PluginHostPrepareResult, PluginHostError | RpcClientError>;
+  readonly Publish: () => Effect.Effect<PluginHostPublishResult, PluginHostError | RpcClientError>;
+  readonly Discard: () => Effect.Effect<void, PluginHostError | RpcClientError>;
   readonly Stop: () => Effect.Effect<void, PluginHostError | RpcClientError>;
 };
 

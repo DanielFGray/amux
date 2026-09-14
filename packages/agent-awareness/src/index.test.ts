@@ -60,7 +60,9 @@ test("agentAwarenessPlugin publishes presence matching resolvePresence for the s
   Effect.gen(function* () {
     const environment: PluginEnvironment = { contributions: createPluginContributions() };
     const host = yield* createPluginHost(environment);
-    yield* Effect.orDie(host.reconcile([noopHostServices, agentAwarenessPlugin]));
+    yield* Effect.orDie(
+      host.prepare([noopHostServices, agentAwarenessPlugin]).pipe(Effect.tap(() => host.publish)),
+    );
     const awareness = Option.getOrThrow(host.get(AgentAwarenessTag));
     const expected = resolvePresence(
       yield* bundledRegistry,

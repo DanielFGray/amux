@@ -3,8 +3,8 @@
  * beside the daemon's control socket (`SessionPaths.pluginHost`).
  *
  * Same machinery as ControlRpcs. Behaviour methods mirror PluginBehaviourService;
- * Load reconciles user `./daemon` plugins. The host is never the PTY owner — a
- * host crash leaves sessions untouched.
+ * Prepare/Publish/Discard stage and commit user `./daemon` plugins. The host is
+ * never the PTY owner — a host crash leaves sessions untouched.
  */
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
@@ -52,21 +52,34 @@ export const PluginHostStatusSchema = S.Struct({
 });
 export type PluginHostStatus = typeof PluginHostStatusSchema.Type;
 
-/** Declarations plus every enabled spec that failed to import or pass compat. */
-export const PluginHostLoadResultSchema = S.Struct({
-  declarations: PluginDeclarationsSchema,
+/** Failures from importing specs during Prepare. Declarations stay on Publish. */
+export const PluginHostPrepareResultSchema = S.Struct({
   failures: S.Array(PluginLoadFailureSchema),
-  /** Host-assigned publication id; increases on each successful Load in that process. */
+});
+export type PluginHostPrepareResult = typeof PluginHostPrepareResultSchema.Type;
+
+/** Committed publication after Publish. */
+export const PluginHostPublishResultSchema = S.Struct({
+  declarations: PluginDeclarationsSchema,
+  /** Host-assigned publication id; increases on each successful Publish in that process. */
   revision: PluginPublicationRevisionSchema,
 });
-export type PluginHostLoadResult = typeof PluginHostLoadResultSchema.Type;
+export type PluginHostPublishResult = typeof PluginHostPublishResultSchema.Type;
 
 export class PluginHostRpcs extends RpcGroup.make(
   Rpc.make("Ping", { success: S.Void, error: PluginHostError }),
   Rpc.make("Stop", { success: S.Void, error: PluginHostError }),
-  Rpc.make("Load", {
+  Rpc.make("Prepare", {
     payload: PluginHostLoadInputSchema,
-    success: PluginHostLoadResultSchema,
+    success: PluginHostPrepareResultSchema,
+    error: PluginHostError,
+  }),
+  Rpc.make("Publish", {
+    success: PluginHostPublishResultSchema,
+    error: PluginHostError,
+  }),
+  Rpc.make("Discard", {
+    success: S.Void,
     error: PluginHostError,
   }),
   Rpc.make("Reduce", {

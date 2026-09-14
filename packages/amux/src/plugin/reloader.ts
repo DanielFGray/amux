@@ -170,7 +170,18 @@ export const createReloader = (
           Effect.mapError((error) => `classify: plugin '${ids[index]}' was not reloaded: ${error}`),
         ),
       );
-      yield* host.replace(next).pipe(Effect.mapError((error) => `activate: ${error}`));
+      const replaced = new Map(next.map((definition) => [definition.id, definition] as const));
+      const prepared = yield* host
+        .prepare(host.definitions().map((definition) => replaced.get(definition.id) ?? definition))
+        .pipe(Effect.mapError((error) => `activate: ${error}`));
+      const notReady = ids.find((id) => prepared.failed.some((entry) => entry.id === id));
+      if (notReady !== undefined) {
+        yield* host.discard;
+        return yield* Effect.fail(
+          `activate: plugin '${notReady}' failed to start; kept the version that was running`,
+        );
+      }
+      yield* host.publish.pipe(Effect.mapError((error) => `activate: ${error}`));
       for (const [index, definition] of next.entries()) {
         const [id, plugin] = current[index]!;
         lastGood.set(id, plugin!);
@@ -211,7 +222,14 @@ export const createReloader = (
     const previous = ids.map((id) => [id, lastGood.get(id)] as const);
     if (previous.some(([, plugin]) => !plugin)) return;
     rollingBack.add(event.pluginId);
-    yield* host.replace(previous.map(([, plugin]) => plugin!.definition)).pipe(Effect.ignore);
+    const previousDefs = previous.map(([, plugin]) => plugin!.definition);
+    const replaced = new Map(
+      previousDefs.map((definition) => [definition.id, definition] as const),
+    );
+    yield* host
+      .prepare(host.definitions().map((definition) => replaced.get(definition.id) ?? definition))
+      .pipe(Effect.ignore);
+    yield* host.publish.pipe(Effect.ignore);
     for (const [id, plugin] of previous) running.set(id, plugin!);
     for (const id of ids) {
       renderFaults.delete(id);

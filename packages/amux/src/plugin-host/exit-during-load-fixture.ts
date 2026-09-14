@@ -10,19 +10,22 @@ import { PluginBehaviourError } from "../plugin-behaviour.ts";
 import { TilingAlgorithmError } from "../tiling-algorithm.ts";
 import { PluginReducerError } from "../workspace-changes.ts";
 import { runPluginHostMain, type PluginHostHandlerFactory } from "./main.ts";
-import { PluginHostRpcs } from "./rpc.ts";
+import { PluginHostError, PluginHostRpcs } from "./rpc.ts";
 
 const exitDuringLoadHandlers: PluginHostHandlerFactory = (stopped) =>
   Effect.succeed(
     PluginHostRpcs.toLayer({
       Ping: () => Effect.void,
       Stop: () => Effect.forkDetach(Deferred.succeed(stopped, undefined)).pipe(Effect.asVoid),
-      Load: () =>
+      Prepare: () =>
         Effect.forkDetach(
           Effect.sync(() => {
             process.exit(1);
           }),
         ).pipe(Effect.andThen(Effect.never)),
+      Publish: () =>
+        Effect.fail(new PluginHostError({ message: "exit-during-load fixture never publishes" })),
+      Discard: () => Effect.void,
       Reduce: () =>
         Effect.fail(
           new PluginReducerError({ message: "exit-during-load fixture has no reducers" }),

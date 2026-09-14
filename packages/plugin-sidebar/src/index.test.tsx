@@ -28,6 +28,9 @@ import {
   type AgentPresence,
 } from "@danielfgray/amux-agent-awareness/presence.ts";
 
+const applyHostConfig = (host: PluginHost, entries: Parameters<PluginHost["prepare"]>[0]) =>
+  host.prepare(entries).pipe(Effect.tap(() => host.publish));
+
 test("format strings can choose the command or OSC title in a sidebar row", () => {
   expect(
     formatText("#{pane_current_command} · #{pane_title}", {
@@ -217,7 +220,7 @@ const setup = Effect.fnUntraced(function* (options?: {
               // injects go in as one configuration rather than one plugin at a time.
               yield* Scope.provide(
                 Effect.orDie(
-                  host.reconcile([
+                  applyHostConfig(host, [
                     ...environment.registryEntries,
                     fakeAwarenessPlugin(() => spaces),
                     sidebarPlugin,

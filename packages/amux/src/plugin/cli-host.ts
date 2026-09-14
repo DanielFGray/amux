@@ -21,7 +21,7 @@ export interface CliCommandFound {
 
 /** No plugin registers `name`. `refused` is why one might be missing: every
  *  entry the host's reduced registry could not satisfy, reported the same way
- *  `reconcile` reports any other unsatisfiable injection. `failures` are
+ *  `prepare` reports any other unsatisfiable injection. `failures` are
  *  enabled specs that would not import or pass compat. */
 export interface CliCommandMissing {
   readonly refused: readonly RefusedPlugin[];

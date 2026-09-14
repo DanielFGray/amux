@@ -448,23 +448,25 @@ testEffect(
       );
       yield* Effect.yieldNow;
 
-      yield* host.reconcile([
-        definePlugin({
-          id: "amux.registry.daemon-commands",
-          provide: [DaemonCommandsTag],
-          effect: (ctx) => Effect.sync(() => void ctx.provide(DaemonCommandsTag, daemonCommands)),
-        }),
-        definePlugin({
-          id: "probe.good-plugin",
-          inject: [DaemonCommandsTag],
-          effect: () => registerDaemonCommand(good),
-        }),
-        definePlugin({
-          id: "probe.bad-plugin",
-          inject: [DaemonCommandsTag],
-          effect: () => registerDaemonCommand(bad),
-        }),
-      ]);
+      yield* host
+        .prepare([
+          definePlugin({
+            id: "amux.registry.daemon-commands",
+            provide: [DaemonCommandsTag],
+            effect: (ctx) => Effect.sync(() => void ctx.provide(DaemonCommandsTag, daemonCommands)),
+          }),
+          definePlugin({
+            id: "probe.good-plugin",
+            inject: [DaemonCommandsTag],
+            effect: () => registerDaemonCommand(good),
+          }),
+          definePlugin({
+            id: "probe.bad-plugin",
+            inject: [DaemonCommandsTag],
+            effect: () => registerDaemonCommand(bad),
+          }),
+        ])
+        .pipe(Effect.andThen(host.publish));
       yield* Effect.yieldNow;
 
       const reported = yield* Queue.takeAll(errors);
@@ -481,7 +483,6 @@ testEffect(
           .sort(([left], [right]) => left.localeCompare(right)),
       ).toEqual([
         ["amux.registry.daemon-commands", "active"],
-        ["probe.bad-plugin", "failed"],
         ["probe.good-plugin", "active"],
       ]);
       const declarations = yield* behaviour.declarations;
@@ -517,12 +518,13 @@ testEffect("bindPluginBehaviour fixes client and revision across slot changes", 
         calls.push({ id, revision });
         return Effect.succeed(Option.none());
       },
-      Load: () =>
+      Prepare: () => Effect.succeed({ failures: [] }),
+      Publish: () =>
         Effect.succeed({
           declarations: emptyPluginDeclarations,
-          failures: [],
           revision: 1,
         }),
+      Discard: () => Effect.void,
       Stop: () => Effect.void,
     });
 

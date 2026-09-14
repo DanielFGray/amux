@@ -29,9 +29,10 @@ const program = Effect.gen(function* () {
       status,
       generation,
       loadGeneration: (client) =>
-        client
-          .Load({ plugins: [], configDirectory })
-          .pipe(Effect.mapError((error) => new PluginHostError({ message: error.message }))),
+        Effect.gen(function* () {
+          yield* client.Prepare({ plugins: [], configDirectory });
+          return yield* client.Publish();
+        }).pipe(Effect.mapError((error) => new PluginHostError({ message: error.message }))),
     }),
   );
 

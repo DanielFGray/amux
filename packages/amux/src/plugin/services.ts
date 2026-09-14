@@ -409,9 +409,15 @@ export interface PluginServices {
  * Service instances stage beside the committed provider, just like UI
  * contributions. A replacement becomes readable only when its host generation
  * commits; until then injectors keep the service they already acquired.
+ *
+ * `isReadable` may also admit a Prepare add-candidate when `reader` is a
+ * co-prepared injector in the same pending batch. Without a reader (`get`,
+ * committed `slot.provider`), only committed owners are readable — callers
+ * must pass the rule; there is no default.
  */
 export const createPluginServices = Effect.fnUntraced(function* (
   contributions: PluginContributions,
+  isReadable: (owner: PluginInstance, reader?: PluginInstance) => boolean,
   onChange: (key: string) => void = () => {},
 ) {
   const slots = new Map<string, Slot>();
@@ -436,11 +442,21 @@ export const createPluginServices = Effect.fnUntraced(function* (
     return slot;
   }
 
-  function visible(slot: Slot): Provider | undefined {
-    return slot.providers.find((provider) => contributions.isCommitted(provider.owner));
+  /** Committed readability when `reader` is omitted; reader-scoped for awaitAll. */
+  function visible(slot: Slot, reader?: PluginInstance): Provider | undefined {
+    return slot.providers.find((provider) => isReadable(provider.owner, reader));
   }
 
-  function update(): void {
+  function wake(keys: readonly string[]): void {
+    const previous = changed;
+    changed = Deferred.makeUnsafe<void>();
+    // Publish a whole generation before waking any consumer or observer.
+    Deferred.doneUnsafe(previous, Effect.void);
+    for (const key of keys) onChange(key);
+  }
+
+  /** Refresh committed `slot.provider` from visibility; answer the keys that changed. */
+  function refresh(): readonly string[] {
     const keys: string[] = [];
     for (const slot of slots.values()) {
       const provider = visible(slot);
@@ -450,12 +466,7 @@ export const createPluginServices = Effect.fnUntraced(function* (
       // changing is still "this key changed" to anything tracking the key.
       keys.push(slot.tagKey);
     }
-    if (keys.length === 0) return;
-    const previous = changed;
-    changed = Deferred.makeUnsafe<void>();
-    // Publish a whole generation before waking any consumer or observer.
-    Deferred.doneUnsafe(previous, Effect.void);
-    for (const key of keys) onChange(key);
+    return keys;
   }
 
   /**
@@ -474,7 +485,10 @@ export const createPluginServices = Effect.fnUntraced(function* (
     return context;
   };
 
-  const unsubscribe = contributions.onChange(update);
+  const unsubscribe = contributions.onChange(() => {
+    const keys = refresh();
+    if (keys.length > 0) wake(keys);
+  });
   yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
 
   const awaitService = <Id, S>(tag: Context.Service<Id, S>) => {
@@ -504,21 +518,27 @@ export const createPluginServices = Effect.fnUntraced(function* (
       if (slot.providers.some((provider) => sameInstance(provider.owner, owner)))
         throw new Error(`plugin '${owner.id}' provided ${where} twice`);
       slot.providers.push({ owner, context: Context.make(tag, service) });
-      update();
+      // Always wake: an add-candidate can become readable to a co-prepared
+      // injector without changing the committed provider.
+      wake(refresh());
     },
 
     withdraw(owner, tag, realm?) {
       const slot = slots.get(slotKey(tag.key, realm));
       if (!slot) return;
       slot.providers = slot.providers.filter((provider) => !sameInstance(provider.owner, owner));
-      update();
+      // Always wake: an add-candidate can become readable to a co-prepared
+      // injector without changing the committed provider.
+      wake(refresh());
     },
 
     withdrawAll(owner) {
       for (const slot of slots.values()) {
         slot.providers = slot.providers.filter((provider) => !sameInstance(provider.owner, owner));
       }
-      update();
+      // Always wake: an add-candidate can become readable to a co-prepared
+      // injector without changing the committed provider.
+      wake(refresh());
     },
 
     get: <Id, S>(tag: Context.Service<Id, S>) =>
@@ -548,20 +568,36 @@ export const createPluginServices = Effect.fnUntraced(function* (
       Effect.gen(function* () {
         let context = Context.empty();
         const view = new Map<string, PluginInstance>();
-        const required = dependencies.map((dependency) =>
-          slotFor(dependencyService(dependency).key),
-        );
-        while (required.some((slot) => !slot.provider)) {
+        const required = dependencies.map((dependency) => ({
+          dependency,
+          slot: slotFor(dependencyService(dependency).key),
+        }));
+        const resolve = ():
+          | readonly {
+              readonly dependency: (typeof required)[number]["dependency"];
+              readonly provider: Provider;
+            }[]
+          | undefined => {
+          const resolved: {
+            readonly dependency: (typeof required)[number]["dependency"];
+            readonly provider: Provider;
+          }[] = [];
+          for (const { dependency, slot } of required) {
+            const provider = visible(slot, owner);
+            if (provider === undefined) return undefined;
+            resolved.push({ dependency, provider });
+          }
+          return resolved;
+        };
+        let ready = resolve();
+        while (ready === undefined) {
           yield* Deferred.await(changed);
           // Providers wake waiters inside ctx.provide. Let them finish registering
           // finalizers before capturing the current view and entering plugin code.
           yield* Effect.yieldNow;
+          ready = resolve();
         }
-        const resolved = dependencies.map((dependency, index) => ({
-          dependency,
-          provider: required[index]!.provider!,
-        }));
-        for (const { dependency, provider } of resolved) {
+        for (const { dependency, provider } of ready) {
           const tag = dependencyService(dependency);
           const service = Context.getUnsafe(provider.context, tag as Context.Key<unknown, unknown>);
           const interception = serviceInterception(tag);
