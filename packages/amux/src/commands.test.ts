@@ -171,6 +171,7 @@ test("filtering by target and exposure produces the expected subsets", () => {
   const viewOnly: string[] = [
     "app.settings",
     "app.command-palette",
+    "app.console",
     "app.help",
     "app.quit",
     "app.send-prefix",

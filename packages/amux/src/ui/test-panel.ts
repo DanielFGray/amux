@@ -20,6 +20,7 @@ export function testPanelContext(parts: Partial<PanelContext> = {}): PanelContex
     saveOptions: () => {},
     display: () => ({ rows: [], spaceCount: 0 }),
     reportError: () => {},
+    unseenErrorCount: () => 0,
     selectedAgentId: () => null,
     setSelectedAgentId: () => {},
     ...parts,

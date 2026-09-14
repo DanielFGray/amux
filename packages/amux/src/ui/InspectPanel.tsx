@@ -1,16 +1,15 @@
 /** @jsxImportSource @opentui/solid */
 import { For } from "solid-js";
 import { theme } from "./theme.ts";
-import { snackWidth } from "./ErrorSnack.tsx";
 
-/** Multi-line float for `app.describe-key` — same plane as the error snack. */
+/** Multi-line float for `app.describe-key`. */
 export function InspectPanel(props: {
   lines: readonly string[];
   left: number;
   width: number;
   onClose: () => void;
 }) {
-  const width = () => Math.min(64, Math.max(snackWidth(props.width), props.width - 2));
+  const width = () => Math.min(64, Math.max(28, props.width - 2));
   const left = () => props.left + Math.max(0, props.width - width() - 1);
   const height = () => Math.min(12, Math.max(3, props.lines.length + 2));
 

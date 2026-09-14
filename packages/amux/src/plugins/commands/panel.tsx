@@ -4,7 +4,6 @@ import type { FloatOccupant, OverlayOccupant } from "../../ui/slots.ts";
 import { CommandPalette } from "../../ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "../../ui/Prompt.tsx";
 import { Hints } from "../../ui/Hints.tsx";
-import { ErrorSnack } from "../../ui/ErrorSnack.tsx";
 import { InspectPanel } from "../../ui/InspectPanel.tsx";
 import type { OverlayService } from "../../plugin/overlay.ts";
 import type { CommandsChrome } from "../../plugin/chrome.ts";
@@ -55,21 +54,6 @@ export const hintsPanel = (chrome: CommandsChrome): FloatOccupant => ({
       left={props.left}
       width={props.width}
       height={props.height}
-    />
-  ),
-});
-
-export const errorPanel = (chrome: CommandsChrome): FloatOccupant => ({
-  id: "amux.error",
-  title: "error",
-  visible: () => chrome.commandError() !== null,
-  component: (props) => (
-    <ErrorSnack
-      message={chrome.commandError() ?? ""}
-      left={props.left}
-      width={props.width}
-      onClose={chrome.clearCommandError}
-      onShowMore={chrome.showCommandConsole}
     />
   ),
 });

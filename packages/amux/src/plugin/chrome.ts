@@ -69,7 +69,7 @@ export interface SettingsChrome {
 }
 
 /**
- * Command-palette + prompt / error-snack / which-key chrome owned by the host so
+ * Command-palette + prompt / which-key chrome owned by the host so
  * `amux.commands` can reload without rebinding Solid signals in `buildApp`.
  */
 export interface CommandsChrome {
@@ -82,10 +82,6 @@ export interface CommandsChrome {
   readonly prompt: Accessor<PromptRequest | null>;
   readonly promptError: Accessor<string>;
   readonly setPromptError: (error: string) => void;
-  readonly commandError: Accessor<string | null>;
-  readonly clearCommandError: () => void;
-  /** Dismiss the snack and open OpenTUI's captured-console overlay. */
-  readonly showCommandConsole: () => void;
   /** Human describe-key panel lines from `formatInspectResult`. */
   readonly inspectLines: Accessor<readonly string[] | null>;
   readonly clearInspect: () => void;

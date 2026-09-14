@@ -1138,6 +1138,18 @@ const AppHelp = define(
   { desc: "keybinds", group: "global", target: "view", exposure: "human" },
   noResources,
 );
+/** OpenTUI's captured-console overlay — toggle; never opens on its own. */
+const AppConsole = define(
+  "app.console",
+  {},
+  {
+    desc: "toggle the command console",
+    group: "global",
+    target: "view",
+    exposure: "human",
+  },
+  noResources,
+);
 const AppPalette = define(
   "app.command-palette",
   {},
@@ -1261,6 +1273,7 @@ export const COMMAND_DEFS = [
   PluginEnable,
   PluginDisable,
   AppHelp,
+  AppConsole,
   AppDescribeKey,
   AppPalette,
   AppSettings,
@@ -1810,6 +1823,7 @@ export const Commands = {
   ConfigReset,
   PluginReload,
   AppHelp,
+  AppConsole,
   AppPalette,
   AppSettings,
   AppSendPrefix,

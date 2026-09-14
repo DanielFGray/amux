@@ -14,25 +14,15 @@ import { CommandsChromeTag } from "../plugin/chrome.ts";
 import { command, CurrentInvocation } from "../commands.ts";
 import { loadProcessPluginBindingSpecs } from "../process-plugin/index.ts";
 import { paletteOverlayKeys } from "./commands/keys.ts";
-import {
-  errorOverlayKeys,
-  inspectOverlayKeys,
-  promptOverlayKeys,
-} from "./commands/overlay-keys.ts";
-import {
-  errorPanel,
-  hintsPanel,
-  inspectPanel,
-  palettePanel,
-  promptPanel,
-} from "./commands/panel.tsx";
+import { inspectOverlayKeys, promptOverlayKeys } from "./commands/overlay-keys.ts";
+import { hintsPanel, inspectPanel, palettePanel, promptPanel } from "./commands/panel.tsx";
 
 /**
- * Command palette, prompt, which-key, and error snack. File-backed for
- * `plugin.reload amux.commands`. Core keybindings are supplied by the host via
- * CommandsChrome and registered here so one plugin owns the chrome surface.
- * Linked process-plugin actions/panes are registered unbound so they appear in
- * the palette and can take keybinds; reload this plugin after `process-plugin link`.
+ * Command palette, prompt, and which-key. File-backed for `plugin.reload
+ * amux.commands`. Core keybindings are supplied by the host via CommandsChrome
+ * and registered here so one plugin owns the chrome surface. Linked
+ * process-plugin actions/panes are registered unbound so they appear in the
+ * palette and can take keybinds; reload this plugin after `process-plugin link`.
  */
 export default definePlugin({
   id: "amux.commands",
@@ -57,7 +47,6 @@ export default definePlugin({
               chrome.hintsVisible() && chrome.hints().length > 0 && slots.topOverlay() === null,
           },
         },
-        { slot: "float", occupant: errorPanel(chrome), priority: 55 },
         { slot: "float", occupant: inspectPanel(chrome), priority: 56 },
       ];
       const specs: readonly ContextSpec[] = [
@@ -74,15 +63,6 @@ export default definePlugin({
           priority: CONTEXT_PRIORITY.OVERLAY + 40,
           rebindable: false,
           handle: (event) => promptOverlayKeys(chrome, event),
-        },
-        {
-          id: "amux.error",
-          active: () => chrome.commandError() !== null,
-          priority: CONTEXT_PRIORITY.OVERLAY + 55,
-          rebindable: false,
-          // Escape dismisses; other keys must reach the focused pane (ctrl+c/d).
-          blocksPane: false,
-          handle: (event) => errorOverlayKeys(chrome, event),
         },
         {
           id: "amux.inspect",

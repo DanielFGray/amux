@@ -85,6 +85,8 @@ export interface PanelContext {
   readonly display: Accessor<SidebarDisplay>;
   /** User-visible command error callback. */
   readonly reportError: (message: string) => void;
+  /** Command errors logged since the console was last opened. */
+  readonly unseenErrorCount: Accessor<number>;
   /** The agent the sidebar last activated, as a plain id. Read for
    *  capture/send-keys fallback when the focused pane is absent. */
   readonly selectedAgentId: Accessor<string | null>;
@@ -102,6 +104,5 @@ export function createPanelContext(app: PanelContext): PanelContext {
     ...app,
     snapshot: () => structuredClone(app.snapshot()),
     options: () => ({ ...app.options() }),
-    display: () => structuredClone(app.display()),
-  };
+    display: () => structuredClone(app.display()),  };
 }

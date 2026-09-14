@@ -116,5 +116,6 @@ test("the context carries all expected fields", () => {
     "setSelectedAgentId",
     "snapshot",
     "tick",
+    "unseenErrorCount",
   ]);
 });

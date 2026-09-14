@@ -99,6 +99,7 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
             format={() => panelContext.options()["sidebar.format"] as string}
             onActivate={activate}
             awareness={awareness}
+            unseenErrorCount={panelContext.unseenErrorCount}
           />
         ),
       };
@@ -170,6 +171,7 @@ function SidebarView(props: {
   format: () => string;
   onActivate: (row: SidebarDisplayRow) => void;
   awareness: AgentAwarenessService;
+  unseenErrorCount: () => number;
 }) {
   const filtered = createMemo(() => {
     const d = props.display();
@@ -193,7 +195,8 @@ function SidebarView(props: {
       (r) => r.agentId && props.awareness.presence(r.agentId)?.state === "blocked",
     ).length;
     const agentCount = agentRows.length;
-    return `${d.spaceCount} space${d.spaceCount === 1 ? "" : "s"} · ${agentCount} agent${agentCount === 1 ? "" : "s"}${blockedCount ? ` · ${blockedCount}!` : ""}`;
+    const errCount = props.unseenErrorCount();
+    return `${d.spaceCount} space${d.spaceCount === 1 ? "" : "s"} · ${agentCount} agent${agentCount === 1 ? "" : "s"}${blockedCount ? ` · ${blockedCount}!` : ""}${errCount ? ` · ${errCount} err` : ""}`;
   });
 
   return (

@@ -1075,21 +1075,24 @@ function buildApp(
   /** The keybind tab's scroll container, so ↑↓ can drive a list that is much
    *  longer than the window. */
   let keybindList: ScrollBoxRenderable | null = null;
-  const [commandError, setCommandError] = createSignal<string | null>(null);
+  /** Command errors logged since the console was last opened. */
+  const [unseenErrorCount, setUnseenErrorCount] = createSignal(0);
   const [inspectLines, setInspectLines] = createSignal<readonly string[] | null>(null);
-  // Logs into OpenTUI's console capture and shows a compact snack. The snack
-  // stays until dismissed (Escape / close / show more) rather than on a timer:
-  // a message worth reading is worth copying, and a fixed auto-hide can outrun both.
+  // Logs into OpenTUI's console capture; a footer marker shows until the user
+  // opens the console. The console never opens on its own.
   function showCommandError(message: string) {
     // @effect-diagnostics-next-line globalConsole:off -- feeds the OpenTUI console overlay.
     console.error(message);
     setInspectLines(null);
-    setCommandError(message);
+    setUnseenErrorCount((count) => count + 1);
   }
-  function showCommandConsole() {
-    setCommandError(null);
-    renderer.consoleMode = "console-overlay";
-    renderer.console.show();
+  /** OpenTUI TerminalConsole.toggle — show when closed, hide when focused. */
+  function toggleCommandConsole() {
+    if (!renderer.console.visible) {
+      setUnseenErrorCount(0);
+      renderer.consoleMode = "console-overlay";
+    }
+    renderer.console.toggle();
   }
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false);
   // Set only when the attach transport itself explained why it closed (e.g.
@@ -1962,6 +1965,7 @@ function buildApp(
         setSettingsFocus("items");
         setOverlay("settings");
       }),
+    "app.console": () => Effect.sync(toggleCommandConsole),
     "app.command-palette": () =>
       Effect.sync(() => {
         setPaletteQuery("");
@@ -2025,7 +2029,6 @@ function buildApp(
           showCommandError(result.description);
           return;
         }
-        setCommandError(null);
         setInspectLines(formatInspectResult(result));
       }),
     "plugin.enable": runCommand,
@@ -2395,6 +2398,10 @@ function buildApp(
     ),
     // `<prefix>/` is reserved for editor.find-file (project picker). Keep help on `?` only.
     bind("app.help", "<prefix>?", command("app.help")),
+    // OpenTUI's console demo uses bare backtick; under the mux prefix so a
+    // typing shell never sees it. Key event name is "`", not the token
+    // "backquote" (parse.keypress), so the binding must use the literal.
+    bind("app.console", "<prefix>`", command("app.console")),
     // Near help: ownership / describe-key for the focused pane (or a named subject).
     // shift+k, not "K": capitals collapse to the lowercase stroke (see app.settings).
     bind("app.describe-key", "<prefix>shift+k", command("app.describe-key"), {
@@ -3177,9 +3184,6 @@ function buildApp(
     prompt: promptRequest,
     promptError,
     setPromptError,
-    commandError,
-    clearCommandError: () => setCommandError(null),
-    showCommandConsole,
     inspectLines,
     clearInspect: () => setInspectLines(null),
     pending: () => pending().join(" "),
@@ -3200,6 +3204,7 @@ function buildApp(
     saveOptions,
     display,
     reportError: showCommandError,
+    unseenErrorCount,
     selectedAgentId,
     setSelectedAgentId,
   });

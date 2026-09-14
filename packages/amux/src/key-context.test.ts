@@ -163,13 +163,13 @@ test("overlayBlocksPane is true while an overlay-band context is active", () => 
   expect(overlayBlocksPane([{ ...palette, active: () => false }])).toBe(false);
 });
 
-test("overlayBlocksPane ignores snacks that opt out (error/inspect)", () => {
-  // A sticky command-error snack after plugin load used to starve the PTY of
-  // ctrl+c / ctrl+d: overlay active + handle declines non-Escape → blocksPane.
-  const error: ContextSpec = {
-    id: "amux.error",
+test("overlayBlocksPane ignores floats that opt out (inspect)", () => {
+  // Floats like describe-key set blocksPane: false so Escape-only handling
+  // does not starve the PTY of ctrl+c / ctrl+d.
+  const inspect: ContextSpec = {
+    id: "amux.inspect",
     active: () => true,
-    priority: CONTEXT_PRIORITY.OVERLAY + 55,
+    priority: CONTEXT_PRIORITY.OVERLAY + 56,
     rebindable: false,
     blocksPane: false,
     handle: (event) => event.name === "escape",
@@ -181,6 +181,6 @@ test("overlayBlocksPane ignores snacks that opt out (error/inspect)", () => {
     rebindable: false,
     handle: () => false,
   };
-  expect(overlayBlocksPane([error])).toBe(false);
-  expect(overlayBlocksPane([error, palette])).toBe(true);
+  expect(overlayBlocksPane([inspect])).toBe(false);
+  expect(overlayBlocksPane([inspect, palette])).toBe(true);
 });

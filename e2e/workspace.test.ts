@@ -75,18 +75,22 @@ test(
   async () => {
     await app.press(`${LEADER}N`);
     await app.until(
-      () => app.screen().includes("no credential stored for openai"),
-      "agent.new to reach its preflight",
+      () => /\d+ err/.test(app.screen()),
+      "the error marker after agent.new preflight",
     );
     expect(app.screen()).not.toContain("what should the agent do?");
     expect(await app.workspaceSummary()).toBe("1sp 1win 1ag");
-    // The error snack no longer auto-hides (a message worth reading is worth
-    // copying); dismiss it explicitly so it doesn't cover the sidebar footer
-    // the steps below assert against.
-    app.send("\x1b");
+    // Full cause lives in the console; open it and confirm, then close so the
+    // overlay does not cover the sidebar footer the steps below assert against.
+    await app.press(`${LEADER}\``);
+    await app.until(
+      () => app.screen().includes("no credential stored for openai"),
+      "agent.new to reach its preflight",
+    );
+    await app.press(`${LEADER}\``);
     await app.until(
       () => !app.screen().includes("no credential stored for openai"),
-      "the preflight error to be dismissed",
+      "the console to close",
     );
   },
   E2E_TIMEOUT,
