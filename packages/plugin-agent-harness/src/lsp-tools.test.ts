@@ -8,6 +8,7 @@ import { withLspClient, type AgentLsp } from "./lsp-tools.ts";
 import {
   DocumentService,
   LspService,
+  LspTransportError,
   builtInCatalog,
   makeDocumentService,
   type LspNotification,
@@ -16,8 +17,8 @@ import {
 } from "@danielfgray/amux-plugin-lsp";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import * as FileSystem from "effect/FileSystem";
+import { Schema as S } from "effect";
 import { PermissionGateTag, type Assertion, type PermissionGate } from "./permission.ts";
-import type { JsonValue } from "@danielfgray/amux";
 
 registerCleanup();
 
@@ -62,17 +63,20 @@ const makeFakeLsp = (
         const transport: LspTransport = {
           pid: 1,
           notifications,
-          request: (method) =>
-            Effect.sync((): JsonValue => {
-              if (method === "initialize") return { capabilities: {} };
-              if (method === "textDocument/hover") return { contents: "hover-text" };
-              if (method === "textDocument/references")
-                return [{ uri: "file:///workspace/a.ts", range }];
-              if (method === "textDocument/documentSymbol")
-                return [{ name: "x", kind: 13, range, selectionRange: range }];
-              if (method === "textDocument/completion") return [{ label: "completeMe" }];
-              return [];
-            }),
+          request: (method, _params, _paramsSchema, resultSchema) => {
+            const decode = <A>(raw: A) =>
+              S.decodeUnknownEffect(resultSchema)(raw).pipe(
+                Effect.mapError((error) => new LspTransportError({ message: String(error) })),
+              );
+            if (method === "initialize") return decode({ capabilities: {} });
+            if (method === "textDocument/hover") return decode({ contents: "hover-text" });
+            if (method === "textDocument/references")
+              return decode([{ uri: "file:///workspace/a.ts", range }]);
+            if (method === "textDocument/documentSymbol")
+              return decode([{ name: "x", kind: 13, range, selectionRange: range }]);
+            if (method === "textDocument/completion") return decode([{ label: "completeMe" }]);
+            return decode([]);
+          },
           notify: () => Effect.void,
         };
         return transport;

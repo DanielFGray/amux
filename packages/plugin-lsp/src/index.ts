@@ -78,6 +78,7 @@ export {
   type LspServiceOptions,
 } from "./service.ts";
 export type { LspNotification, LspTransport } from "./transport.ts";
+export { LspTransportError } from "./transport.ts";
 export {
   builtInCatalog,
   catalogWithOverrides,

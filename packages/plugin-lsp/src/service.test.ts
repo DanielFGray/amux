@@ -1,14 +1,11 @@
 import * as BunServices from "@effect/platform-bun/BunServices";
-import { Effect, Fiber, Layer, Option, PubSub, Stream } from "effect";
+import { Effect, Fiber, Layer, Option, PubSub, Schema as S, Stream } from "effect";
 import { expect } from "bun:test";
 import { testEffect } from "../../amux/src/test-effect.ts";
 import { DocumentService, makeDocumentService, type DocumentSnapshot } from "./document.ts";
 import { builtInCatalog } from "./catalog.ts";
-import { LspService, decodeShowReferencesArgs, type LspServiceOptions } from "./service.ts";
-import type { LspNotification, LspTransport } from "./transport.ts";
-import type { Schema as S } from "effect";
-
-type Json = S.Json;
+import { LspService, LspServiceError, decodeShowReferencesArgs, type LspServiceOptions } from "./service.ts";
+import { LspTransportError, type LspNotification, type LspTransport } from "./transport.ts";
 
 const tests = testEffect(BunServices.layer);
 
@@ -25,10 +22,10 @@ const range = {
 };
 
 const makeFake = (notifications: Stream.Stream<LspNotification> = Stream.empty) => {
-  const calls: Array<{ method: string; params: unknown }> = [];
+  const calls: Array<{ method: string }> = [];
   const pids: number[] = [];
   const closed: number[] = [];
-  const spawn: NonNullable<LspServiceOptions["spawn"]> = (options) =>
+  const spawn: NonNullable<LspServiceOptions["spawn"]> = (_options) =>
     Effect.acquireRelease(
       Effect.sync(() => {
         const pid = pids.length + 1;
@@ -36,24 +33,31 @@ const makeFake = (notifications: Stream.Stream<LspNotification> = Stream.empty) 
         const transport: LspTransport = {
           pid,
           notifications,
-          request: (method, params) =>
-            Effect.sync((): Json => {
-              calls.push({ method, params });
-              if (method === "initialize") return { capabilities: {} };
+          request: (method, _params, _paramsSchema, resultSchema) =>
+            Effect.gen(function* () {
+              calls.push({ method });
+              const decode = <A>(raw: A) =>
+                S.decodeUnknownEffect(resultSchema)(raw).pipe(
+                  Effect.mapError((error) => new LspTransportError({ message: String(error) })),
+                );
+              if (method === "initialize") return yield* decode({ capabilities: {} });
               if (method === "textDocument/hover")
-                return { contents: { kind: "markdown", value: "**hover**" } };
+                return yield* decode({ contents: { kind: "markdown", value: "**hover**" } });
               if (method === "textDocument/definition")
-                return { uri: "file:///workspace/def.ts", range };
+                return yield* decode({ uri: "file:///workspace/def.ts", range });
               if (method === "textDocument/declaration")
-                return { uri: "file:///workspace/decl.ts", range };
+                return yield* decode({ uri: "file:///workspace/decl.ts", range });
               if (method === "textDocument/typeDefinition")
-                return { uri: "file:///workspace/type.ts", range };
+                return yield* decode({ uri: "file:///workspace/type.ts", range });
               if (method === "textDocument/implementation")
-                return { uri: "file:///workspace/impl.ts", range };
+                return yield* decode({ uri: "file:///workspace/impl.ts", range });
               if (method === "textDocument/signatureHelp")
-                return { signatures: [{ label: "fn(x: number)" }], activeSignature: 0 };
+                return yield* decode({
+                  signatures: [{ label: "fn(x: number)" }],
+                  activeSignature: 0,
+                });
               if (method === "textDocument/codeAction")
-                return [
+                return yield* decode([
                   {
                     title: "fix it",
                     edit: {
@@ -67,9 +71,9 @@ const makeFake = (notifications: Stream.Stream<LspNotification> = Stream.empty) 
                     command: "source.organizeImports",
                     arguments: [],
                   },
-                ];
+                ]);
               if (method === "codeAction/resolve")
-                return {
+                return yield* decode({
                   title: "fix it",
                   edit: {
                     changes: {
@@ -77,9 +81,9 @@ const makeFake = (notifications: Stream.Stream<LspNotification> = Stream.empty) 
                     },
                   },
                   command: { title: "fix it", command: "editor.action.fix", arguments: [] },
-                };
+                });
               if (method === "textDocument/codeLens")
-                return [
+                return yield* decode([
                   {
                     range,
                     data: { id: 1 },
@@ -92,9 +96,9 @@ const makeFake = (notifications: Stream.Stream<LspNotification> = Stream.empty) 
                       arguments: [],
                     },
                   },
-                ];
+                ]);
               if (method === "codeLens/resolve")
-                return {
+                return yield* decode({
                   range,
                   command: {
                     title: "1 reference",
@@ -102,35 +106,37 @@ const makeFake = (notifications: Stream.Stream<LspNotification> = Stream.empty) 
                     arguments: ["file:///workspace/typed.ts"],
                   },
                   data: { id: 1 },
-                };
-              if (method === "workspace/executeCommand") return { ok: true };
+                });
+              if (method === "workspace/executeCommand") return yield* decode({ ok: true });
               if (method === "textDocument/references")
-                return [{ uri: "file:///workspace/ref.ts", range }];
+                return yield* decode([{ uri: "file:///workspace/ref.ts", range }]);
               if (method === "textDocument/rename")
-                return {
+                return yield* decode({
                   changes: {
                     "file:///workspace/typed.ts": [{ range, newText: "renamed" }],
                   },
-                };
-              if (method === "textDocument/completion") return [{ label: "typed", kind: 6 }];
+                });
+              if (method === "textDocument/completion")
+                return yield* decode([{ label: "typed", kind: 6 }]);
               if (method === "textDocument/documentSymbol")
-                return [
+                return yield* decode([
                   {
                     name: "typed",
                     kind: 13,
                     range,
                     selectionRange: range,
                   },
-                ];
-              if (method === "textDocument/semanticTokens/full") return { data: [0, 0, 5, 1, 0] };
-              return [];
+                ]);
+              if (method === "textDocument/semanticTokens/full")
+                return yield* decode({ data: [0, 0, 5, 1, 0] });
+              return yield* decode([]);
             }),
-          notify: (method, params) =>
+          notify: (method) =>
             Effect.sync(() => {
-              calls.push({ method, params });
+              calls.push({ method });
             }),
         };
-        calls.push({ method: "spawn", params: options });
+        calls.push({ method: "spawn" });
         return transport;
       }),
       (transport) => Effect.sync(() => closed.push(transport.pid)),
@@ -234,20 +240,25 @@ tests.live(
         expect(actions[1]?.title).toBe("organize imports");
         const resolvedAction = yield* client.resolveCodeAction({
           title: "fix it",
-          data: { id: 1 },
+          data: '{"id":1}',
         });
         expect(Option.getOrUndefined(resolvedAction)?.command?.command).toBe("editor.action.fix");
         const lenses = yield* client.codeLenses;
         expect(lenses).toHaveLength(2);
         expect(lenses[1]?.command?.title).toBe("2 references");
-        const resolved = yield* client.resolveCodeLens(lenses[0]!);
+        const resolved = yield* Effect.gen(function* () {
+          const lens = lenses[0];
+          if (lens === undefined)
+            return yield* new LspServiceError({ message: "expected a code lens" });
+          return yield* client.resolveCodeLens(lens);
+        });
         expect(Option.getOrUndefined(resolved)?.command?.title).toBe("1 reference");
         const executed = yield* client.executeCommand({
           title: "run",
           command: "test.cmd",
-          arguments: [1],
+          arguments: "[1]",
         });
-        expect(Option.getOrUndefined(executed)).toEqual({ ok: true });
+        expect(Option.getOrUndefined(executed)).toEqual('{"ok":true}');
         const references = yield* client.references(position);
         expect(references).toEqual([{ uri: "file:///workspace/ref.ts", range }]);
         const rename = yield* client.rename(position, "renamed");
@@ -264,24 +275,53 @@ tests.live(
         expect(Option.getOrUndefined(tokens)).toEqual({ data: [0, 0, 5, 1, 0] });
         const diagnostics = yield* Effect.forkScoped(client.diagnostics.pipe(Stream.runHead));
         yield* Effect.yieldNow;
-        yield* PubSub.publish(notifications, {
-          method: "textDocument/publishDiagnostics",
-          params: {
-            uri,
-            diagnostics: [
-              {
-                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
-                message: "typed error",
-              },
-            ],
-          },
+        const PublishDiagnosticsFrame = S.fromJsonString(
+          S.Struct({
+            jsonrpc: S.Literal("2.0"),
+            method: S.String,
+            params: S.Struct({
+              uri: S.String,
+              diagnostics: S.Array(
+                S.Struct({
+                  range: S.Struct({
+                    start: S.Struct({ line: S.Int, character: S.Int }),
+                    end: S.Struct({ line: S.Int, character: S.Int }),
+                  }),
+                  message: S.String,
+                }),
+              ),
+            }),
+          }),
+        );
+        const publishDiagnostics = Effect.fnUntraced(function* (params: {
+          readonly uri: string;
+          readonly diagnostics: readonly {
+            readonly range: typeof range;
+            readonly message: string;
+          }[];
+        }) {
+          const frameJson = yield* S.encodeEffect(PublishDiagnosticsFrame)({
+            jsonrpc: "2.0",
+            method: "textDocument/publishDiagnostics",
+            params,
+          });
+          yield* PubSub.publish(notifications, {
+            method: "textDocument/publishDiagnostics",
+            frameJson,
+          });
         });
-        yield* PubSub.publish(notifications, {
-          method: "textDocument/publishDiagnostics",
-          params: {
-            uri: "file:///workspace/other.ts",
-            diagnostics: [{ range, message: "other file" }],
-          },
+        yield* publishDiagnostics({
+          uri,
+          diagnostics: [
+            {
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+              message: "typed error",
+            },
+          ],
+        });
+        yield* publishDiagnostics({
+          uri: "file:///workspace/other.ts",
+          diagnostics: [{ range, message: "other file" }],
         });
         const batch = yield* Fiber.join(diagnostics);
         expect(Option.getOrUndefined(batch)?.[0]).toMatchObject({ message: "typed error" });
@@ -348,7 +388,7 @@ tests.live(
 
 tests.live(
   "decodeShowReferencesArgs reads vscode [uri, position, locations] at the wire boundary",
-  Effect.sync(() => {
+  Effect.gen(function* () {
     const locations = [
       {
         uri: "file:///workspace/a.ts",
@@ -358,11 +398,29 @@ tests.live(
         },
       },
     ];
-    expect(
-      Option.getOrUndefined(
-        decodeShowReferencesArgs(["file:///workspace/a.ts", { line: 1, character: 2 }, locations]),
+    const args = yield* S.encodeEffect(
+      S.fromJsonString(
+        S.Tuple([
+          S.String,
+          S.Struct({ line: S.Int, character: S.Int }),
+          S.Array(
+            S.Struct({
+              uri: S.String,
+              range: S.Struct({
+                start: S.Struct({ line: S.Int, character: S.Int }),
+                end: S.Struct({ line: S.Int, character: S.Int }),
+              }),
+            }),
+          ),
+        ]),
       ),
-    ).toEqual(locations);
-    expect(Option.getOrUndefined(decodeShowReferencesArgs(["not", "a", "tuple"]))).toBeUndefined();
+    )(["file:///workspace/a.ts", { line: 1, character: 2 }, locations]);
+    expect(Option.getOrUndefined(decodeShowReferencesArgs(args))).toEqual(locations);
+    const invalid = yield* S.encodeEffect(S.fromJsonString(S.Array(S.String)))([
+      "not",
+      "a",
+      "tuple",
+    ]);
+    expect(Option.getOrUndefined(decodeShowReferencesArgs(invalid))).toBeUndefined();
   }),
 );

@@ -7,41 +7,47 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const JsonRpcId = S.Union([S.String, S.Finite]);
-type JsonValue = S.Json;
 
-const JsonRpcMessage = S.Struct({
+/** Routing fields of a JSON-RPC message; params/result stay on the frame for method Schemas. */
+const JsonRpcHeading = S.Struct({
   jsonrpc: S.Literal("2.0"),
   id: S.optional(JsonRpcId),
   method: S.optional(S.String),
-  params: S.optional(S.Json),
-  result: S.optional(S.Json),
   error: S.optional(
     S.Struct({
       code: S.Finite,
       message: S.String,
-      data: S.optional(S.Json),
     }),
   ),
 });
-type JsonRpcMessage = typeof JsonRpcMessage.Type;
 
 export class LspTransportError extends S.TaggedError<LspTransportError>()("LspTransportError", {
   message: S.String,
 }) {}
 
+/**
+ * Server→client notification. `frameJson` is the full JSON-RPC message text;
+ * subscribers decode `params` with the method's Schema via fromJsonString.
+ */
 export interface LspNotification {
   readonly method: string;
-  readonly params?: JsonValue;
+  readonly frameJson: string;
 }
 
 export interface LspTransport {
   readonly pid: number;
   readonly notifications: Stream.Stream<LspNotification>;
-  readonly request: (
+  readonly request: <A, I, O, OI>(
     method: string,
-    params: JsonValue,
-  ) => Effect.Effect<JsonValue, LspTransportError>;
-  readonly notify: (method: string, params: JsonValue) => Effect.Effect<void, LspTransportError>;
+    params: A,
+    paramsSchema: S.Codec<A, I>,
+    resultSchema: S.Codec<O, OI>,
+  ) => Effect.Effect<O, LspTransportError>;
+  readonly notify: <A, I>(
+    method: string,
+    params: A,
+    paramsSchema: S.Codec<A, I>,
+  ) => Effect.Effect<void, LspTransportError>;
 }
 
 export interface LspTransportOptions {
@@ -68,7 +74,7 @@ export const makeLspTransport = Effect.fnUntraced(function* (options: LspTranspo
     )
     .pipe(Effect.mapError((error) => new LspTransportError({ message: String(error) })));
   const pending = yield* Ref.make(
-    new Map<string | number, Deferred.Deferred<JsonValue, LspTransportError>>(),
+    new Map<string | number, Deferred.Deferred<string, LspTransportError>>(),
   );
   const nextId = yield* Ref.make(0);
   const notifications = yield* PubSub.sliding<LspNotification>(64);
@@ -83,48 +89,42 @@ export const makeLspTransport = Effect.fnUntraced(function* (options: LspTranspo
       ),
     );
 
-  const route = Effect.fnUntraced(function* (message: JsonRpcMessage) {
+  const route = Effect.fnUntraced(function* (frame: string) {
+    const message = yield* S.decodeEffect(S.fromJsonString(JsonRpcHeading))(
+      frame,
+    ).pipe(Effect.mapError((error) => new LspTransportError({ message: String(error) })));
     const id = message.id;
     if (id !== undefined) {
       const reply = yield* Ref.modify(pending, (current) => {
         const next = new Map(current);
         const value = next.get(id);
         next.delete(id);
-        return [value, next] as const;
+        return [value, next];
       });
       if (!reply) return;
       if (message.error !== undefined) {
         yield* Deferred.fail(reply, new LspTransportError({ message: message.error.message }));
         return;
       }
-      if (message.result === undefined)
-        return yield* Deferred.fail(
-          reply,
-          new LspTransportError({ message: "LSP response lacks a result" }),
-        );
-      yield* Deferred.succeed(reply, message.result);
+      yield* Deferred.succeed(reply, frame);
       return;
     }
     if (message.method !== undefined) {
       yield* PubSub.publish(notifications, {
         method: message.method,
-        params: message.params,
+        frameJson: frame,
       });
     }
   });
 
-  const write = Effect.fnUntraced(function* (message: JsonValue) {
-    const body = encoder.encode(
-      yield* S.encodeEffect(S.fromJsonString(S.Json))(message).pipe(
-        Effect.mapError((error) => new LspTransportError({ message: String(error) })),
-      ),
-    );
-    if (body.byteLength > MAX_FRAME_BYTES)
+  const writeJson = Effect.fnUntraced(function* (body: string) {
+    const bytes = encoder.encode(body);
+    if (bytes.byteLength > MAX_FRAME_BYTES)
       return yield* new LspTransportError({ message: "LSP message exceeds frame limit" });
-    const header = encoder.encode(`Content-Length: ${body.byteLength}\r\n\r\n`);
-    const frame = new Uint8Array(header.byteLength + body.byteLength);
+    const header = encoder.encode(`Content-Length: ${bytes.byteLength}\r\n\r\n`);
+    const frame = new Uint8Array(header.byteLength + bytes.byteLength);
     frame.set(header);
-    frame.set(body, header.byteLength);
+    frame.set(bytes, header.byteLength);
     yield* Stream.make(frame).pipe(
       Stream.run(process.stdin),
       Effect.mapError(
@@ -151,18 +151,13 @@ export const makeLspTransport = Effect.fnUntraced(function* (options: LspTranspo
   yield* Effect.forkScoped(
     process.stdout.pipe(
       Stream.mapAccumEffect(
-        () => new Uint8Array(0) as Uint8Array<ArrayBufferLike>,
+        (): Uint8Array<ArrayBufferLike> => new Uint8Array(0),
         (buffer, chunk) => {
           const parsed = decodeFrames(append(buffer, chunk));
           return parsed._tag === "error"
             ? Effect.fail(new LspTransportError({ message: parsed.message }))
-            : Effect.succeed([parsed.rest, parsed.frames] as const);
+            : Effect.succeed([parsed.rest, parsed.frames]);
         },
-      ),
-      Stream.mapEffect((frame) =>
-        S.decodeEffect(S.fromJsonString(JsonRpcMessage))(frame).pipe(
-          Effect.mapError((error) => new LspTransportError({ message: String(error) })),
-        ),
       ),
       Stream.runForEach(route),
       Effect.catch((error) =>
@@ -175,26 +170,62 @@ export const makeLspTransport = Effect.fnUntraced(function* (options: LspTranspo
     ),
   );
 
-  const notify = Effect.fnUntraced(function* (method: string, params: JsonValue) {
-    yield* write({ jsonrpc: "2.0", method, params });
-  });
-  const request = Effect.fnUntraced(function* (method: string, params: JsonValue) {
-    const stopped = yield* Ref.get(terminalError);
-    if (stopped) return yield* stopped;
-    const id = yield* Ref.updateAndGet(nextId, (value) => value + 1);
-    const reply = yield* Deferred.make<JsonValue, LspTransportError>();
-    yield* Ref.update(pending, (current) => new Map(current).set(id, reply));
-    return yield* write({ jsonrpc: "2.0", id, method, params }).pipe(
-      Effect.andThen(Deferred.await(reply)),
-      Effect.ensuring(
-        Ref.update(pending, (current) => {
-          const next = new Map(current);
-          next.delete(id);
-          return next;
+  const notify = <A, I>(
+    method: string,
+    params: A,
+    paramsSchema: S.Codec<A, I>,
+  ): Effect.Effect<void, LspTransportError> =>
+    S.encodeEffect(
+      S.fromJsonString(
+        S.Struct({
+          jsonrpc: S.Literal("2.0"),
+          method: S.String,
+          params: paramsSchema,
         }),
       ),
+    )({ jsonrpc: "2.0", method, params }).pipe(
+      Effect.mapError((error) => new LspTransportError({ message: String(error) })),
+      Effect.flatMap(writeJson),
     );
-  });
+
+  const request = <A, I, O, OI>(
+    method: string,
+    params: A,
+    paramsSchema: S.Codec<A, I>,
+    resultSchema: S.Codec<O, OI>,
+  ): Effect.Effect<O, LspTransportError> =>
+    Effect.gen(function* () {
+      const stopped = yield* Ref.get(terminalError);
+      if (stopped) return yield* stopped;
+      const id = yield* Ref.updateAndGet(nextId, (value) => value + 1);
+      const reply = yield* Deferred.make<string, LspTransportError>();
+      yield* Ref.update(pending, (current) => new Map(current).set(id, reply));
+      const frameJson = yield* S.encodeEffect(
+        S.fromJsonString(
+          S.Struct({
+            jsonrpc: S.Literal("2.0"),
+            id: JsonRpcId,
+            method: S.String,
+            params: paramsSchema,
+          }),
+        ),
+      )({ jsonrpc: "2.0", id, method, params }).pipe(
+        Effect.mapError((error) => new LspTransportError({ message: String(error) })),
+        Effect.flatMap(writeJson),
+        Effect.andThen(Deferred.await(reply)),
+        Effect.ensuring(
+          Ref.update(pending, (current) => {
+            const next = new Map(current);
+            next.delete(id);
+            return next;
+          }),
+        ),
+      );
+      const decoded = yield* S.decodeEffect(S.fromJsonString(S.Struct({ result: resultSchema })))(
+        frameJson,
+      ).pipe(Effect.mapError((error) => new LspTransportError({ message: String(error) })));
+      return decoded.result;
+    });
 
   return {
     pid: process.pid,

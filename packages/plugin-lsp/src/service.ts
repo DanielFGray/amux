@@ -10,8 +10,6 @@ import {
   LspTransportError,
   makeLspTransport,
 } from "./transport.ts";
-import type { JsonValue } from "../../amux/src/effect/AttachProtocol.ts";
-import { JsonValueSchema } from "../../amux/src/effect/AttachProtocol.ts";
 
 export class LspServiceError extends S.TaggedError<LspServiceError>()("LspServiceError", {
   message: S.String,
@@ -22,6 +20,14 @@ export interface LspDocument {
   readonly language: string;
   readonly workspace: string;
 }
+
+/**
+ * Opaque LSP JSON (LSPAny) kept as JSON text. The server owns its shape; code
+ * that interprets a value decodes the text with that value's Schema (e.g.
+ * ShowReferencesArgs).
+ */
+const LspJsonText = S.flip(S.fromJsonString(S.Unknown));
+export type LspJsonText = typeof LspJsonText.Type;
 
 export const LspPositionSchema = S.Struct({ line: S.Int, character: S.Int });
 export type LspPosition = typeof LspPositionSchema.Type;
@@ -82,7 +88,7 @@ export interface LspDocumentSymbol {
   readonly children?: readonly LspDocumentSymbol[];
 }
 
-const DocumentSymbolSchema: S.Codec<LspDocumentSymbol, unknown, never, never> = S.Struct({
+const DocumentSymbolSchema: S.Codec<LspDocumentSymbol> = S.Struct({
   name: S.String,
   kind: S.Int,
   range: LspRangeSchema,
@@ -145,7 +151,7 @@ export type LspWorkspaceEdit = typeof WorkspaceEditSchema.Type;
 const CommandSchema = S.Struct({
   title: S.String,
   command: S.String,
-  arguments: S.optional(S.Array(JsonValueSchema)),
+  arguments: S.optional(LspJsonText),
 });
 /** LSP Command — title is what nvim virt-text / pickers show. */
 export type LspCommand = typeof CommandSchema.Type;
@@ -161,7 +167,7 @@ const CodeActionSchema = S.Struct({
   edit: S.optional(WorkspaceEditSchema),
   command: S.optional(CommandSchema),
   disabled: S.optional(S.Struct({ reason: S.String })),
-  data: S.optional(JsonValueSchema),
+  data: S.optional(LspJsonText),
 });
 export type LspCodeAction = typeof CodeActionSchema.Type;
 
@@ -174,7 +180,7 @@ export type LspCodeActionItem = typeof CodeActionItemSchema.Type;
 
 /** True when the item is a bare Command (command field is a string). */
 export const isLspCommand = (action: LspCodeActionItem): action is LspCommand =>
-  typeof (action as { readonly command?: unknown }).command === "string";
+  S.is(CommandSchema)(action);
 
 /**
  * vscode `editor.action.showReferences` / `*.showReferences` args.
@@ -186,19 +192,71 @@ export const ShowReferencesArgsSchema = S.Tuple([
   S.Array(LspLocationSchema),
 ]);
 
-/** Decode showReferences command arguments at the wire boundary. */
+/** Decode showReferences command arguments (JSON text) at the use site. */
 export const decodeShowReferencesArgs = (
-  args: readonly JsonValue[] | undefined,
+  args: string | undefined,
 ): Option.Option<readonly LspLocation[]> =>
-  Option.map(S.decodeUnknownOption(ShowReferencesArgsSchema)(args ?? []), (decoded) => decoded[2]);
+  Option.flatMap(Option.fromUndefinedOr(args), (text) =>
+    Option.map(S.decodeOption(S.fromJsonString(ShowReferencesArgsSchema))(text), (decoded) => decoded[2]),
+  );
 
 const CodeLensSchema = S.Struct({
   range: LspRangeSchema,
   command: S.optional(CommandSchema),
-  data: S.optional(JsonValueSchema),
+  data: S.optional(LspJsonText),
 });
 /** textDocument/codeLens item. Unresolved lenses omit `command` until resolve. */
 export type LspCodeLens = typeof CodeLensSchema.Type;
+
+const TextDocumentIdentifier = S.Struct({ uri: S.String });
+const TextDocumentPositionParams = S.Struct({
+  textDocument: TextDocumentIdentifier,
+  position: LspPositionSchema,
+});
+const TextDocumentParams = S.Struct({ textDocument: TextDocumentIdentifier });
+const EmptyObjectSchema = S.Struct({});
+
+export const InitializeParamsSchema = S.Struct({
+  processId: S.NullOr(S.Int),
+  rootUri: S.NullOr(S.String),
+  capabilities: EmptyObjectSchema,
+  workspaceFolders: S.optional(S.Array(S.Struct({ uri: S.String, name: S.String }))),
+});
+export const InitializeResultSchema = S.Struct({ capabilities: EmptyObjectSchema });
+
+const ReferencesParamsSchema = S.Struct({
+  textDocument: TextDocumentIdentifier,
+  position: LspPositionSchema,
+  context: S.Struct({ includeDeclaration: S.Boolean }),
+});
+const RenameParamsSchema = S.Struct({
+  textDocument: TextDocumentIdentifier,
+  position: LspPositionSchema,
+  newName: S.String,
+});
+const CodeActionParamsSchema = S.Struct({
+  textDocument: TextDocumentIdentifier,
+  range: LspRangeSchema,
+  context: S.Struct({ diagnostics: S.Array(DiagnosticSchema) }),
+});
+const ExecuteCommandParamsSchema = S.Struct({
+  command: S.String,
+  arguments: S.optional(LspJsonText),
+});
+const DidOpenParamsSchema = S.Struct({
+  textDocument: S.Struct({
+    uri: S.String,
+    languageId: S.String,
+    version: S.Int,
+    text: S.String,
+  }),
+});
+const DidChangeParamsSchema = S.Struct({
+  textDocument: S.Struct({ uri: S.String, version: S.Int }),
+  contentChanges: S.Array(S.Struct({ text: S.String })),
+});
+const DidCloseParamsSchema = S.Struct({ textDocument: TextDocumentIdentifier });
+
 export interface LspDocumentClient {
   readonly hover: (
     position: LspPosition,
@@ -243,10 +301,10 @@ export interface LspDocumentClient {
   readonly resolveCodeLens: (
     lens: LspCodeLens,
   ) => Effect.Effect<Option.Option<LspCodeLens>, LspServiceError>;
-  /** Run a server-side command (`workspace/executeCommand`). */
+  /** Run a server-side command (`workspace/executeCommand`). Result is opaque JSON text. */
   readonly executeCommand: (
     command: LspCommand,
-  ) => Effect.Effect<Option.Option<JsonValue>, LspServiceError>;
+  ) => Effect.Effect<Option.Option<LspJsonText>, LspServiceError>;
   readonly symbols: Effect.Effect<readonly LspDocumentSymbol[], LspServiceError>;
   readonly semanticTokens: Effect.Effect<Option.Option<LspSemanticTokens>, LspServiceError>;
   /** Each element is one `publishDiagnostics` payload for this URI (full replace). */
@@ -306,19 +364,26 @@ const makeServer = Effect.fnUntraced(function* (
   documents: DocumentServiceApi,
   spawn: NonNullable<LspServiceOptions["spawn"]>,
 ) {
-  const [language, root] = key.split("\u0000") as [string, string];
+  const separator = key.indexOf("\u0000");
+  const language = key.slice(0, separator);
+  const root = key.slice(separator + 1);
   const commands = Option.getOrUndefined(serverCommandsFor(catalog, language));
-  if (!commands?.length)
+  const command = commands?.[0];
+  if (command === undefined)
     return yield* new LspServiceError({ message: `no LSP server configured for ${language}` });
-  const command = commands[0]!;
   const transport = yield* spawn({ ...command, cwd: root }).pipe(
     Effect.mapError((error) => new LspServiceError({ message: error.message })),
   );
   yield* transport
-    .request("initialize", { processId: null, rootUri: `file://${root}`, capabilities: {} })
+    .request(
+      "initialize",
+      { processId: null, rootUri: `file://${root}`, capabilities: {} },
+      InitializeParamsSchema,
+      InitializeResultSchema,
+    )
     .pipe(Effect.mapError((error) => new LspServiceError({ message: error.message })));
   yield* transport
-    .notify("initialized", {})
+    .notify("initialized", {}, EmptyObjectSchema)
     .pipe(Effect.mapError((error) => new LspServiceError({ message: error.message })));
   const documentMap = yield* RcMap.make({
     lookup: (uri: string) => openDocument(uri, language, documents, transport),
@@ -340,162 +405,168 @@ const openDocument = Effect.fnUntraced(function* (
       Stream.runForEach((next) => {
         version += 1;
         return transport
-          .notify("textDocument/didChange", {
-            textDocument: { uri, version },
-            contentChanges: [{ text: next.text }],
-          })
+          .notify(
+            "textDocument/didChange",
+            {
+              textDocument: { uri, version },
+              contentChanges: [{ text: next.text }],
+            },
+            DidChangeParamsSchema,
+          )
           .pipe(Effect.mapError(asServiceError));
       }),
     ),
   );
   yield* Effect.addFinalizer(() =>
-    transport.notify("textDocument/didClose", { textDocument: { uri } }).pipe(Effect.ignore),
+    transport
+      .notify("textDocument/didClose", { textDocument: { uri } }, DidCloseParamsSchema)
+      .pipe(Effect.ignore),
   );
 });
 
 const notifyOpen = (transport: LspTransport, snapshot: DocumentSnapshot, version: number) =>
   transport
-    .notify("textDocument/didOpen", {
-      textDocument: {
-        uri: snapshot.uri,
-        languageId: snapshot.language,
-        version,
-        text: snapshot.text,
+    .notify(
+      "textDocument/didOpen",
+      {
+        textDocument: {
+          uri: snapshot.uri,
+          languageId: snapshot.language,
+          version,
+          text: snapshot.text,
+        },
       },
-    })
+      DidOpenParamsSchema,
+    )
     .pipe(Effect.mapError(asServiceError));
 
 const asServiceError = (error: { readonly message: string }) =>
   new LspServiceError({ message: error.message });
 
-const requestOption = <A>(
+const request = <A, I, O, OI>(
   transport: LspTransport,
   method: string,
-  params: JsonValue,
-  decodeResponse: (value: JsonValue) => Option.Option<Option.Option<A>>,
+  params: A,
+  paramsSchema: S.Codec<A, I>,
+  resultSchema: S.Codec<O, OI>,
 ) =>
-  transport.request(method, params).pipe(
-    Effect.mapError(asServiceError),
-    Effect.flatMap((value) =>
-      Option.match(decodeResponse(value), {
-        onNone: () => Effect.fail(new LspServiceError({ message: "invalid LSP response" })),
-        onSome: Effect.succeed,
-      }),
-    ),
-  );
+  transport
+    .request(method, params, paramsSchema, resultSchema)
+    .pipe(Effect.mapError(asServiceError));
 
 const makeClient = (transport: LspTransport, uri: string): LspDocumentClient => {
-  const textDocument = { textDocument: { uri } } as JsonValue;
-  const at = (position: LspPosition) => ({ textDocument: { uri }, position }) as JsonValue;
-  const optional = <A>(
+  const textDocument = { textDocument: { uri } };
+  const at = (position: LspPosition) => ({ textDocument: { uri }, position });
+  const optional = <A, I, O, OI>(
     method: string,
-    params: JsonValue,
-    decodeResponse: (value: JsonValue) => Option.Option<A>,
-  ) => requestOption(transport, method, params, nullableResponse(decodeResponse));
+    params: A,
+    paramsSchema: S.Codec<A, I>,
+    resultSchema: S.Codec<O, OI>,
+  ) => request(transport, method, params, paramsSchema, S.OptionFromNullOr(resultSchema));
   return {
-    hover: (position) =>
-      optional("textDocument/hover", at(position), (value) =>
-        S.decodeUnknownOption(HoverSchema)(value),
-      ),
+    hover: (position) => optional("textDocument/hover", at(position), TextDocumentPositionParams, HoverSchema),
     definition: (position) =>
-      optional("textDocument/definition", at(position), (value) =>
-        S.decodeUnknownOption(DefinitionSchema)(value),
-      ),
+      optional("textDocument/definition", at(position), TextDocumentPositionParams, DefinitionSchema),
     declaration: (position) =>
-      optional("textDocument/declaration", at(position), (value) =>
-        S.decodeUnknownOption(DefinitionSchema)(value),
-      ),
+      optional("textDocument/declaration", at(position), TextDocumentPositionParams, DefinitionSchema),
     typeDefinition: (position) =>
-      optional("textDocument/typeDefinition", at(position), (value) =>
-        S.decodeUnknownOption(DefinitionSchema)(value),
+      optional(
+        "textDocument/typeDefinition",
+        at(position),
+        TextDocumentPositionParams,
+        DefinitionSchema,
       ),
     implementation: (position) =>
-      optional("textDocument/implementation", at(position), (value) =>
-        S.decodeUnknownOption(DefinitionSchema)(value),
+      optional(
+        "textDocument/implementation",
+        at(position),
+        TextDocumentPositionParams,
+        DefinitionSchema,
       ),
     references: (position) =>
-      requestOption(
+      request(
         transport,
         "textDocument/references",
-        { textDocument: { uri }, position, context: { includeDeclaration: true } } as JsonValue,
-        (value) =>
-          nullableResponse((input) => S.decodeUnknownOption(S.Array(LocationSchema))(input))(value),
+        { textDocument: { uri }, position, context: { includeDeclaration: true } },
+        ReferencesParamsSchema,
+        S.OptionFromNullOr(S.Array(LocationSchema)),
       ).pipe(Effect.map((value) => Option.getOrElse(value, () => []))),
     rename: (position, newName) =>
       optional(
         "textDocument/rename",
-        { textDocument: { uri }, position, newName } as JsonValue,
-        (value) => S.decodeUnknownOption(WorkspaceEditSchema)(value),
+        { textDocument: { uri }, position, newName },
+        RenameParamsSchema,
+        WorkspaceEditSchema,
       ),
     completion: (position) =>
-      optional("textDocument/completion", at(position), (value) =>
-        S.decodeUnknownOption(CompletionSchema)(value),
-      ),
+      optional("textDocument/completion", at(position), TextDocumentPositionParams, CompletionSchema),
     signatureHelp: (position) =>
-      optional("textDocument/signatureHelp", at(position), (value) =>
-        S.decodeUnknownOption(SignatureHelpSchema)(value),
+      optional(
+        "textDocument/signatureHelp",
+        at(position),
+        TextDocumentPositionParams,
+        SignatureHelpSchema,
       ),
     codeAction: (range, context) =>
-      requestOption(
+      request(
         transport,
         "textDocument/codeAction",
         {
           textDocument: { uri },
           range,
           context: { diagnostics: context?.diagnostics ?? [] },
-        } as JsonValue,
-        (value) =>
-          nullableResponse((input) => S.decodeUnknownOption(S.Array(CodeActionItemSchema))(input))(
-            value,
-          ),
+        },
+        CodeActionParamsSchema,
+        S.OptionFromNullOr(S.Array(CodeActionItemSchema)),
       ).pipe(Effect.map((value) => Option.getOrElse(value, () => []))),
     resolveCodeAction: (action) =>
-      optional("codeAction/resolve", action as unknown as JsonValue, (value) =>
-        S.decodeUnknownOption(CodeActionSchema)(value),
-      ),
-    codeLenses: requestOption(transport, "textDocument/codeLens", textDocument, (value) =>
-      nullableResponse((input) => S.decodeUnknownOption(S.Array(CodeLensSchema))(input))(value),
+      optional("codeAction/resolve", action, CodeActionSchema, CodeActionSchema),
+    codeLenses: request(
+      transport,
+      "textDocument/codeLens",
+      textDocument,
+      TextDocumentParams,
+      S.OptionFromNullOr(S.Array(CodeLensSchema)),
     ).pipe(Effect.map((value) => Option.getOrElse(value, () => []))),
-    resolveCodeLens: (lens) =>
-      optional("codeLens/resolve", lens as unknown as JsonValue, (value) =>
-        S.decodeUnknownOption(CodeLensSchema)(value),
-      ),
+    resolveCodeLens: (lens) => optional("codeLens/resolve", lens, CodeLensSchema, CodeLensSchema),
     executeCommand: (command) =>
       optional(
         "workspace/executeCommand",
-        { command: command.command, arguments: command.arguments ?? [] } as JsonValue,
-        (value) => Option.some(value),
+        {
+          command: command.command,
+          arguments: command.arguments,
+        },
+        ExecuteCommandParamsSchema,
+        LspJsonText,
       ),
-    symbols: requestOption(transport, "textDocument/documentSymbol", textDocument, (value) =>
-      nullableResponse((input) => S.decodeUnknownOption(S.Array(DocumentSymbolSchema))(input))(
-        value,
-      ),
+    symbols: request(
+      transport,
+      "textDocument/documentSymbol",
+      textDocument,
+      TextDocumentParams,
+      S.OptionFromNullOr(S.Array(DocumentSymbolSchema)),
     ).pipe(Effect.map((value) => Option.getOrElse(value, () => []))),
-    semanticTokens: optional("textDocument/semanticTokens/full", textDocument, (value) =>
-      S.decodeUnknownOption(SemanticTokensSchema)(value),
+    semanticTokens: optional(
+      "textDocument/semanticTokens/full",
+      textDocument,
+      TextDocumentParams,
+      SemanticTokensSchema,
     ),
     diagnostics: transport.notifications.pipe(
-      Stream.filter(
-        (notification): notification is LspNotification & { readonly params: JsonValue } =>
-          notification.method === "textDocument/publishDiagnostics" &&
-          notification.params !== undefined,
-      ),
-      Stream.mapEffect((notification) =>
-        Option.match(S.decodeUnknownOption(DiagnosticsSchema)(notification.params), {
-          onNone: () => Effect.fail(new LspServiceError({ message: "invalid diagnostics" })),
-          onSome: Effect.succeed,
-        }),
+      Stream.filter((notification) => notification.method === "textDocument/publishDiagnostics"),
+      Stream.mapEffect((notification: LspNotification) =>
+        Option.match(
+          S.decodeOption(S.fromJsonString(S.Struct({ params: DiagnosticsSchema })))(
+            notification.frameJson,
+          ),
+          {
+            onNone: () => Effect.fail(new LspServiceError({ message: "invalid diagnostics" })),
+            onSome: (message) => Effect.succeed(message.params),
+          },
+        ),
       ),
       Stream.filter((value) => value.uri === uri),
       Stream.map((value) => value.diagnostics),
     ),
   };
 };
-
-const nullableResponse =
-  <A>(decode: (value: JsonValue) => Option.Option<A>) =>
-  (value: JsonValue): Option.Option<Option.Option<A>> =>
-    Option.match(Option.fromNullOr(value), {
-      onNone: () => Option.some(Option.none()),
-      onSome: (present) => Option.map(decode(present), Option.some),
-    });
