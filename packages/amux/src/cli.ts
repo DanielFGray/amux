@@ -575,9 +575,7 @@ function main(): Effect.Effect<number> {
                         ? { ...base, originSession }
                         : base;
         return Effect.gen(function* () {
-          const argsText = yield* encodeCliParsedArgs(parsed).pipe(
-            Effect.mapError((message) => new Error(message)),
-          );
+          const argsText = yield* encodeCliParsedArgs(parsed);
           return yield* control.Batch({
             values: [registeredCommand(sub, argsText)],
             context,
@@ -641,9 +639,7 @@ function main(): Effect.Effect<number> {
             ? yield* Schema.decodeUnknownEffect(Command)({ _tag: parsed.tag, ...parsed.parsed })
             : registeredCommand(
                 parsed.tag,
-                yield* encodeCliParsedArgs(parsed.parsed).pipe(
-                  Effect.mapError((message) => new Error(message)),
-                ),
+                yield* encodeCliParsedArgs(parsed.parsed),
               ),
         );
       }
@@ -722,7 +718,7 @@ function main(): Effect.Effect<number> {
           ]);
           const encodeWaitResult = (value: typeof CliWaitResultSchema.Type) =>
             Schema.encodeEffect(Schema.fromJsonString(CliWaitResultSchema))(value).pipe(
-              Effect.mapError((error) => new Error(String(error))),
+              Effect.mapError((error) => String(error)),
             );
 
           // Waiting for `settled` alone would return at once when the session
