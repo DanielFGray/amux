@@ -19,6 +19,7 @@
     "bench:motion-lsp": "bun test --cwd ../.. --timeout=60000 ./packages/editor/bench/motion-lsp.bench.tsx"
   },
   "dependencies": {
+    "@danielfgray/amux-cell-width": "workspace:*",
     "@danielfgray/amux-highlight": "workspace:*",
     "@danielfgray/amux-plugin-completion": "workspace:*",
     "@danielfgray/amux-plugin-lsp": "workspace:*",

@@ -1,9 +1,7 @@
 import { dlopen, FFIType as T, JSCallback, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
-import { LIB } from "./ghostty-library.ts";
+import { LIB } from "@danielfgray/amux-cell-width/ghostty-library.ts";
 import { terminalNew } from "./shim.ts";
 import { assertTerminalSize } from "./limits.ts";
-
-export { LIB_DIR } from "./ghostty-library.ts";
 
 /** Default history lines for a Terminal. The daemon replay screen and the
  *  attached client both use this so a reattach can restore the same reach of

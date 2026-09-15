@@ -10,7 +10,7 @@
  */
 import { Match, Option } from "effect";
 import { Schema as S } from "effect";
-import { cellColumnOf, rowCells, stringIndexAtCell } from "@danielfgray/amux/cell-width.ts";
+import { cellColumnOf, rowCells, stringIndexAtCell } from "@danielfgray/amux-cell-width/cell-width.ts";
 import type { Cursor } from "./schema.ts";
 
 export const MotionRange = S.Struct({

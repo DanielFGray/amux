@@ -6,7 +6,7 @@ import type { CapturedFrame, CapturedLine } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { Terminal } from "./ghostty.ts";
 import { captureScrollback } from "./capture.ts";
-import { cellColumnOf, rowCells, stringIndexOf } from "./cell-width.ts";
+import { cellColumnOf, rowCells, stringIndexOf } from "@danielfgray/amux-cell-width/cell-width.ts";
 
 type TranscriptEvent =
   | { type: "message"; role: "user" | "assistant"; text: string }

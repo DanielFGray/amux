@@ -27,7 +27,6 @@
     "./test-tmp.ts": "./src/test-tmp.ts",
     "./config.ts": "./src/config.ts",
     "./soft-schema.ts": "./src/soft-schema.ts",
-    "./cell-width.ts": "./src/cell-width.ts",
     "./env.ts": "./src/env.ts",
     "./git.ts": "./src/git.ts",
     "./space.ts": "./src/space.ts",
@@ -48,6 +47,7 @@
   },
   "dependencies": {
     "@danielfgray/amux-agent-facts": "workspace:*",
+    "@danielfgray/amux-cell-width": "workspace:*",
     "@danielfgray/amux-text-buffer": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node-shared": "catalog:",

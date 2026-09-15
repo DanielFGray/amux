@@ -8,10 +8,9 @@
  * engine — the same tables the terminal used when it printed the row — so
  * the mapping cannot drift from the layout the terminal actually made.
  *
- * Lives in amux core (not the editor package): copy mode and the scrollback
- * surface need it, and the editor peer-depends on amux. Putting it in editor
- * would make amux import editor — a cycle. text-buffer is an Effect-only leaf
- * and cannot carry the FFI.
+ * Leaf package shared by core, the vim engine, and the editor: one LIB
+ * resolution, no cycle through amux. text-buffer is an Effect-only leaf and
+ * cannot carry the FFI.
  */
 import { dlopen, FFIType as T, ptr } from "bun:ffi";
 import { LIB } from "./ghostty-library.ts";
