@@ -13,8 +13,9 @@
  * which would append the summary call into the live conversation.
  */
 import { LanguageModel, Prompt } from "effect/unstable/ai";
-import { Effect, Ref } from "effect";
+import { Effect, Ref, Schema as S } from "effect";
 import {
+  COMPACTION_STRATEGIES,
   DEFAULT_COMPACTION_STRATEGY,
   SUMMARY_CLOSE_TAG,
   SUMMARY_OPEN_TAG,
@@ -38,6 +39,17 @@ export {
 } from "./compaction-strategies.ts";
 
 export const COMPACTION_TOPIC = "agent-harness/compaction";
+
+/** Owner schema for COMPACTION_TOPIC payloads. */
+export const CompactionTopicPayloadSchema = S.Struct({
+  tokensBefore: S.Finite,
+  tokensAfter: S.Finite,
+  summarized: S.Finite,
+  kept: S.Finite,
+  strategy: S.Literals(COMPACTION_STRATEGIES),
+  manual: S.Boolean,
+});
+export type CompactionTopicPayload = typeof CompactionTopicPayloadSchema.Type;
 
 /** Default keep-recent budget — Pi docs/compaction.md keepRecentTokens. */
 export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;

@@ -1,15 +1,17 @@
 import { expect } from "bun:test";
-import { Effect, Fiber, Stream } from "effect";
+import { Effect, Fiber, Schema as S, Stream } from "effect";
 import { AgentLog, AgentLogDefault } from "./AgentLog.ts";
+import { OwnerJsonText } from "../layout.ts";
 import { testEffect } from "../test-effect.ts";
 
 const it = testEffect(AgentLogDefault);
+const ownerText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 
 const event = (state: "idle" | "running" | "blocked" | "done") => ({
   _tag: "topic" as const,
   session: "watch",
   topic: "session.state",
-  payload: state,
+  payload: ownerText(state),
 });
 
 it.effect("watch replays and tails without duplicating the replay seam", () =>
@@ -31,12 +33,12 @@ it.effect("append assigns a committed sequence starting at zero", () =>
       _tag: "topic",
       session: "seq",
       topic: "session.state",
-      payload: "running",
+      payload: ownerText("running"),
     });
     const second = yield* log.append({
       _tag: "agent.message",
       session: "seq",
-      event: { reason: "startup failed" },
+      event: ownerText({ reason: "startup failed" }),
     });
     expect(first.sequence).toBe(0);
     expect(second.sequence).toBe(1);

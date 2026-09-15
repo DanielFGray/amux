@@ -18,11 +18,23 @@ import {
   Schema as S,
   Stream,
 } from "effect";
-import type { AgentDelta, AgentEventPayload, JsonValue } from "@danielfgray/amux/protocol";
+import type { AgentDelta, AgentEventPayload } from "@danielfgray/amux/protocol";
 import { ProcessState } from "@danielfgray/amux";
 import type { PromptDelivery, PromptInboxEntry } from "@danielfgray/amux/project-store.ts";
 import { agentStateTopic } from "./state-topic.ts";
-import { AGENT_AWARENESS_IDENTITY_TOPIC } from "@danielfgray/amux-agent-awareness/identity-state.ts";
+import {
+  COMPACTION_TOPIC,
+  CompactionTopicPayloadSchema,
+  DEFAULT_COMPACTION_STRATEGY,
+  DEFAULT_KEEP_RECENT_TOKENS,
+  compactChatHistory,
+  type CompactionPolicy,
+  type CompactOutcome,
+} from "./compaction.ts";
+import {
+  AGENT_AWARENESS_IDENTITY_TOPIC,
+  AgentIdentitySchema,
+} from "@danielfgray/amux-agent-awareness/identity-state.ts";
 import {
   emit as toAgentMessage,
   delta as toAgentDelta,
@@ -32,14 +44,6 @@ import {
 } from "./protocol.ts";
 import type { AgentToolkit } from "./tools.ts";
 import { agentToolkitForChat } from "./tools.ts";
-import {
-  COMPACTION_TOPIC,
-  DEFAULT_COMPACTION_STRATEGY,
-  DEFAULT_KEEP_RECENT_TOKENS,
-  compactChatHistory,
-  type CompactionPolicy,
-  type CompactOutcome,
-} from "./compaction.ts";
 
 /** Matches the provider id `agent-harness.tsx` registers this worker under
  *  (`spawnProviders.register(["native", ...])`) — the identity a turn's
@@ -254,16 +258,17 @@ export function makeAgentWorker<E = never>(options: {
     const turns = yield* Ref.make(0);
     const running = yield* FiberHandle.make<void, never>();
 
-    const emitEvent = (event: HarnessEvent) => options.emit(toAgentMessage(options.session, event));
+    const emitEvent = (event: HarnessEvent) =>
+      toAgentMessage(options.session, event).pipe(Effect.flatMap(options.emit));
     const emitDelta = (fragment: HarnessDelta) =>
-      options.emit(toAgentDelta(options.session, fragment));
+      toAgentDelta(options.session, fragment).pipe(Effect.flatMap(options.emit));
     /** A worker-observed topic isn't harness vocabulary — it rides `agent.emit`'s
      *  `topic` variant directly, with `session` filled in here. */
     const emitTopic = (frame: {
       readonly _tag: "topic";
       readonly topic: string;
-      readonly payload: JsonValue;
-    }) => options.emit({ ...frame, session: options.session } as AgentEventPayload);
+      readonly payload: string;
+    }) => options.emit({ ...frame, session: options.session });
 
     /**
      * Pair every tool call the history left open with a cancelled result.
@@ -294,18 +299,24 @@ export function makeAgentWorker<E = never>(options: {
       }).pipe(
         Effect.tap((outcome) =>
           outcome._tag === "compacted"
-            ? emitTopic({
-                _tag: "topic",
-                topic: COMPACTION_TOPIC,
-                payload: {
-                  tokensBefore: outcome.tokensBefore,
-                  tokensAfter: outcome.tokensAfter,
-                  summarized: outcome.summarizedMessages,
-                  kept: outcome.keptMessages,
-                  strategy: outcome.strategy,
-                  manual: opts?.force === true,
-                },
-              }).pipe(Effect.andThen(options.persist ?? Effect.void))
+            ? S.encodeEffect(S.fromJsonString(CompactionTopicPayloadSchema))({
+                tokensBefore: outcome.tokensBefore,
+                tokensAfter: outcome.tokensAfter,
+                summarized: outcome.summarizedMessages,
+                kept: outcome.keptMessages,
+                strategy: outcome.strategy,
+                manual: opts?.force === true,
+              }).pipe(
+                Effect.orDie,
+                Effect.flatMap((payload) =>
+                  emitTopic({
+                    _tag: "topic",
+                    topic: COMPACTION_TOPIC,
+                    payload,
+                  }),
+                ),
+                Effect.andThen(options.persist ?? Effect.void),
+              )
             : Effect.void,
         ),
       );
@@ -343,20 +354,24 @@ export function makeAgentWorker<E = never>(options: {
         // The process itself is idle either way — a failed turn does not exit
         // it, so SESSION_STATE_TOPIC (core's neutral ProcessState) can only
         // ever say `idle` here. `turnEnd` above already carries the failure
-        // (`outcome: "failed"` + `error`) as a durable plugin-owned fact; this
-        // second report rides the same awareness-owned topic the opencode
-        // hook uses, so a live (non-exited) failure still reaches the
-        // sidebar/tab glyph the way `turnEnd` alone cannot.
-        Effect.andThen(emitTopic(agentStateTopic(ProcessState.Idle))),
+        // (`outcome: "failed"` + `error`) as a durable harness fact.
+        Effect.andThen(agentStateTopic(ProcessState.Idle).pipe(Effect.flatMap(emitTopic))),
+        // Identity only — which vendor is reporting. Process state (including
+        // idle-after-failure) rides SESSION_STATE_TOPIC; turn.end carries the
+        // failure outcome as a durable harness fact.
         Effect.andThen(
-          emitTopic({
-            _tag: "topic",
-            topic: AGENT_AWARENESS_IDENTITY_TOPIC,
-            payload: {
-              agent: NATIVE_AGENT_IDENTITY,
-              state: outcome === "failed" ? "failed" : "idle",
-            },
-          }),
+          S.encodeEffect(S.fromJsonString(AgentIdentitySchema))({
+            agent: NATIVE_AGENT_IDENTITY,
+          }).pipe(
+            Effect.orDie,
+            Effect.flatMap((payload) =>
+              emitTopic({
+                _tag: "topic",
+                topic: AGENT_AWARENESS_IDENTITY_TOPIC,
+                payload,
+              }),
+            ),
+          ),
         ),
         // Auto-compact after a successful turn when the gauge says so.
         // Manual /compact uses force:true and skips the threshold.
@@ -466,7 +481,7 @@ export function makeAgentWorker<E = never>(options: {
           ),
           Effect.andThen(emitEvent({ _tag: "turn.start", turn, prompt })),
           Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
-          Effect.andThen(emitTopic(agentStateTopic(ProcessState.Running))),
+          Effect.andThen(agentStateTopic(ProcessState.Running).pipe(Effect.flatMap(emitTopic))),
           Effect.andThen(runStep(prompt)),
           Effect.onExit((exit) => settle(turn, exit, responseText)),
           // settle has already reported the failure as turn.end{failed}, so the

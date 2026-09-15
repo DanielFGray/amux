@@ -1,5 +1,5 @@
 import { testEffect } from "../test-effect.ts";
-import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Schema as S, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { expect } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -9,6 +9,9 @@ import { AgentLog, AgentLogDefault, makeAgentLog } from "./AgentLog.ts";
 import { ProcessState } from "../process-state.ts";
 import { SessionSupervisor } from "./SessionSupervisor.ts";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
+import { OwnerJsonText } from "../layout.ts";
+
+const ownerText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 
 /**
  * Frames up to and including the session's exit.
@@ -81,17 +84,17 @@ testEffect("a self-reported state is committed to the session log, not only publ
       cols: 80,
       rows: 24,
     });
-    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, ProcessState.Running);
-    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, ProcessState.Blocked);
+    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, ownerText(ProcessState.Running));
+    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, ownerText(ProcessState.Blocked));
     // A report for a session nobody is running has nowhere to land. It must not
     // fail the reporter: the hook lives inside somebody else's agent.
-    yield* supervisor.report("no-such-pane", SESSION_STATE_TOPIC, ProcessState.Running);
+    yield* supervisor.report("no-such-pane", SESSION_STATE_TOPIC, ownerText(ProcessState.Running));
     yield* supervisor.kill("foreign-agent");
 
     const events = yield* log.read("foreign-agent");
     expect(events.map((event) => event._tag === "topic" && event.payload)).toEqual([
-      ProcessState.Running,
-      ProcessState.Blocked,
+      ownerText(ProcessState.Running),
+      ownerText(ProcessState.Blocked),
     ]);
     // Sequenced like any other event, which is what a replay cursor reads.
     expect(events.map((event) => event.sequence)).toEqual([0, 1]);
@@ -121,10 +124,14 @@ testEffect("a report under a plugin-owned topic commits and replays as an opaque
       cols: 80,
       rows: 24,
     });
-    yield* supervisor.report("foreign-agent", "amux.agent-awareness/identity-state", {
-      agent: "opencode",
-      state: "working",
-    });
+    yield* supervisor.report(
+      "foreign-agent",
+      "amux.agent-awareness/identity-state",
+      ownerText({
+        agent: "opencode",
+        state: "working",
+      }),
+    );
     yield* supervisor.kill("foreign-agent");
 
     const events = yield* log.read("foreign-agent");
@@ -134,7 +141,7 @@ testEffect("a report under a plugin-owned topic commits and replays as an opaque
       session: "foreign-agent",
       sequence: 0,
       topic: "amux.agent-awareness/identity-state",
-      payload: { agent: "opencode", state: "working" },
+      payload: ownerText({ agent: "opencode", state: "working" }),
     });
   }).pipe(
     Effect.provide(
@@ -198,12 +205,17 @@ testEffect("sync replays a pending component transcript before respawn", () =>
     yield* log.append({
       _tag: "agent.message",
       session: "pending-agent",
-      event: { _tag: "turn.start", turn: "turn-1", prompt: "hello" },
+      event: ownerText({ _tag: "turn.start", turn: "turn-1", prompt: "hello" }),
     });
     yield* log.append({
       _tag: "agent.message",
       session: "pending-agent",
-      event: { _tag: "turn.end", turn: "turn-1", outcome: "completed", text: "world" },
+      event: ownerText({
+        _tag: "turn.end",
+        turn: "turn-1",
+        outcome: "completed",
+        text: "world",
+      }),
     });
 
     const replay = Stream.runCollect(Stream.take(subscription.frames, 2));
@@ -213,10 +225,12 @@ testEffect("sync replays a pending component transcript before respawn", () =>
     // Replayed in the order the daemon committed them, with the payloads it
     // never read carried through untouched.
     expect(frames.map((frame) => (frame as { sequence: number }).sequence)).toEqual([0, 1]);
-    expect(frames.map((frame) => (frame as { event: { _tag: string } }).event._tag)).toEqual([
-      "turn.start",
-      "turn.end",
-    ]);
+    expect(
+      frames.map((frame) => {
+        if (frame._tag !== "agent.message") return undefined;
+        return S.decodeSync(S.fromJsonString(S.Struct({ _tag: S.String })))(frame.event)._tag;
+      }),
+    ).toEqual(["turn.start", "turn.end"]);
   }).pipe(
     Effect.provide(
       SessionSupervisor.layer.pipe(
@@ -581,7 +595,7 @@ testEffect("a crashed native agent exits with a neutral state and a nonzero code
       session: "crashed-worker",
       sequence: 0,
       topic: "session.state",
-      payload: "done",
+      payload: ownerText("done"),
     });
     expect(frames.at(-1)).toEqual({
       _tag: "exit",
@@ -647,9 +661,9 @@ testEffect("paste wraps bytes when the session screen has bracketed paste enable
 testEffect("paste to an unknown session is a BufferError, not a crash", () =>
   Effect.gen(function* () {
     const supervisor = yield* SessionSupervisor;
-    const failed = yield* supervisor.paste("missing", new TextEncoder().encode("x")).pipe(
-      Effect.flip,
-    );
+    const failed = yield* supervisor
+      .paste("missing", new TextEncoder().encode("x"))
+      .pipe(Effect.flip);
     expect(String(failed)).toContain("unknown session");
   }).pipe(
     Effect.provide(

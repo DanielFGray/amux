@@ -8,15 +8,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Option,
-  Scope,
-  Stream,
-} from "effect";
+import { Deferred, Effect, Exit, Fiber, Option, Scope, Stream } from "effect";
 import {
   startDaemon,
   DaemonError,
@@ -24,9 +16,7 @@ import {
 } from "../packages/amux/src/daemon.ts";
 import { AttachClient } from "../packages/amux/src/attach.ts";
 import { SessionClient } from "../packages/amux/src/client.ts";
-import {
-  connectControl,
-} from "../packages/amux/src/control-client.ts";
+import { connectControl } from "../packages/amux/src/control-client.ts";
 import { MAX_RPC_BYTES } from "../packages/amux/src/limits.ts";
 import { SessionStore, sessionPaths } from "../packages/amux/src/session.ts";
 import { SessionHandle } from "../packages/amux/src/session-handle.ts";
@@ -433,7 +423,7 @@ testEffect("agent.prompt --wait returns once the session settles again", () =>
       ]),
     );
     expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
-    expect(JSON.parse(stdout)).toMatchObject({ topic: "session.state", payload: "idle" });
+    expect(JSON.parse(stdout)).toMatchObject({ topic: "session.state", payload: '"idle"' });
   }),
 );
 

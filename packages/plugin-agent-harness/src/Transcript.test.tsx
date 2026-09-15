@@ -5,10 +5,17 @@ import { expect, test } from "bun:test";
 import { createTestRenderer, createMockMouse } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Transcript } from "./Transcript.tsx";
-import { emit, delta, OpaqueJsonText, decodeOpaqueJsonText, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
-import { Option } from "effect";
+import {
+  emit,
+  delta,
+  OpaqueJsonText,
+  decodeOpaqueJsonText,
+  type HarnessDelta,
+  type HarnessEvent,
+} from "./protocol.ts";
+import { Effect, Option } from "effect";
 const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
-import type { AgentFrame, JsonValue } from "@danielfgray/amux/protocol";
+import type { AgentFrame } from "@danielfgray/amux/protocol";
 
 /** Wrap a harness event/fragment the way core actually delivers it — this
  *  test used to hand `Transcript` the harness tags directly, which the wire
@@ -19,7 +26,11 @@ const DELTA_TAGS = new Set<string>([
   "tool.params-delta",
   "tool.params-end",
 ]);
-type TopicPayload = { readonly _tag: "topic"; readonly topic: string; readonly payload: JsonValue };
+type TopicPayload = {
+  readonly _tag: "topic";
+  readonly topic: string;
+  readonly payload: typeof OpaqueJsonText.Encoded;
+};
 function wrap(
   value: (HarnessEvent | HarnessDelta | TopicPayload) & {
     readonly session: string;
@@ -27,10 +38,20 @@ function wrap(
   },
 ): AgentFrame {
   const { session, sequence, ...event } = value;
-  if (event._tag === "topic") return { session, sequence: sequence ?? 0, ...event } as AgentFrame;
+  if (event._tag === "topic")
+    return {
+      session,
+      sequence: sequence ?? 0,
+      _tag: "topic",
+      topic: event.topic,
+      payload: jp(event.payload),
+    };
   return DELTA_TAGS.has(event._tag)
-    ? delta(session, event as HarnessDelta)
-    : ({ ...emit(session, event as HarnessEvent), sequence: sequence ?? 0 } as AgentFrame);
+    ? Effect.runSync(delta(session, event as HarnessDelta))
+    : ({
+        ...Effect.runSync(emit(session, event as HarnessEvent)),
+        sequence: sequence ?? 0,
+      } as AgentFrame);
 }
 
 test("native transcript renders semantic text and tool results", async () => {

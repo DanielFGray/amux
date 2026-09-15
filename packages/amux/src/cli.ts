@@ -41,7 +41,7 @@ import {
 } from "effect";
 import { BunRuntime } from "@effect/platform-bun";
 import type { RuntimeCommand } from "./commands.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
+import type { JsonValue, AgentEvent } from "./effect/AttachProtocol.ts";
 import type { PluginCommandDeclaration } from "./plugin-behaviour.ts";
 
 const writeOut = (text: string) => process.stdout.write(text + "\n");
@@ -303,7 +303,10 @@ function main(): Effect.Effect<number> {
         const { reportProcessState, ProcessStateSchema } = yield* Effect.promise(
           () => import("./process-state.ts"),
         );
-        const decoded = Option.flatMap(Option.fromNullishOr(state), Schema.decodeUnknownOption(ProcessStateSchema));
+        const decoded = Option.flatMap(
+          Option.fromNullishOr(state),
+          Schema.decodeUnknownOption(ProcessStateSchema),
+        );
         if (Option.isNone(decoded)) {
           writeErr(`error: --state must be one of ${ProcessStateSchema.literals.join(", ")}`);
           return 2;
@@ -341,6 +344,7 @@ function main(): Effect.Effect<number> {
       commandsMod,
       { parseArgs, fieldNames, parseFields, parsePluginArgs },
       { SESSION_STATE_TOPIC },
+      { ProcessStateSchema },
     ] = yield* Effect.promise(() =>
       Promise.all([
         import("./session.ts"),
@@ -348,6 +352,7 @@ function main(): Effect.Effect<number> {
         import("./commands.ts"),
         import("./command-cli.ts"),
         import("./effect/AttachProtocol.ts"),
+        import("./process-state.ts"),
       ]),
     );
     const {
@@ -660,11 +665,12 @@ function main(): Effect.Effect<number> {
           // process loads no plugins, so it has no way to recognise one and no
           // business asserting that a session has them.
           const settled = prompt.until ?? "idle";
-          const publishedState = (event: {
-            readonly _tag: string;
-            readonly topic?: string;
-            readonly payload?: unknown;
-          }) => (event.topic === SESSION_STATE_TOPIC ? event.payload : undefined);
+          const publishedState = (event: AgentEvent) => {
+            if (event._tag !== "topic" || event.topic !== SESSION_STATE_TOPIC) return undefined;
+            return Option.getOrUndefined(
+              Schema.decodeOption(Schema.fromJsonString(ProcessStateSchema))(event.payload),
+            );
+          };
 
           // Waiting for `settled` alone would return at once when the session
           // is still in it: this waits for the prompt to move it first.

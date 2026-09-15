@@ -1,5 +1,5 @@
-import { Schema as S } from "effect";
-import type { AgentDelta, AgentEvent, JsonValue } from "@danielfgray/amux/protocol";
+import { Effect, Option, Schema as S } from "effect";
+import type { AgentDelta, AgentEvent } from "@danielfgray/amux/protocol";
 import { PermissionDecisionSchema, PermissionRuleSchema } from "@danielfgray/amux/permission.ts";
 
 /**
@@ -154,26 +154,44 @@ export type HarnessDelta = S.Schema.Type<typeof HarnessDelta>;
 /** A committed harness event, paired with the order core gave it. */
 export type SequencedHarnessEvent = HarnessEvent & { readonly sequence: number };
 
-const encodeEvent = S.encodeSync(HarnessEvent);
-const decodeEvent = S.decodeUnknownSync(HarnessEvent);
-const encodeDelta = S.encodeSync(HarnessDelta);
-const decodeDelta = S.decodeUnknownSync(HarnessDelta);
+const decodeEventText = S.decodeUnknownOption(S.fromJsonString(HarnessEvent));
+const decodeDeltaText = S.decodeUnknownOption(S.fromJsonString(HarnessDelta));
 
 /** Wrap one harness event as the payload core will commit and sequence. */
-export const emit = (session: string, event: HarnessEvent) =>
-  ({
-    _tag: "agent.message",
-    session,
-    event: encodeEvent(event) as JsonValue,
-  }) as const;
+export const emit = (
+  session: string,
+  event: HarnessEvent,
+): Effect.Effect<{
+  readonly _tag: "agent.message";
+  readonly session: string;
+  readonly event: string;
+}> =>
+  S.encodeEffect(S.fromJsonString(HarnessEvent))(event).pipe(
+    Effect.orDie,
+    Effect.map((text) => ({
+      _tag: "agent.message" as const,
+      session,
+      event: text,
+    })),
+  );
 
 /** Wrap one live fragment. It is delivered as sent and never enters the log. */
-export const delta = (session: string, fragment: HarnessDelta) =>
-  ({
-    _tag: "agent.delta",
-    session,
-    delta: encodeDelta(fragment) as JsonValue,
-  }) as const;
+export const delta = (
+  session: string,
+  fragment: HarnessDelta,
+): Effect.Effect<{
+  readonly _tag: "agent.delta";
+  readonly session: string;
+  readonly delta: string;
+}> =>
+  S.encodeEffect(S.fromJsonString(HarnessDelta))(fragment).pipe(
+    Effect.orDie,
+    Effect.map((text) => ({
+      _tag: "agent.delta" as const,
+      session,
+      delta: text,
+    })),
+  );
 
 /**
  * Read a harness event back out of a committed log entry.
@@ -185,18 +203,11 @@ export const delta = (session: string, fragment: HarnessDelta) =>
  */
 export function readEvent(frame: AgentEvent): SequencedHarnessEvent | undefined {
   if (frame._tag !== "agent.message") return undefined;
-  try {
-    return { ...decodeEvent(frame.event), sequence: frame.sequence };
-  } catch {
-    return undefined;
-  }
+  const event = Option.getOrUndefined(decodeEventText(frame.event));
+  return event === undefined ? undefined : { ...event, sequence: frame.sequence };
 }
 
 /** Read a live fragment back out of an `agent.delta` frame. */
 export function readDelta(frame: AgentDelta): HarnessDelta | undefined {
-  try {
-    return decodeDelta(frame.delta);
-  } catch {
-    return undefined;
-  }
+  return Option.getOrUndefined(decodeDeltaText(frame.delta));
 }

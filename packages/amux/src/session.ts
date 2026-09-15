@@ -3,8 +3,7 @@ import { homedir } from "node:os";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { Clock, Config, Context, Effect, Layer, Option, Result, Schema as S } from "effect";
-import { layoutPanes, parseLayout, OwnerJsonText } from "./layout.ts";
-import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
+import { layoutPanes, decodeLayout, OwnerJsonText } from "./layout.ts";
 import {
   MAX_SESSIONS,
   MAX_LAYOUT_BYTES,
@@ -390,11 +389,11 @@ export const optionalEnvVar = (name: string) =>
   );
 
 export function parseSessionState(
-  value: SessionState | JsonValue,
+  value: typeof SessionStateSchema.Type,
   expectedId?: string,
 ): Effect.Effect<SessionState, SessionStateError> {
   return Effect.gen(function* () {
-    const state = yield* S.decodeUnknownEffect(SessionStateSchema)(value).pipe(
+    const state = yield* S.decodeEffect(SessionStateSchema)(value).pipe(
       Effect.mapError(schemaError),
     );
     if (expectedId !== undefined && state.id !== expectedId) return yield* invalidState;
@@ -427,17 +426,18 @@ export function parseSessionState(
           owned.set(entry.id, entry.exited);
         }
         if (candidate.layout) {
-          const parsed = yield* S.decodeEffect(S.fromJsonString(JsonValueSchema))(
-            candidate.layout,
-          ).pipe(Effect.mapError(schemaError));
-          const layout = yield* parseLayout(parsed).pipe(
+          const layout = yield* decodeLayout(candidate.layout).pipe(
             Effect.mapError((error) => new SessionStateError({ message: error.message })),
           );
-          const focus = S.decodeUnknownOption(S.Struct({ focus: S.optional(S.String) }))(parsed);
+          // makeLayout drops a focus that names no placed pane; a persisted
+          // layout that asked for one must fail rather than silently forget.
+          const rawFocus = S.decodeOption(
+            S.fromJsonString(S.Struct({ focus: S.optional(S.String) })),
+          )(candidate.layout);
           if (
-            Option.isSome(focus) &&
-            focus.value.focus !== undefined &&
-            layout.focus !== focus.value.focus
+            Option.isSome(rawFocus) &&
+            rawFocus.value.focus !== undefined &&
+            layout.focus !== rawFocus.value.focus
           )
             return yield* layoutFocus;
           for (const pane of layoutPanes(layout.root)) {

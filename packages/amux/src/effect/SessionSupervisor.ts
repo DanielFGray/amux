@@ -19,7 +19,6 @@ import {
   type AgentEventPayload,
   type AgentFrame,
   type AttachFrame,
-  type JsonValue,
   type Topic,
 } from "./AttachProtocol.ts";
 import { AgentLog, type AgentLogError } from "./AgentLog.ts";
@@ -30,8 +29,9 @@ import {
   type SessionForeground,
   type SessionSpec,
 } from "./SessionRegistry.ts";
+import { OwnerJsonText } from "../layout.ts";
+import { ProcessState, ProcessStateSchema } from "../process-state.ts";
 import { isTerminalSize } from "../limits.ts";
-import { ProcessState } from "../process-state.ts";
 
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
 const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
@@ -167,7 +167,7 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
         string,
         (
           topic: string,
-          payload: JsonValue,
+          payload: OwnerJsonText,
         ) => Effect.Effect<void, AgentLogError | SessionObserverError>
       >
     >(new Map());
@@ -394,11 +394,14 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
             // which is the fact an agent-aware subscriber derives "failed"
             // from, not something this topic says.
             if (spec.agent && code !== null) {
+              const payload = yield* S.encodeEffect(S.fromJsonString(ProcessStateSchema))(
+                ProcessState.Done,
+              ).pipe(Effect.orDie);
               const done = yield* agentLog.append({
                 _tag: "topic",
                 session: spec.id,
                 topic: SESSION_STATE_TOPIC,
-                payload: ProcessState.Done,
+                payload,
               });
               yield* stateObserver.onState(spec.id, ProcessState.Done);
               yield* hub.publish(done);
@@ -432,9 +435,14 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
        */
       const ingest = Effect.fnUntraced(function* (event: AgentFrame | AgentEventPayload) {
         const committed = isAgentEventPayload(event) ? yield* agentLog.append(event) : event;
-        if (isSessionStateTopic(committed) && committed.payload !== lastSessionState) {
-          lastSessionState = committed.payload;
-          yield* stateObserver.onState(spec.id, committed.payload);
+        if (isSessionStateTopic(committed)) {
+          const decoded = yield* S.decodeEffect(S.fromJsonString(ProcessStateSchema))(
+            committed.payload,
+          ).pipe(Effect.orElseSucceed(() => null));
+          if (decoded !== null && decoded !== lastSessionState) {
+            lastSessionState = decoded;
+            yield* stateObserver.onState(spec.id, decoded);
+          }
         }
         if (phase === "active") yield* hub.publish(committed);
         else yield* Queue.offer(pendingEvents, committed);
@@ -443,7 +451,7 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
       // Process reports take the same generic topic door as component events,
       // so replay and live subscribers observe one ordered fact stream.
       yield* Ref.update(reporters, (current) =>
-        new Map(current).set(spec.id, (topic: string, payload: JsonValue) =>
+        new Map(current).set(spec.id, (topic: string, payload: OwnerJsonText) =>
           ingest({
             _tag: "topic",
             session: spec.id,
@@ -536,7 +544,7 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
        * closed while its hook was mid-write is ordinary, not an error anyone
        * can act on.
        */
-      report: (id: string, topic: string, payload: JsonValue) =>
+      report: (id: string, topic: string, payload: OwnerJsonText) =>
         Ref.get(reporters).pipe(
           Effect.flatMap((current) => current.get(id)?.(topic, payload) ?? Effect.void),
         ),
@@ -686,5 +694,5 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
   static readonly layer = Layer.effect(this, this.make).pipe(Layer.provide(SessionRegistry.layer));
 }
 
-const isSessionStateTopic = (frame: AgentFrame): frame is Topic & { readonly payload: string } =>
-  frame._tag === "topic" && frame.topic === SESSION_STATE_TOPIC && S.is(S.String)(frame.payload);
+const isSessionStateTopic = (frame: AgentFrame): frame is Topic =>
+  frame._tag === "topic" && frame.topic === SESSION_STATE_TOPIC;

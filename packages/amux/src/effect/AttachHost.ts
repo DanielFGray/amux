@@ -24,7 +24,6 @@ import { randomUUID } from "node:crypto";
 import { AttachHub } from "./AttachHub.ts";
 import {
   AttachFrameAccumulator,
-  JsonValueSchema,
   SESSION_STATE_TOPIC,
   type AttachFrame,
   type PermissionAnswer,
@@ -54,6 +53,7 @@ import {
 } from "../agent-session.ts";
 import { layoutRefs, OwnerJsonText } from "../layout.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
+import { ProcessStateSchema } from "../process-state.ts";
 
 /**
  * Requests a process may send over its daemon-private self-report socket.
@@ -73,12 +73,12 @@ import type { WorkspaceSnapshot } from "../workspace.ts";
 const ProcessStateEnvelope = S.Struct({
   id: S.optional(S.String),
   method: S.Literals(["process.state"]),
-  params: S.Struct({ session: S.String, state: S.String }),
+  params: S.Struct({ session: S.String, state: ProcessStateSchema }),
 });
 const TopicPublishEnvelope = S.Struct({
   id: S.optional(S.String),
   method: S.Literals(["topic.publish"]),
-  params: S.Struct({ session: S.String, topic: S.String, payload: JsonValueSchema }),
+  params: S.Struct({ session: S.String, topic: S.String, payload: OwnerJsonText }),
 });
 const ReportAgentSessionEnvelope = S.Struct({
   id: S.optional(S.String),
@@ -353,10 +353,12 @@ export const makeAttachHost = <
                 // state handling before observers see this process fact.
                 const report =
                   request.method === "process.state"
-                    ? supervisor.report(
-                        request.params.session,
-                        SESSION_STATE_TOPIC,
+                    ? S.encodeEffect(S.fromJsonString(ProcessStateSchema))(
                         request.params.state,
+                      ).pipe(
+                        Effect.flatMap((payload) =>
+                          supervisor.report(request.params.session, SESSION_STATE_TOPIC, payload),
+                        ),
                       )
                     : supervisor.report(
                         request.params.session,
@@ -564,8 +566,7 @@ export const makeAttachHost = <
             ...options,
           }).pipe(
             Effect.mapError(
-              (error) =>
-                new PtyError({ operation: "prompt", message: errorMessage(error) }),
+              (error) => new PtyError({ operation: "prompt", message: errorMessage(error) }),
             ),
           );
           yield* supervisor.handle({
@@ -584,8 +585,7 @@ export const makeAttachHost = <
               : { _tag: "agent.interrupt", reason },
           ).pipe(
             Effect.mapError(
-              (error) =>
-                new PtyError({ operation: "interrupt", message: errorMessage(error) }),
+              (error) => new PtyError({ operation: "interrupt", message: errorMessage(error) }),
             ),
           );
           yield* supervisor.handle({
@@ -601,8 +601,7 @@ export const makeAttachHost = <
             ...answer,
           }).pipe(
             Effect.mapError(
-              (error) =>
-                new PtyError({ operation: "decide", message: errorMessage(error) }),
+              (error) => new PtyError({ operation: "decide", message: errorMessage(error) }),
             ),
           );
           yield* supervisor.handle({

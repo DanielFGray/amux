@@ -112,11 +112,14 @@ const Exit = S.TaggedStruct("exit", {
 /**
  * A durable value published under a name whose meaning belongs to the named
  * subscriber, not core.
+ *
+ * `payload` is {@link OwnerJsonText}: nested as real JSON on the wire (`S.flip`);
+ * only the topic's owner decodes the text with `S.fromJsonString(ownerSchema)`.
  */
 const topicFields = {
   session: S.String,
   topic: S.String,
-  payload: JsonValueSchema,
+  payload: OwnerJsonText,
 };
 const TopicPayload = S.TaggedStruct("topic", topicFields);
 export const Topic = S.TaggedStruct("topic", {
@@ -132,15 +135,16 @@ export type Topic = S.Schema.Type<typeof Topic>;
  * vocabulary, and a multiplexor that spelled it out here would be asserting
  * that every component session has turns and tools. What core actually needs
  * is far less: `session` says which log, `sequence` orders it, and `event` is
- * carried verbatim. `AgentLog` bears this out — it reads only those two fields
- * and never inspects a payload.
+ * carried as {@link OwnerJsonText}. `AgentLog` bears this out — it reads only
+ * those two fields and never inspects a payload.
  *
  * The harness owns the schema inside `event` and is the only thing that
- * decodes it. Core stores, orders and replays.
+ * decodes it (`S.fromJsonString(HarnessEvent)`). Core stores, orders and
+ * replays.
  */
 const agentMessageFields = {
   session: S.String,
-  event: JsonValueSchema,
+  event: OwnerJsonText,
 };
 const AgentMessagePayload = S.TaggedStruct("agent.message", agentMessageFields);
 const AgentMessage = S.TaggedStruct("agent.message", {
@@ -194,13 +198,14 @@ const AgentEmit = S.TaggedStruct("agent.emit", { event: AgentEventPayloadSchema 
  *
  * Streamed text and partial tool arguments exist only to keep a pane moving
  * while a durable event is still being assembled; a client that attaches later
- * rebuilds from the log instead. Opaque for the same reason as `agent.message`,
- * and a frame of its own because carrying a sequence would promise a replay
- * that never comes.
+ * rebuilds from the log instead. `delta` is {@link OwnerJsonText} for the same
+ * reason as `agent.message`'s `event`; the harness alone decodes it. A frame
+ * of its own because carrying a sequence would promise a replay that never
+ * comes.
  */
 export const AgentDelta = S.TaggedStruct("agent.delta", {
   session: S.String,
-  delta: JsonValueSchema,
+  delta: OwnerJsonText,
 });
 export type AgentDelta = S.Schema.Type<typeof AgentDelta>;
 

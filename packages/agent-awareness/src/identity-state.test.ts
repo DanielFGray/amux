@@ -1,12 +1,17 @@
 import { expect, test } from "bun:test";
-import type { JsonValue, Topic } from "@danielfgray/amux/protocol";
+import { Schema as S } from "effect";
+import type { Topic } from "@danielfgray/amux/protocol";
 import { AGENT_AWARENESS_IDENTITY_TOPIC, agentIdentityFromTopic } from "./identity-state.ts";
 
-const frame = (topic: string, payload: JsonValue): Topic => ({
+/** Test helper: Encoded nested JSON → Type owner JSON text (same as OwnerJsonText). */
+const OwnerJsonText = S.flip(S.fromJsonString(S.Unknown));
+const ownerText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
+
+const frame = (topic: string, payload: typeof OwnerJsonText.Encoded): Topic => ({
   _tag: "topic",
   session: "pane-a",
   topic,
-  payload,
+  payload: ownerText(payload),
   sequence: 0,
 });
 

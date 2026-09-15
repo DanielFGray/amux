@@ -38,7 +38,12 @@ import {
   loadCatalogOverrides,
   makeDocumentService,
 } from "@danielfgray/amux-plugin-lsp";
-import { PREWALK_HANDOFF_TOPIC, decidePrewalkHandoff, planPrewalk } from "./prewalk.ts";
+import {
+  PREWALK_HANDOFF_TOPIC,
+  PrewalkHandoffPayloadSchema,
+  decidePrewalkHandoff,
+  planPrewalk,
+} from "./prewalk.ts";
 import { switchableLanguageModel } from "./switchable-model.ts";
 import { makeHarnessHooks } from "./hooks.ts";
 
@@ -69,7 +74,9 @@ else {
       ),
     );
   const emitError = (message: string) =>
-    emit(toAgentMessage(session, { _tag: "agent.error", message } satisfies HarnessEvent));
+    toAgentMessage(session, { _tag: "agent.error", message } satisfies HarnessEvent).pipe(
+      Effect.flatMap(emit),
+    );
 
   // @effect-diagnostics-next-line processEnv:off -- bootstrap read before any Effect runs.
   const workspace = process.env.AMUX_AGENT_CWD ?? process.cwd();
@@ -278,16 +285,21 @@ else {
             if (decision.kind !== "handoff") return;
             yield* Ref.set(handedOff, true);
             yield* Ref.set(activeModel, strongService);
-            yield* emit({
-              _tag: "topic",
-              session,
-              topic: PREWALK_HANDOFF_TOPIC,
-              payload: {
-                from: decision.from,
-                to: decision.to,
-                tool: decision.tool,
-              },
-            } as AgentEventPayload);
+            yield* S.encodeEffect(S.fromJsonString(PrewalkHandoffPayloadSchema))({
+              from: decision.from,
+              to: decision.to,
+              tool: decision.tool,
+            }).pipe(
+              Effect.orDie,
+              Effect.flatMap((payload) =>
+                emit({
+                  _tag: "topic",
+                  session,
+                  topic: PREWALK_HANDOFF_TOPIC,
+                  payload,
+                }),
+              ),
+            );
             yield* Effect.logInfo(
               `prewalk handoff ${decision.from} -> ${decision.to} after ${decision.tool}`,
             );

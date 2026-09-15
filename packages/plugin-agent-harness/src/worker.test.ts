@@ -1,13 +1,22 @@
 import { expect, test } from "bun:test";
 import { AiError, Chat, LanguageModel, Prompt, Response, Tool, Toolkit } from "effect/unstable/ai";
-import { Deferred, Effect, Match, Ref, Schema as S, Stream } from "effect";
+import { Deferred, Effect, Match, Option, Ref, Schema as S, Stream } from "effect";
 import { makeAgentWorker, sanitizeAgentError } from "./worker.ts";
 import { eraseInstalledToolkit, type AgentToolkit } from "./tools.ts";
 import { testEffect } from "@danielfgray/amux/testing";
 import type { AgentDelta, AgentEventPayload } from "@danielfgray/amux/protocol";
-import { readDelta, readEvent, type HarnessDelta, type SequencedHarnessEvent } from "./protocol.ts";
+import {
+  decodeOpaqueJsonText,
+  OpaqueJsonText,
+  readDelta,
+  readEvent,
+  type HarnessDelta,
+  type SequencedHarnessEvent,
+} from "./protocol.ts";
 import { waitFor } from "@danielfgray/amux/testing";
 type WorkerFrame = AgentEventPayload | AgentDelta;
+
+const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 
 /**
  * Recover the harness tag a recorded frame carries.
@@ -555,12 +564,14 @@ testEffect("interrupt ends the turn as interrupted and keeps the partial text", 
       outcome: "interrupted",
     });
     expect(
-      frames.some((f) => f._tag === "topic" && f.topic === "session.state" && f.payload === "idle"),
+      frames.some(
+        (f) => f._tag === "topic" && f.topic === "session.state" && f.payload === jp("idle"),
+      ),
     ).toBe(true);
     expect(frames.at(-1)).toMatchObject({
       _tag: "topic",
       topic: "amux.agent-awareness/identity-state",
-      payload: { agent: "native", state: "idle" },
+      payload: jp({ agent: "native" }),
     });
   }),
 );
@@ -611,15 +622,13 @@ testEffect("a turn that fails reports the cause and leaves the session usable", 
       "The agent worker failed while processing the request.",
     );
     // `session.state` stays the neutral "idle" even on failure — the failure
-    // itself is only visible on the awareness identity topic.
+    // itself is only visible on turn.end (`outcome: "failed"`).
     expect(
       frames.some(
         (frame) =>
           frame._tag === "topic" &&
           frame.topic === "amux.agent-awareness/identity-state" &&
-          typeof frame.payload === "object" &&
-          frame.payload !== null &&
-          (frame.payload as { state?: unknown }).state === "failed",
+          frame.payload === jp({ agent: "native" }),
       ),
     ).toBe(true);
     // The next turn still runs: a failure ends the turn, never the worker.

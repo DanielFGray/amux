@@ -14,9 +14,9 @@
  */
 
 import { spawnPty, readPty } from "./pty.ts";
-import { Cause, Clock, Effect, Fiber, Match, Queue, Stream } from "effect";
+import { Cause, Clock, Effect, Fiber, Match, Option, Queue, Schema as S, Stream } from "effect";
 import type { AttachClientContract } from "./attach.ts";
-import { isProcessState, type ProcessState } from "./process-state.ts";
+import { ProcessStateSchema, type ProcessState } from "./process-state.ts";
 import { SESSION_STATE_TOPIC } from "./effect/AttachProtocol.ts";
 import { defaultRootRuntime, type RootRuntimeContext } from "./env.ts";
 
@@ -227,10 +227,13 @@ export function daemonBackend(
           ),
           Match.tag("topic", (frame) =>
             Effect.sync(() => {
-              if (frame.topic === SESSION_STATE_TOPIC && isProcessState(frame.payload)) {
-                processState = frame.payload;
-                processStateAt = runSync(Clock.currentTimeMillis);
-              }
+              if (frame.topic !== SESSION_STATE_TOPIC) return;
+              const decoded = Option.getOrUndefined(
+                S.decodeOption(S.fromJsonString(ProcessStateSchema))(frame.payload),
+              );
+              if (decoded === undefined) return;
+              processState = decoded;
+              processStateAt = runSync(Clock.currentTimeMillis);
             }),
           ),
           Match.orElse(() => Effect.void),

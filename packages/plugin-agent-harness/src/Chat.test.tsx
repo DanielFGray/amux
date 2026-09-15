@@ -1,16 +1,22 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 /** @jsxImportSource @opentui/solid */
-import { Effect, Queue, Stream } from "effect";
+import { Effect, Option, Queue, Stream } from "effect";
 import { expect, test } from "bun:test";
 import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Chat } from "./Chat.tsx";
-import { AttachFrame, type JsonValue } from "@danielfgray/amux/protocol";
+import { AttachFrame } from "@danielfgray/amux/protocol";
 import { ProcessState } from "@danielfgray/amux";
 import { waitFor } from "@danielfgray/amux/testing";
-import { emit, delta, OpaqueJsonText, decodeOpaqueJsonText, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
-import { Option } from "effect";
+import {
+  emit,
+  delta,
+  OpaqueJsonText,
+  decodeOpaqueJsonText,
+  type HarnessDelta,
+  type HarnessEvent,
+} from "./protocol.ts";
 const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 import { agentStateTopic } from "./state-topic.ts";
 
@@ -23,7 +29,11 @@ const DELTA_TAGS = new Set<string>([
   "tool.params-delta",
   "tool.params-end",
 ]);
-type TopicPayload = { readonly _tag: "topic"; readonly topic: string; readonly payload: JsonValue };
+type TopicPayload = {
+  readonly _tag: "topic";
+  readonly topic: string;
+  readonly payload: typeof OpaqueJsonText.Encoded;
+};
 function wrap(
   value: (HarnessEvent | HarnessDelta | TopicPayload) & {
     readonly session: string;
@@ -31,10 +41,20 @@ function wrap(
   },
 ): AttachFrame {
   const { session, sequence, ...event } = value;
-  if (event._tag === "topic") return { session, sequence: sequence ?? 0, ...event } as AttachFrame;
+  if (event._tag === "topic")
+    return {
+      session,
+      sequence: sequence ?? 0,
+      _tag: "topic",
+      topic: event.topic,
+      payload: jp(event.payload),
+    };
   return DELTA_TAGS.has(event._tag)
-    ? delta(session, event as HarnessDelta)
-    : ({ ...emit(session, event as HarnessEvent), sequence: sequence ?? 0 } as AttachFrame);
+    ? Effect.runSync(delta(session, event as HarnessDelta))
+    : ({
+        ...Effect.runSync(emit(session, event as HarnessEvent)),
+        sequence: sequence ?? 0,
+      } as AttachFrame);
 }
 
 /**
@@ -129,13 +149,11 @@ async function runningChat() {
       return Effect.void;
     }),
   );
-  push(
-    wrap({
-      session: "native",
-      sequence: 1,
-      ...agentStateTopic(ProcessState.Running),
-    }),
-  );
+  push({
+    session: "native",
+    sequence: 1,
+    ...Effect.runSync(agentStateTopic(ProcessState.Running)),
+  });
   await waitUi(world.t, () => world.t.captureCharFrame().includes("queue"), "running placeholder");
   return { ...world, push: (frame: AttachFrame) => push(frame) };
 }

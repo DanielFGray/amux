@@ -3,6 +3,8 @@
  * first mutating tool. OMP docs/prewalk.md — session-level one-shot switch.
  */
 
+import { Schema as S } from "effect";
+
 export const MUTATING_TOOLS = ["write", "edit", "apply_patch"] as const;
 
 export type MutatingTool = (typeof MUTATING_TOOLS)[number];
@@ -85,3 +87,11 @@ export const decidePrewalkHandoff = (input: {
 
 /** Topic payload so transcript/UI can surface the switch without a new harness event tag. */
 export const PREWALK_HANDOFF_TOPIC = "agent-harness/prewalk-handoff";
+
+/** Owner schema for PREWALK_HANDOFF_TOPIC payloads. */
+export const PrewalkHandoffPayloadSchema = S.Struct({
+  from: S.String,
+  to: S.String,
+  tool: S.String,
+});
+export type PrewalkHandoffPayload = typeof PrewalkHandoffPayloadSchema.Type;

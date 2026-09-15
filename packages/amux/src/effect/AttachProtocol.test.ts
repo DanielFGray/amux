@@ -179,21 +179,26 @@ test("a session's durable log carries events core assigns no meaning to", () => 
       _tag: "agent.message",
       session: "agent-1",
       sequence: 1,
-      // Turn and tool vocabulary belongs to whatever wrote it. Core sees JSON.
-      event: { _tag: "turn.start", turn: "turn-1", prompt: "Fix the failing test" },
+      // Turn and tool vocabulary belongs to whatever wrote it. Core sees JSON text.
+      event: controlText({ _tag: "turn.start", turn: "turn-1", prompt: "Fix the failing test" }),
     },
     {
       _tag: "agent.message",
       session: "agent-1",
       sequence: 2,
-      event: { _tag: "tool.result", turn: "turn-1", call: "call-1", output: { passed: 42 } },
+      event: controlText({
+        _tag: "tool.result",
+        turn: "turn-1",
+        call: "call-1",
+        output: { passed: 42 },
+      }),
     },
     {
       // A component with no turns at all uses the same envelope.
       _tag: "agent.message",
       session: "agent-1",
       sequence: 3,
-      event: ["anything", 1, null],
+      event: controlText(["anything", 1, null]),
     },
     {
       _tag: "session.error",
@@ -206,7 +211,7 @@ test("a session's durable log carries events core assigns no meaning to", () => 
       session: "agent-1",
       sequence: 5,
       topic: "session.state",
-      payload: "idle",
+      payload: controlText("idle"),
     },
   ];
 
@@ -238,10 +243,10 @@ test("plugin state crosses the attach protocol as an opaque named topic", () => 
     session: "agent-1",
     sequence: 8,
     topic: "session.state",
-    payload: "idle",
+    payload: controlText("idle"),
   } as const;
 
-  expect(decodeAttachFrames(`${JSON.stringify(frame)}\n`).frames).toEqual([frame]);
+  expect(decodeAttachFrames(encodeAttachFrame(frame)).frames).toEqual([frame]);
   expect(() =>
     decodeAttachFrames(
       `${JSON.stringify({ _tag: "agent.status", session: "agent-1", sequence: 8, state: "idle" })}\n`,
@@ -255,10 +260,10 @@ test("an arbitrary plugin-namespaced topic round-trips with an object payload", 
     session: "agent-1",
     sequence: 8,
     topic: "amux.agent-awareness/identity-state",
-    payload: { agent: "opencode", state: "working" },
+    payload: controlText({ agent: "opencode", state: "working" }),
   } as const;
 
-  expect(decodeAttachFrames(`${JSON.stringify(frame)}\n`).frames).toEqual([frame]);
+  expect(decodeAttachFrames(encodeAttachFrame(frame)).frames).toEqual([frame]);
 });
 
 test("a component control message is an opaque JSON payload", () => {
@@ -277,7 +282,12 @@ test("a live fragment round-trips without a place in the order", () => {
   const frame: AttachFrame = {
     _tag: "agent.delta",
     session: "agent-1",
-    delta: { _tag: "tool.params-delta", turn: "turn-1", call: "call-1", delta: '{"path":' },
+    delta: controlText({
+      _tag: "tool.params-delta",
+      turn: "turn-1",
+      call: "call-1",
+      delta: '{"path":',
+    }),
   };
   const decoded = decodeAttachFrames(encodeAttachFrame(frame));
   expect(decoded.rest).toBe("");
@@ -288,7 +298,11 @@ test("a live fragment round-trips without a place in the order", () => {
 test("a worker proposes an event and cannot choose its sequence", () => {
   const emit: AttachFrame = {
     _tag: "agent.emit",
-    event: { _tag: "agent.message", session: "agent-1", event: { _tag: "turn.end" } },
+    event: {
+      _tag: "agent.message",
+      session: "agent-1",
+      event: controlText({ _tag: "turn.end" }),
+    },
   };
   expect(decodeAttachFrames(encodeAttachFrame(emit)).frames).toEqual([emit]);
 
@@ -302,7 +316,7 @@ test("a worker proposes an event and cannot choose its sequence", () => {
   ).frames[0];
   expect(forged).toEqual({
     _tag: "agent.emit",
-    event: { _tag: "agent.message", session: "agent-1", event: null },
+    event: { _tag: "agent.message", session: "agent-1", event: controlText(null) },
   });
 });
 
@@ -313,7 +327,7 @@ test("daemon agent events reject a committed event with no sequence", () => {
       event: {
         _tag: "agent.frame",
         session: "agent-1",
-        frame: { _tag: "agent.message", session: "agent-1", event: null },
+        frame: { _tag: "agent.message", session: "agent-1", event: controlText(null) },
       },
     }),
   ).toThrow();

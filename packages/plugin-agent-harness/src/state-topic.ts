@@ -1,17 +1,29 @@
+import { Effect, Option, Schema as S } from "effect";
 import {
   SESSION_STATE_TOPIC,
   type AgentEventPayload,
   type Topic,
 } from "@danielfgray/amux/protocol";
-import { isProcessState, type ProcessState } from "@danielfgray/amux";
+import { ProcessStateSchema, type ProcessState } from "@danielfgray/amux";
 
 type StateTopicPayload = Extract<AgentEventPayload, { readonly _tag: "topic" }>;
 
-export const agentStateTopic = (state: ProcessState): Omit<StateTopicPayload, "session"> => ({
-  _tag: "topic",
-  topic: SESSION_STATE_TOPIC,
-  payload: state,
-});
+const decodeProcessStateText = S.decodeUnknownOption(S.fromJsonString(ProcessStateSchema));
+
+/** Encode ProcessState to topic OwnerJsonText via the owner schema. */
+export const agentStateTopic = (
+  state: ProcessState,
+): Effect.Effect<Omit<StateTopicPayload, "session">> =>
+  S.encodeEffect(S.fromJsonString(ProcessStateSchema))(state).pipe(
+    Effect.orDie,
+    Effect.map((payload) => ({
+      _tag: "topic" as const,
+      topic: SESSION_STATE_TOPIC,
+      payload,
+    })),
+  );
 
 export const agentStateFromTopic = (frame: Topic): ProcessState | undefined =>
-  frame.topic === SESSION_STATE_TOPIC && isProcessState(frame.payload) ? frame.payload : undefined;
+  frame.topic === SESSION_STATE_TOPIC
+    ? Option.getOrUndefined(decodeProcessStateText(frame.payload))
+    : undefined;

@@ -10,8 +10,15 @@ import {
   wrapText,
   type TranscriptBlock,
 } from "./transcript.ts";
-import { emit, delta, OpaqueJsonText, decodeOpaqueJsonText, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
-import { Option } from "effect";
+import {
+  emit,
+  delta,
+  OpaqueJsonText,
+  decodeOpaqueJsonText,
+  type HarnessDelta,
+  type HarnessEvent,
+} from "./protocol.ts";
+import { Effect, Option } from "effect";
 const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 import type { AgentFrame } from "@danielfgray/amux/protocol";
 
@@ -26,10 +33,16 @@ const DELTA_TAGS = new Set<string>([
 ]);
 const frame = (value: any): AgentFrame =>
   value._tag === "topic"
-    ? ({ session: "agent", sequence: 1, ...value } as AgentFrame)
+    ? ({
+        session: "agent",
+        sequence: 1,
+        _tag: "topic",
+        topic: value.topic,
+        payload: jp(value.payload),
+      } as AgentFrame)
     : DELTA_TAGS.has(value._tag)
-      ? delta("agent", value as HarnessDelta)
-      : ({ ...emit("agent", value as HarnessEvent), sequence: 1 } as AgentFrame);
+      ? Effect.runSync(delta("agent", value as HarnessDelta))
+      : ({ ...Effect.runSync(emit("agent", value as HarnessEvent)), sequence: 1 } as AgentFrame);
 
 test("transcript reduction joins text deltas and attaches tool results", () => {
   let blocks: readonly TranscriptBlock[] = [];
@@ -405,7 +418,12 @@ test("a streaming bash tool renders the writing placeholder, then the command", 
   );
   expect(
     toolSummary(
-      toolBlock({ name: "bash", input: jp({ command: "bun test" }), output: jp("ok"), isError: false }),
+      toolBlock({
+        name: "bash",
+        input: jp({ command: "bun test" }),
+        output: jp("ok"),
+        isError: false,
+      }),
     ),
   ).toBe("$ bun test");
 });
@@ -414,9 +432,9 @@ test("write and read tools reveal their paths, grep its pattern", () => {
   expect(toolSummary(toolBlock({ name: "write", streaming: true, input: "" }))).toBe(
     "~ Preparing write...",
   );
-  expect(toolSummary(toolBlock({ name: "write", input: jp({ path: "src/a.ts", content: "x" }) }))).toBe(
-    "write src/a.ts",
-  );
+  expect(
+    toolSummary(toolBlock({ name: "write", input: jp({ path: "src/a.ts", content: "x" }) })),
+  ).toBe("write src/a.ts");
   expect(toolSummary(toolBlock({ name: "read", input: jp({ path: "ARCHITECTURE.md" }) }))).toBe(
     "read ARCHITECTURE.md",
   );
@@ -470,7 +488,13 @@ test("a permission joins the tool it gates without removing either raw event", (
   let blocks: readonly TranscriptBlock[] = [];
   blocks = appendTranscriptFrame(
     blocks,
-    frame({ _tag: "tool.start", turn: "t1", call: "c1", tool: "bash", input: jp({ command: "ls" }) }),
+    frame({
+      _tag: "tool.start",
+      turn: "t1",
+      call: "c1",
+      tool: "bash",
+      input: jp({ command: "ls" }),
+    }),
   );
   blocks = appendTranscriptFrame(
     blocks,

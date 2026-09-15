@@ -30,7 +30,7 @@ export const AGENT_AWARENESS_IDENTITY_TOPIC = "amux.agent-awareness/identity-sta
 export const AgentIdentitySchema = S.Struct({ agent: S.NonEmptyString });
 export type AgentIdentity = typeof AgentIdentitySchema.Type;
 
-const decodeAgentIdentity = S.decodeUnknownOption(AgentIdentitySchema);
+const decodeAgentIdentity = S.decodeUnknownOption(S.fromJsonString(AgentIdentitySchema));
 
 export const agentIdentityFromTopic = (frame: Topic): AgentIdentity | undefined =>
   frame.topic === AGENT_AWARENESS_IDENTITY_TOPIC

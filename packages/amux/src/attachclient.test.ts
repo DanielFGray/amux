@@ -9,17 +9,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import {
-  ConfigProvider,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  Option,
-  Path,
-  pipe,
-  Scope,
-} from "effect";
+import { ConfigProvider, Effect, Exit, Fiber, Layer, Option, Path, pipe, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -257,9 +247,11 @@ testEffect("reattaching replays the completed transcript but not live-only delta
     );
     yield* daemon.spawnSession({ kind: "component", id, cmd, cols: 80, rows: 24 });
     first.attach.sync(id);
-    const isTurnEnd = (frame: AttachFrame) =>
-      frame._tag === "agent.message" &&
-      (frame.event as { _tag?: string } | null)?._tag === "turn.end";
+    const isTurnEnd = (frame: AttachFrame) => {
+      if (frame._tag !== "agent.message") return false;
+      const event = S.decodeOption(S.fromJsonString(S.Struct({ _tag: S.String })))(frame.event);
+      return Option.isSome(event) && event.value._tag === "turn.end";
+    };
     yield* until(() => live.some(isTurnEnd), "the completed turn");
     expect(live.some((frame) => frame._tag === "agent.delta")).toBe(true);
     yield* Fiber.interrupt(liveFiber);

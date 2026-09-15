@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Schema as S } from "effect";
 import { ProcessState, type SessionFact } from "@danielfgray/amux";
 import type { AttachFrame } from "@danielfgray/amux/protocol";
 import { hookAgentFromFrame, resolvePresence } from "./presence.ts";
 import { AGENT_AWARENESS_IDENTITY_TOPIC } from "./identity-state.ts";
 import { bundledRegistry } from "@danielfgray/amux-agent-facts/manifests.ts";
+
+const OwnerJsonText = S.flip(S.fromJsonString(S.Unknown));
+const ownerText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 
 const registry = await Effect.runPromise(bundledRegistry);
 
@@ -95,7 +98,7 @@ test("hookAgentFromFrame decodes only the identity topic, ignoring other frames"
       session: "s1",
       sequence: 1,
       topic: AGENT_AWARENESS_IDENTITY_TOPIC,
-      payload: { agent: "native" },
+      payload: ownerText({ agent: "native" }),
     } as AttachFrame),
   ).toBe("native");
   expect(
@@ -104,7 +107,7 @@ test("hookAgentFromFrame decodes only the identity topic, ignoring other frames"
       session: "s1",
       sequence: 1,
       topic: "some.other/topic",
-      payload: { agent: "native" },
+      payload: ownerText({ agent: "native" }),
     } as AttachFrame),
   ).toBeUndefined();
 });

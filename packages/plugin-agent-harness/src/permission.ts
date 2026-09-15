@@ -133,7 +133,8 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
   const toolApprovals = options.toolApprovals ?? {};
   const rules = yield* Ref.make(options.rules);
   const pending = yield* Ref.make(new Map<string, Deferred.Deferred<Answer>>());
-  const emitEvent = (event: HarnessEvent) => options.emit(toAgentMessage(options.session, event));
+  const emitEvent = (event: HarnessEvent) =>
+    toAgentMessage(options.session, event).pipe(Effect.flatMap(options.emit));
 
   const answer = (request: string, decision: PermissionDecision, feedback?: string) =>
     Ref.get(pending).pipe(
@@ -169,10 +170,9 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
     const deferred = yield* Deferred.make<Answer>();
     yield* Ref.update(pending, (map) => new Map(map).set(request, deferred));
     yield* emitRequest(request, assertion, save);
-    yield* options.emit({
-      ...agentStateTopic(ProcessState.Blocked),
-      session: options.session,
-    });
+    yield* agentStateTopic(ProcessState.Blocked).pipe(
+      Effect.flatMap((frame) => options.emit({ ...frame, session: options.session })),
+    );
     // An interrupt unwinds the await like any other Effect, and the record
     // is written on the way out: a transcript must not keep a question that
     // can never be answered. No status follows it — the turn is ending, and
@@ -192,10 +192,9 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
   ): Effect.Effect<void, string> =>
     record(request, decided, save).pipe(
       Effect.andThen(
-        options.emit({
-          ...agentStateTopic(ProcessState.Running),
-          session: options.session,
-        }),
+        agentStateTopic(ProcessState.Running).pipe(
+          Effect.flatMap((frame) => options.emit({ ...frame, session: options.session })),
+        ),
       ),
       Effect.andThen(
         decided.decision === "reject" ? Effect.fail(refusal(decided.feedback)) : Effect.void,
