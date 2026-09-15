@@ -7,9 +7,9 @@
  * use the open form (`(`, `{`, `[`); the close form omits spaces.
  */
 import { Match, Option } from "effect";
-import type { Grammar } from "@danielfgray/amux-highlight";
 import type { Cursor } from "./schema.ts";
 import type { MotionRange } from "./motions.ts";
+import type { StructureGrammar } from "./structure.ts";
 import { findTagAt, tagDelimiters } from "./tags.ts";
 
 export type SurroundDelimiters = {
@@ -272,7 +272,7 @@ export function deleteSurround(
   lines: readonly string[],
   cursor: Cursor,
   target: string,
-  grammar: Option.Option<Grammar> = Option.none(),
+  grammar: Option.Option<StructureGrammar> = Option.none(),
 ): Option.Option<SurroundEdit> {
   if (target === "t") {
     return Option.flatMap(findTagAt(lines, cursor, grammar), (tag) =>
@@ -299,7 +299,7 @@ export function changeSurround(
   cursor: Cursor,
   oldTarget: string,
   newTarget: string,
-  grammar: Option.Option<Grammar> = Option.none(),
+  grammar: Option.Option<StructureGrammar> = Option.none(),
 ): Option.Option<SurroundEdit> {
   if (oldTarget === "t") {
     return Option.flatMap(findTagAt(lines, cursor, grammar), (tag) => {

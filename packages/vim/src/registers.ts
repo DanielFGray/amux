@@ -4,7 +4,7 @@
  *
  * `+` / `*` also emit an `EditorRequest.clipboard` so the pane shell can
  * OSC-52 the host (`"+` → clipboard, `"*` → primary). Cite: amux pane
- * `copyText` / OpenTUI `copyToClipboardOSC52`.
+ * `copyText` / OSC-52 clipboard write.
  */
 import type { EditorState, Register } from "./schema.ts";
 

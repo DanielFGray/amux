@@ -1,18 +1,17 @@
 import { expect, test } from "bun:test";
 import { initialEditor, reduceEditor } from "./vim-core.ts";
 import { showcmdStrokes } from "./showcmd.ts";
-import type { KeyEvent } from "@opentui/core";
+import type { Key } from "./key.ts";
 
-const key = (name: string, extra: Partial<KeyEvent> = {}): KeyEvent =>
-  ({
-    name,
-    eventType: "press",
-    ctrl: false,
-    meta: false,
-    shift: false,
-    sequence: name,
-    ...extra,
-  }) as KeyEvent;
+const key = (name: string, extra: Partial<Key> = {}): Key => ({
+  name,
+  ctrl: false,
+  meta: false,
+  option: false,
+  shift: false,
+  sequence: name,
+  ...extra,
+});
 
 const press = (state: ReturnType<typeof initialEditor>, name: string) =>
   reduceEditor(state, { _tag: "key", key: key(name) });

@@ -6,7 +6,7 @@
  * and this module turns a directory listing into picker items the pane shows.
  */
 import type { CompletionItem } from "@danielfgray/amux-plugin-completion";
-import { resolveCommand, type RegisteredCommand } from "./api.ts";
+import { resolveCommand, type RegisteredCommand } from "@danielfgray/amux-vim";
 
 export interface DirEntry {
   readonly name: string;

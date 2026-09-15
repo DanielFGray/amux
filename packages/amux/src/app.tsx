@@ -2250,12 +2250,10 @@ function buildApp(
       ] as const
     ).map(([direction, letter]) =>
       windowCommand(
-        bind(
-          `pane.window-focus-${direction}`,
-          letter,
-          command("pane.focus", { direction }),
-          { desc: `window: focus ${direction}`, group: "window" },
-        ),
+        bind(`pane.window-focus-${direction}`, letter, command("pane.focus", { direction }), {
+          desc: `window: focus ${direction}`,
+          group: "window",
+        }),
       ),
     ),
     windowCommand(
@@ -2776,9 +2774,7 @@ function buildApp(
       return ctx.entries.length > 0 ? [{ group: ctx.group, entries: [...ctx.entries] }] : [];
     }
     const parts = whichKeyPending();
-    return parts.length === 0
-      ? []
-      : nextKeys(bindings, bindings.commands(), contexts(), parts);
+    return parts.length === 0 ? [] : nextKeys(bindings, bindings.commands(), contexts(), parts);
   });
 
   // Recomputed whenever the keys change, since that is what the list is *for*:
@@ -3414,9 +3410,7 @@ function buildApp(
       effect: () =>
         ContextsTag.pipe(
           Effect.flatMap((contexts) =>
-            Effect.forEach(contextGroups["amux.window"](), (context) =>
-              contexts.register(context),
-            ),
+            Effect.forEach(contextGroups["amux.window"](), (context) => contexts.register(context)),
           ),
         ),
     }),

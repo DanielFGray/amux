@@ -14,8 +14,7 @@ import {
   pathFromUri,
   wordAtCursor,
 } from "./lsp-bridge.ts";
-import { initialEditor } from "./vim-core.ts";
-import { bufferFromLines, setBuffer } from "./buffer-state.ts";
+import { initialEditor, bufferFromLines, setBuffer } from "@danielfgray/amux-vim";
 
 describe("lsp-bridge helpers", () => {
   test("fileUri encodes absolute paths", () => {

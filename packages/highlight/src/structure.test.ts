@@ -11,8 +11,8 @@ import {
   layer as treeSitterLayer,
   TreeSitter,
   utf16ColToByteCol,
-  type Grammar,
 } from "./structure.ts";
+import type { StructureGrammar } from "@danielfgray/amux-vim";
 
 const live = treeSitterLayer.pipe(
   Layer.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer)),
@@ -20,10 +20,10 @@ const live = treeSitterLayer.pipe(
 
 const runtime = ManagedRuntime.make(live);
 
-let typescript: Grammar;
-let tsx: Grammar;
-let javascript: Grammar;
-let html: Grammar;
+let typescript: StructureGrammar;
+let tsx: StructureGrammar;
+let javascript: StructureGrammar;
+let html: StructureGrammar;
 
 beforeAll(() =>
   runtime.runPromise(

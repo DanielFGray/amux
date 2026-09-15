@@ -19,10 +19,15 @@ import {
   type DocumentServiceApi,
 } from "@danielfgray/amux-plugin-lsp";
 import { applyEdits, type TextEdit } from "@danielfgray/amux-text-buffer";
-import type { EditorState } from "./schema.ts";
-import { lineAtRow, setBuffer } from "./buffer-state.ts";
-import { finishChange, startChange } from "./history.ts";
-import { pushJump } from "./jumps.ts";
+import type { EditorState } from "@danielfgray/amux-vim";
+import {
+  finishChange,
+  lineAtRow,
+  press,
+  pushJump,
+  setBuffer,
+  startChange,
+} from "@danielfgray/amux-vim";
 
 /** Absolute path → LSP document URI. */
 export const fileUri = (absolutePath: string): string => {
@@ -161,7 +166,7 @@ export const applyBufferEdits = (
   return Result.match(applyEdits(state.buffer, mapped), {
     onFailure: () => Option.none(),
     onSuccess: (buffer) =>
-      Option.some(finishChange(setBuffer(startChange(state, ["grn"]), buffer, mapped))),
+      Option.some(finishChange(setBuffer(startChange(state, [press("grn")]), buffer, mapped))),
   });
 };
 

@@ -8,6 +8,7 @@
 import type { EditorOptions, EditorState, Register } from "./schema.ts";
 import { editReplaceLines, linesOf, rowCount } from "./buffer-state.ts";
 import { finishChange, startChange } from "./history.ts";
+import { press, type Key } from "./key.ts";
 import { readRegister, writeRegister } from "./registers.ts";
 
 export const defaultEditorOptions = (): EditorOptions => ({
@@ -188,7 +189,7 @@ export const browseCommandHistory = (state: EditorState, dir: -1 | 1): EditorSta
 
 const withUndo = (
   state: EditorState,
-  keys: readonly string[],
+  keys: readonly Key[],
   body: (s: EditorState) => EditorState,
 ): EditorState => finishChange(body(startChange(state, keys)));
 
@@ -511,29 +512,29 @@ export const tryExCommand = (state: EditorState, text: string): EditorState | nu
       return { ...state, message: "Usage: :[range]s/pat/repl/[flags]" };
     }
     const r = defaultRange(state, range);
-    return withUndo(state, [":", trimmed], (s) =>
+    return withUndo(state, [press(":"), press(trimmed)], (s) =>
       applySubstitute(s, r, sub.pat, sub.repl, sub.flags),
     );
   }
 
   if (name === "d" || name === "delete") {
     const r = defaultRange(state, range);
-    return withUndo(state, [":", trimmed], (s) => deleteLines(s, r));
+    return withUndo(state, [press(":"), press(trimmed)], (s) => deleteLines(s, r));
   }
 
   if (name === "m" || name === "move") {
     const r = defaultRange(state, range);
-    return withUndo(state, [":", trimmed], (s) => copyOrMove(s, r, arg, true));
+    return withUndo(state, [press(":"), press(trimmed)], (s) => copyOrMove(s, r, arg, true));
   }
 
   if (name === "t" || name === "co" || name === "copy") {
     const r = defaultRange(state, range);
-    return withUndo(state, [":", trimmed], (s) => copyOrMove(s, r, arg, false));
+    return withUndo(state, [press(":"), press(trimmed)], (s) => copyOrMove(s, r, arg, false));
   }
 
   if (name === "pu" || name === "put") {
     const r = defaultRange(state, range);
-    return withUndo(state, [":", trimmed], (s) => putEx(s, r, arg));
+    return withUndo(state, [press(":"), press(trimmed)], (s) => putEx(s, r, arg));
   }
 
   if (name === "r" || name === "read") {

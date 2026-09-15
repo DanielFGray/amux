@@ -2,13 +2,13 @@
  * HTML/JSX tag locations via in-process tree-sitter.
  *
  * Maps grammar nodes (`jsx_element` / `element`) to the same open/close
- * spans surround.ts already edits. Callers pass a loaded Grammar — none
+ * spans surround.ts already edits. Callers pass a loaded StructureGrammar — none
  * means findTagAt stays a no-op (grammar still loading or unavailable).
  */
 import { Match, Option } from "effect";
-import { type Grammar, type StructureNode } from "@danielfgray/amux-highlight";
 import type { Cursor } from "./schema.ts";
 import type { MotionRange } from "./motions.ts";
+import type { StructureGrammar, StructureNode } from "./structure.ts";
 
 export type TagMatch = {
   readonly openPos: Cursor;
@@ -138,7 +138,7 @@ const isElementType = (type: string): boolean =>
 export function findTagAt(
   lines: readonly string[],
   cursor: Cursor,
-  grammar: Option.Option<Grammar>,
+  grammar: Option.Option<StructureGrammar>,
 ): Option.Option<TagMatch> {
   return Option.flatMap(grammar, (g) => {
     const content = lines.join("\n");
@@ -175,7 +175,7 @@ export function tagDelimiters(input: string): Option.Option<{ open: string; clos
 export function tagTextObjectRange(
   lines: readonly string[],
   cursor: Cursor,
-  grammar: Option.Option<Grammar>,
+  grammar: Option.Option<StructureGrammar>,
   inner: boolean,
 ): Option.Option<MotionRange> {
   return Option.flatMap(findTagAt(lines, cursor, grammar), (match) => {

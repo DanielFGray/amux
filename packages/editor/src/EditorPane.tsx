@@ -54,14 +54,28 @@ import {
   type EditorIoService,
   type EditorReadResult,
 } from "./io.ts";
-import { Phase, type EditorEvent, type EditorState } from "./schema.ts";
 import type { EditorService } from "./api.ts";
-import { BUILTIN_COMMANDS } from "./api.ts";
-import { editorCommandItems, initialEditor, reduceEditor } from "./vim-core.ts";
 import { fileArgCompletion, fileCompletionItems, splitPathPrefix } from "./command-completion.ts";
-import { editReplaceLines, linesOf, rowCount, textOf } from "./buffer-state.ts";
-import { finishChange, startChange } from "./history.ts";
-import { fitViewport } from "./vim-slices.ts";
+import {
+  BUILTIN_COMMANDS,
+  Phase,
+  editReplaceLines,
+  editorCommandItems,
+  finishChange,
+  fitViewport,
+  initialEditor,
+  linesOf,
+  press,
+  pushJump,
+  reduceEditor,
+  rowCount,
+  startChange,
+  textOf,
+  type EditorEvent,
+  type EditorState,
+  type Key,
+} from "@danielfgray/amux-vim";
+import { keyFromEvent } from "./key-event.ts";
 import type {
   HighlightProviderService,
   LineChunks,
@@ -96,7 +110,6 @@ import {
   wordAtCursor,
   type EditorLspServices,
 } from "./lsp-bridge.ts";
-import { pushJump } from "./jumps.ts";
 import type { LspUi } from "./lsp-ui.tsx";
 import { locationSnippetPreview } from "./lsp-ui.tsx";
 import {
@@ -167,7 +180,7 @@ export interface EditorViewProps extends PaneViewProps {
    * Fired when a content CmdAtom settles (`atomGeneration` bumps). Seam for
    * multicursor UI / plugins — cascade already ran inside the reducer.
    */
-  readonly onAtom?: (atom: import("./cmd-atom.ts").CmdAtom) => void;
+  readonly onAtom?: (atom: import("@danielfgray/amux-vim").CmdAtom) => void;
 }
 
 /**
@@ -185,7 +198,7 @@ export class EditorControllerTag extends Context.Service<EditorControllerTag, Ed
 export interface EditorController {
   readonly active: () => boolean;
   readonly state: () => EditorState;
-  readonly dispatch: (key: KeyEvent, count?: number) => void;
+  readonly dispatch: (key: Key, count?: number) => void;
   readonly completionVisible: () => boolean;
   readonly moveCompletion: (delta: number) => void;
   readonly chooseCompletion: () => void;
@@ -366,7 +379,7 @@ export function EditorPane(props: EditorViewProps) {
 
 /**
  * Build the editor's state buffer. Holds the state signal, the
- * `Queue<KeyEvent>`, the `Ref<Phase>`, and the drainer fiber.
+ * `Queue<EditorInput>`, the `Ref<Phase>`, and the drainer fiber.
  *
  * The queue is created inside the forked program (its ownership is the
  * program's) and the synchronous key handler waits for the program to
@@ -935,7 +948,13 @@ function createEditorBuffer(props: EditorViewProps) {
       },
     });
   };
-  const enqueue = (key: KeyEvent, count?: number) => {
+  const enqueue = (event: KeyEvent, count?: number) => {
+    setHover(null);
+    const key = keyFromEvent(event);
+    if (key === null) return;
+    enqueueEvent({ _tag: "key", key }, count);
+  };
+  const dispatchKey = (key: Key, count?: number) => {
     setHover(null);
     enqueueEvent({ _tag: "key", key }, count);
   };
@@ -1173,7 +1192,7 @@ function createEditorBuffer(props: EditorViewProps) {
   const controller: EditorController = {
     active: props.active,
     state: snapshot,
-    dispatch: enqueue,
+    dispatch: dispatchKey,
     completionVisible,
     moveCompletion: (delta) =>
       setSelectedCompletion((current) =>
@@ -1737,7 +1756,7 @@ const dispatchRead = (shell: EditorShell, file: string, afterRow: number) =>
       const at = afterRow + 1;
       yield* updateAndSync((s) => {
         const cleared = { ...s, request: null };
-        const started = startChange(cleared, [":", "r"]);
+        const started = startChange(cleared, [press(":"), press("r")]);
         const next = editReplaceLines(started, at, at, insert);
         return finishChange({
           ...next,
@@ -1771,7 +1790,7 @@ const dispatchShellRead = (shell: EditorShell, cmd: string, afterRow: number) =>
           : `shell returned ${result.exitCode}${result.stderr ? `: ${result.stderr}` : ""}`;
       yield* updateAndSync((s) => {
         const cleared = { ...s, request: null };
-        const started = startChange(cleared, [":", "r!"]);
+        const started = startChange(cleared, [press(":"), press("r!")]);
         const next = editReplaceLines(started, at, at, insert);
         return finishChange({
           ...next,

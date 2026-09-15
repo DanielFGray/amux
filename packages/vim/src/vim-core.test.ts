@@ -1,10 +1,5 @@
-/** @jsxImportSource @opentui/solid */
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { KeyEvent } from "@opentui/core";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import { BunFileSystem, BunPath } from "@effect/platform-bun";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import { TreeSitter, treeSitterLayer, type Grammar } from "@danielfgray/amux-highlight";
+import { expect, test } from "bun:test";
+import { Option } from "effect";
 import {
   applySurround,
   beginSearch,
@@ -18,41 +13,25 @@ import { withExtraCursors } from "./cmd-atom.ts";
 import type { EditorState } from "./schema.ts";
 import { bufferFromLines, linesOf } from "./buffer-state.ts";
 import { seedBuffer } from "./history.ts";
+import { decodeKey, encodeKey, type Key } from "./key.ts";
 
-const treeSitterLive = treeSitterLayer.pipe(
-  Layer.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer)),
-);
-const treeSitterRuntime = ManagedRuntime.make(treeSitterLive);
-let tsxGrammar: Grammar;
-
-beforeAll(() =>
-  treeSitterRuntime.runPromise(
-    Effect.gen(function* () {
-      const ts = yield* TreeSitter;
-      tsxGrammar = yield* ts.grammar("typescriptreact");
-    }),
-  ),
-);
-
-afterAll(() => treeSitterRuntime.dispose());
-
-function key(name: string, extra: Partial<KeyEvent> = {}): KeyEvent {
+function key(name: string, extra: Partial<Key> = {}): Key {
   return {
     name,
-    eventType: "press",
     ctrl: false,
     meta: false,
+    option: false,
     shift: false,
     sequence: name,
     ...extra,
-  } as KeyEvent;
+  };
 }
 
 /**
  * Drive keys through the machine. Builtin multi-key maps resolve inside
  * reduceEditor via pendingMap.
  */
-function typeKeys(state: EditorState, keys: Array<string | KeyEvent>): EditorState {
+function typeKeys(state: EditorState, keys: Array<string | Key>): EditorState {
   let current = state;
   for (const entry of keys) {
     const event = typeof entry === "string" ? key(entry) : entry;
@@ -273,7 +252,9 @@ test("shifted characters insert as their real glyph", () => {
 test("charFromKey reads the glyph a shift-modified press actually produced", () => {
   // The parser reports a capital as a lowercase name plus a shift flag, so the
   // character has to come from `sequence`, not `name`.
-  expect(charFromKey({ name: "a", shift: true, sequence: "A" } as KeyEvent)).toBe("A");
+  expect(
+    charFromKey({ name: "a", shift: true, sequence: "A", ctrl: false, meta: false, option: false }),
+  ).toBe("A");
 });
 
 test("charFromKey accepts OpenTUI's named printable space", () => {
@@ -291,8 +272,7 @@ test("charFromKey accepts OpenTUI's named printable space", () => {
   expect(opened.request).toEqual({ _tag: "open", path: "note" });
 });
 
-test("charFromKey ignores releases and modifier-only keys", () => {
-  expect(charFromKey(key("a", { eventType: "release" }))).toBeNull();
+test("charFromKey ignores modifier-only keys", () => {
   expect(charFromKey(key("a", { ctrl: true }))).toBeNull();
   expect(charFromKey(key("a", { meta: true }))).toBeNull();
   expect(charFromKey(key("enter"))).toBeNull();
@@ -993,6 +973,59 @@ test("Ctrl-D and Ctrl-U move by half the viewport", () => {
   expect(up.cursor).toEqual({ row: 20, col: 3 });
 });
 
+test("Ctrl-F/B and PageDown/PageUp move by a full viewport", () => {
+  const lines = Array.from({ length: 40 }, (_, i) => `line${i}`);
+  const start: EditorState = {
+    ...initialEditor(),
+    buffer: bufferFromLines(lines),
+    cursor: { row: 20, col: 3 },
+    viewport: { top: 10, height: 10 },
+  };
+  const cases: Array<{ label: string; input: Key; row: number }> = [
+    { label: "Ctrl-f", input: key("f", { ctrl: true }), row: 30 },
+    { label: "Ctrl-b", input: key("b", { ctrl: true }), row: 10 },
+    { label: "PageDown", input: key("pagedown"), row: 30 },
+    { label: "PageUp", input: key("pageup"), row: 10 },
+  ];
+  for (const { input, row } of cases) {
+    const moved = typeKeys(start, [input]);
+    expect(moved.cursor).toEqual({ row, col: 3 });
+  }
+  const counted = typeKeys(start, ["2", key("f", { ctrl: true })]);
+  expect(counted.cursor.row).toBe(39);
+});
+
+test("Key codec round-trips vim notation", () => {
+  const samples: Key[] = [
+    key("j"),
+    key("w", { ctrl: true }),
+    key("escape", { sequence: "\x1b" }),
+    key("return", { sequence: "\r" }),
+    key("a", { shift: true, sequence: "A" }),
+    key("space", { sequence: " " }),
+  ];
+  for (const sample of samples) {
+    const encoded = encodeKey(sample);
+    expect(encoded).not.toBeNull();
+    if (encoded === null) continue;
+    const decoded = decodeKey(encoded);
+    expect(Option.isSome(decoded)).toBe(true);
+    if (Option.isNone(decoded)) continue;
+    expect(decoded.value.ctrl).toBe(sample.ctrl);
+    expect(decoded.value.name === sample.name || decoded.value.sequence === sample.sequence).toBe(
+      true,
+    );
+  }
+  expect(encodeKey(key("w", { ctrl: true }))).toBe("<C-w>");
+  expect(encodeKey(key("escape", { sequence: "\x1b" }))).toBe("<Esc>");
+  expect(encodeKey(key("return", { sequence: "\r" }))).toBe("<CR>");
+  expect(Option.getOrThrow(decodeKey("<C-w>"))).toMatchObject({ name: "w", ctrl: true });
+  expect(Option.getOrThrow(decodeKey("<Esc>")).name).toBe("escape");
+  expect(Option.getOrThrow(decodeKey("<CR>")).name).toBe("return");
+  expect(Option.isNone(decodeKey("escape"))).toBe(true);
+  expect(Option.isNone(decodeKey("return"))).toBe(true);
+});
+
 test("ysiw) surrounds the inner word", () => {
   const start: EditorState = {
     ...initialEditor(),
@@ -1101,65 +1134,6 @@ test("undo tree keeps a branch after undo-then-edit; g- reaches the abandoned ti
   expect(text(redone)).toBe("baseB");
 });
 
-test("dst deletes surrounding JSX tags", () => {
-  const start: EditorState = {
-    ...initialEditor(),
-    file: "Widget.tsx",
-    grammar: tsxGrammar,
-    buffer: bufferFromLines(["<div>", "  hi", "</div>"]),
-    cursor: { row: 1, col: 2 },
-  };
-  const deleted = typeKeys(start, ["d", "s", "t"]);
-  expect(text(deleted)).toBe("\n  hi\n");
-  expect(deleted.pendingSurround).toBeNull();
-});
-
-test("cstdiv> changes surrounding JSX tag name", () => {
-  const start: EditorState = {
-    ...initialEditor(),
-    file: "Widget.tsx",
-    grammar: tsxGrammar,
-    buffer: bufferFromLines(["<span>hi</span>"]),
-    cursor: { row: 0, col: 6 },
-  };
-  const changed = typeKeys(start, ["c", "s", "t", "d", "i", "v", ">"]);
-  expect(text(changed)).toBe("<div>hi</div>");
-});
-
-test("ysiwtspan> wraps the inner word in a tag", () => {
-  const start: EditorState = {
-    ...initialEditor(),
-    file: "Widget.tsx",
-    grammar: tsxGrammar,
-    buffer: bufferFromLines(["hello world"]),
-    cursor: { row: 0, col: 0 },
-  };
-  const wrapped = typeKeys(start, ["y", "s", "i", "w", "t", "s", "p", "a", "n", ">"]);
-  expect(text(wrapped)).toBe("<span>hello</span> world");
-});
-
-test("dit deletes inner tag contents; dat deletes the whole element", () => {
-  const start: EditorState = {
-    ...initialEditor(),
-    file: "Widget.tsx",
-    grammar: tsxGrammar,
-    buffer: bufferFromLines(["<div>hello</div>"]),
-    cursor: { row: 0, col: 6 },
-  };
-  const inner = typeKeys(start, ["d", "i", "t"]);
-  expect(text(inner)).toBe("<div></div>");
-
-  const outerStart: EditorState = {
-    ...initialEditor(),
-    file: "Widget.tsx",
-    grammar: tsxGrammar,
-    buffer: bufferFromLines(["<div>hello</div>"]),
-    cursor: { row: 0, col: 6 },
-  };
-  const outer = typeKeys(outerStart, ["d", "a", "t"]);
-  expect(text(outer)).toBe("");
-});
-
 test("de is inclusive through word end; dw is exclusive of next word", () => {
   const start = seedBuffer(initialEditor(), bufferFromLines(["foo bar"]), { row: 0, col: 0 });
   const deletedE = typeKeys(start, ["d", "e"]);
@@ -1189,7 +1163,7 @@ test("finishChange records a CmdAtom that . replays", () => {
   const edited = typeKeys(start, ["x"]);
   expect(edited.lastAtom).not.toBeNull();
   expect(edited.lastAtom?.type).toBe("operator");
-  expect(edited.lastAtom?.keys).toContain("x");
+  expect(edited.lastAtom?.keys.some((k) => k.name === "x")).toBe(true);
   const again = typeKeys(edited, ["."]);
   expect(text(again)).toBe("c");
   expect(again.lastAtom?.keys).toEqual(edited.lastAtom?.keys);
@@ -1211,7 +1185,7 @@ test("CmdAtom cascade: x at extra cursors, one u undoes all", () => {
     { row: 2, col: 0 },
   ]);
   expect(deleted.atomGeneration).toBe(1);
-  expect(deleted.lastAtom?.keys).toContain("x");
+  expect(deleted.lastAtom?.keys.some((k) => k.name === "x")).toBe(true);
   const undone = typeKeys(deleted, ["u"]);
   expect(text(undone)).toBe("aaa\nbbb\nccc");
 });
@@ -1486,7 +1460,7 @@ test("qa records a macro and @a replays it", () => {
   const start = seedBuffer(initialEditor(), bufferFromLines(["abc", "def"]), { row: 0, col: 0 });
   const recorded = typeKeys(start, ["q", "a", "x", "q"]);
   expect(recorded.macroReg).toBeNull();
-  expect(recorded.macros.a).toEqual(["x"]);
+  expect(recorded.macros.a).toEqual([key("x")]);
   expect(text(recorded)).toBe("bc\ndef");
   const replayed = typeKeys(recorded, ["j", "0", "@", "a"]);
   expect(text(replayed)).toBe("bc\nef");
@@ -1508,7 +1482,7 @@ test("macro recording does not overwrite the . change tape", () => {
   const start = seedBuffer(initialEditor(), bufferFromLines(["abc"]), { row: 0, col: 0 });
   const changed = typeKeys(start, ["x"]);
   const withMacro = typeKeys(changed, ["q", "a", "l", "q"]);
-  expect(withMacro.macros.a).toEqual(["l"]);
+  expect(withMacro.macros.a).toEqual([key("l")]);
   // `.` still repeats the delete at the current cursor (line start).
   expect(text(typeKeys(withMacro, ["0", "."]))).toBe("c");
 });

@@ -27,11 +27,7 @@ export {
   RuntimeWasmMissing,
   TreeSitter,
   utf16ColToByteCol,
-  type Grammar,
   type GrammarUnavailable,
-  type StructureNode,
-  type StructurePoint,
-  type StructureTree,
   type TreeSitterService,
 } from "./structure.ts";
 export type { FiletypeParserOptions, TextChunk } from "@opentui/core";

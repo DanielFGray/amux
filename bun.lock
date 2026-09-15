@@ -84,6 +84,7 @@
         "@danielfgray/amux-plugin-lsp": "workspace:*",
         "@danielfgray/amux-plugin-search": "workspace:*",
         "@danielfgray/amux-text-buffer": "workspace:*",
+        "@danielfgray/amux-vim": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@opentui/core": "catalog:",
         "@opentui/solid": "catalog:",
@@ -101,6 +102,7 @@
       "name": "@danielfgray/amux-highlight",
       "version": "0.1.0",
       "dependencies": {
+        "@danielfgray/amux-vim": "workspace:*",
         "@opentui/core": "catalog:",
         "effect": "catalog:",
         "web-tree-sitter": "0.25.10",
@@ -161,6 +163,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@danielfgray/amux-highlight": "workspace:*",
+        "@danielfgray/amux-vim": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
       },
@@ -288,6 +291,18 @@
         "@types/bun": "catalog:",
       },
     },
+    "packages/vim": {
+      "name": "@danielfgray/amux-vim",
+      "version": "0.1.0",
+      "dependencies": {
+        "@danielfgray/amux-cell-width": "workspace:*",
+        "@danielfgray/amux-text-buffer": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+      },
+    },
   },
   "catalog": {
     "@effect/ai-anthropic": "4.0.0-rc.112",
@@ -407,6 +422,8 @@
     "@danielfgray/amux-plugin-sidebar": ["@danielfgray/amux-plugin-sidebar@workspace:packages/plugin-sidebar"],
 
     "@danielfgray/amux-text-buffer": ["@danielfgray/amux-text-buffer@workspace:packages/text-buffer"],
+
+    "@danielfgray/amux-vim": ["@danielfgray/amux-vim@workspace:packages/vim"],
 
     "@effect/ai-anthropic": ["@effect/ai-anthropic@4.0.0-rc.112", "", { "peerDependencies": { "effect": "^4.0.0-rc.112" } }, "sha512-2GQKD3IzfCJuS3DgeuBwUjEYk5iyOqgK5etQkYZ3Ho8IuL8BtGR9d8G5AIiRV0xkNy5DD4vGnDGSHxKWsW2TRg=="],
 

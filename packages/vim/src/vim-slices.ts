@@ -2,8 +2,9 @@
  * Daily-driver vim slices A–E helpers — marks/jumps, viewport scroll,
  * case/indent, insert-mode edits, and macros. Called from vim-core.
  */
-import type { KeyEvent } from "@opentui/core";
 import type { CaseKind, Cursor, EditorState, LastVisual, MotionForce } from "./schema.ts";
+import type { Key } from "./key.ts";
+import { press } from "./key.ts";
 import {
   changeNewer,
   changeOlder,
@@ -57,8 +58,8 @@ export const initialSliceState = () =>
     pendingMacro: false,
     pendingAt: false,
     macroReg: null as string | null,
-    macroKeys: [] as readonly string[],
-    macros: {} as Readonly<Record<string, readonly string[]>>,
+    macroKeys: [] as readonly Key[],
+    macros: {} as Readonly<Record<string, readonly Key[]>>,
     lastMacro: null as string | null,
     replayingMacro: false,
   }) as const;
@@ -384,7 +385,7 @@ export const insertPasteRegister = (state: EditorState, reg: string): EditorStat
   // Record pasted glyphs so `.` replays the inserted text, not Ctrl-r.
   for (const ch of text) {
     if (ch === "\n") continue;
-    next = appendChangeKey(next, ch);
+    next = appendChangeKey(next, press(ch));
   }
   const parts = text.split("\n");
   const last = parts[parts.length - 1] ?? "";
@@ -529,27 +530,6 @@ export const maybeResumeAfterCtrlO = (before: EditorState, state: EditorState): 
 // Macros (slice E) — separate from `.` `recording`
 // ---------------------------------------------------------------------------
 
-export const encodeKey = (key: KeyEvent): string | null => {
-  if (key.eventType === "release") return null;
-  if (key.ctrl) {
-    if (!key.name || key.name.length === 0) return null;
-    return `ctrl+${key.name}`;
-  }
-  if (key.meta || key.option) return null;
-  if (key.name === "escape") return "escape";
-  if (key.name === "return" || key.name === "enter") return "return";
-  if (key.name === "backspace") return "backspace";
-  if (key.name === "tab") return "tab";
-  if (key.name === "space" && key.sequence === " ") return " ";
-  const char =
-    key.sequence && [...key.sequence].length === 1
-      ? key.sequence
-      : key.name && key.name.length === 1
-        ? key.name
-        : null;
-  return char;
-};
-
 export const startMacro = (state: EditorState, reg: string): EditorState => {
   if (!/^[a-z]$/.test(reg)) {
     return { ...state, pendingMacro: false, message: null };
@@ -576,7 +556,7 @@ export const stopMacro = (state: EditorState): EditorState => {
   };
 };
 
-export const appendMacroKey = (state: EditorState, key: string): EditorState => {
+export const appendMacroKey = (state: EditorState, key: Key): EditorState => {
   if (state.macroReg === null || state.replayingMacro) return state;
   return { ...state, macroKeys: [...state.macroKeys, key] };
 };

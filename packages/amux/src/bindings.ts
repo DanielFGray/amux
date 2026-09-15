@@ -683,8 +683,7 @@ export function createBindings(
         const hit = keymap
           .getActiveKeys({ includeBindings: true })
           .find(
-            (key) =>
-              key.display === stroke && !key.continues && typeof key.command === "string",
+            (key) => key.display === stroke && !key.continues && typeof key.command === "string",
           );
         if (hit !== undefined && typeof hit.command === "string") {
           if (keymap.dispatchCommand(hit.command).ok) {

@@ -4,7 +4,7 @@
  * — same grammar role as operators and `f{char}`. Not mux keymap sequences:
  * pane-history can feed the engine with no editor plugin loaded.
  */
-import type { KeyEvent } from "@opentui/core";
+import type { Key } from "./key.ts";
 
 export type BuiltinMapId =
   | "gg"
@@ -47,12 +47,13 @@ export type MapEntry =
     };
 
 /**
- * Normalize a key to a map stroke. Printable letters honour shift as uppercase
- * so `E` and shift+e both encode as `E` (gE).
+ * Normalize a key to a map stroke in vim notation. Printable letters honour
+ * shift as uppercase so `E` and shift+e both encode as `E` (gE). Escape is
+ * `<Esc>`; return/enter is `<CR>`.
  */
-export const strokeFromKey = (key: KeyEvent): string | null => {
+export const strokeFromKey = (key: Key): string | null => {
   if (key.ctrl || key.meta || key.option) return null;
-  if (key.name === "escape") return "escape";
+  if (key.name === "escape") return "<Esc>";
   if (key.sequence === "*" || (key.shift && key.name === "8")) return "*";
   if (key.sequence === "#" || (key.shift && key.name === "3")) return "#";
   if (key.name.length === 1) {
@@ -63,8 +64,8 @@ export const strokeFromKey = (key: KeyEvent): string | null => {
   if (key.shift && key.name === "e") return "E";
   if (key.shift && key.name === "u") return "U";
   if (key.shift && key.name === "=") return "+";
-  if (key.name === "return" || key.name === "enter") return "enter";
-  return key.name;
+  if (key.name === "return" || key.name === "enter") return "<CR>";
+  return null;
 };
 
 /** Builtin table as {@link MapEntry} rows for {@link EditorState.maps}. */
@@ -109,7 +110,7 @@ export const pushMap = (
   pending: readonly string[],
   stroke: string,
 ): MapPushResult => {
-  if (stroke.length === 0 || stroke === "escape") return { _tag: "miss" };
+  if (stroke.length === 0 || stroke === "<Esc>") return { _tag: "miss" };
   const active = mapsInScope(maps, scope);
   const candidate = [...pending, stroke];
   const longer = active.some((entry) => isStrictPrefix(candidate, entry.strokes));

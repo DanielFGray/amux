@@ -2,18 +2,12 @@
  * Tree-sitter TS/TSX/JS extractor with Effect-aware wrappers and DI edges.
  *
  * Borrows calldiff's wrapper unwrapping (fnUntraced / gen / defineX) and Graft's
- * path#symbol id shape. Walks StructureNode from @danielfgray/amux-highlight —
+ * path#symbol id shape. Walks StructureNode from @danielfgray/amux-vim —
  * no second grammar loader.
  */
 import { Option } from "effect";
-import type { StructureNode, StructureTree } from "@danielfgray/amux-highlight";
-import type {
-  CodemapEdge,
-  CodemapImport,
-  CodemapSymbol,
-  FileExtraction,
-  Span,
-} from "./schema.ts";
+import type { StructureNode, StructureTree } from "@danielfgray/amux-vim";
+import type { CodemapEdge, CodemapImport, CodemapSymbol, FileExtraction, Span } from "./schema.ts";
 
 const FN_LIKE = new Set([
   "function_declaration",
@@ -42,10 +36,7 @@ const namedChildren = (node: StructureNode): ReadonlyArray<StructureNode> => {
 };
 
 /** Pair / declarator value: first named child that is not the key / name. */
-const valueAfter = (
-  node: StructureNode,
-  key: StructureNode,
-): Option.Option<StructureNode> => {
+const valueAfter = (node: StructureNode, key: StructureNode): Option.Option<StructureNode> => {
   for (const child of namedChildren(node)) {
     if (child.id === key.id) continue;
     return Option.some(child);
@@ -148,10 +139,7 @@ const symbolId = (path: string, name: string, owner: string | undefined): string
   return `${path}#${name}`;
 };
 
-const pushSymbol = (
-  state: ExtractState,
-  symbol: CodemapSymbol,
-): void => {
+const pushSymbol = (state: ExtractState, symbol: CodemapSymbol): void => {
   if (state.seenSymbol.has(symbol.id)) return;
   state.seenSymbol.add(symbol.id);
   state.symbols.push(symbol);
@@ -404,7 +392,7 @@ const scanReturnedObjectMethods = (
       }
       return;
     }
-  if (FN_LIKE.has(node.type)) return;
+    if (FN_LIKE.has(node.type)) return;
     for (const child of namedChildren(node)) visit(child);
   };
   const stripped = stripWrappers(body);
@@ -429,22 +417,12 @@ const walkBody = (
   // Object-literal service methods on the returning function
   const callerSym = state.symbols.find((s) => s.id === callerId);
   if (callerSym !== undefined && (callerSym.kind === "function" || callerSym.kind === "const")) {
-    scanReturnedObjectMethods(
-      state,
-      body,
-      callerSym.name,
-      callerId,
-      callerSym.exported,
-      bindings,
-    );
+    scanReturnedObjectMethods(state, body, callerSym.name, callerId, callerSym.exported, bindings);
   }
 
   const visit = (node: StructureNode): void => {
     // Nested function declarations
-    if (
-      node.type === "function_declaration" ||
-      node.type === "generator_function_declaration"
-    ) {
+    if (node.type === "function_declaration" || node.type === "generator_function_declaration") {
       const idNode = childByType(node, "identifier");
       if (Option.isSome(idNode)) {
         registerFunctionSymbol(state, idNode.value.text, node, node, {
@@ -510,7 +488,7 @@ const walkBody = (
       return;
     }
 
-if (node.type === "return_statement") {
+    if (node.type === "return_statement") {
       for (const child of namedChildren(node)) {
         const stripped = stripWrappers(child);
         // Object-literal methods already registered via scanReturnedObjectMethods.
@@ -527,13 +505,7 @@ if (node.type === "return_statement") {
         if (Option.isSome(parts)) {
           const service = bindings.get(parts.value.object);
           if (service !== undefined) {
-            pushCall(
-              state,
-              callerId,
-              `${service}.${parts.value.property}`,
-              spanOf(node),
-              true,
-            );
+            pushCall(state, callerId, `${service}.${parts.value.property}`, spanOf(node), true);
           } else {
             const key = calleeKey(callee);
             if (Option.isSome(key)) {
@@ -641,13 +613,7 @@ const walkCallback = (
         if (Option.isSome(parts)) {
           const service = bindings.get(parts.value.object);
           if (service !== undefined) {
-            pushCall(
-              state,
-              callerId,
-              `${service}.${parts.value.property}`,
-              spanOf(node),
-              true,
-            );
+            pushCall(state, callerId, `${service}.${parts.value.property}`, spanOf(node), true);
           } else {
             const key = calleeKey(callee);
             if (Option.isSome(key)) {
@@ -822,11 +788,7 @@ const handleClass = (state: ExtractState, node: StructureNode, exported: boolean
   }
 };
 
-const handleStatement = (
-  state: ExtractState,
-  node: StructureNode,
-  exported: boolean,
-): void => {
+const handleStatement = (state: ExtractState, node: StructureNode, exported: boolean): void => {
   if (node.type === "import_statement") {
     handleImport(state, node);
     return;
@@ -859,10 +821,7 @@ const handleStatement = (
     return;
   }
 
-  if (
-    node.type === "function_declaration" ||
-    node.type === "generator_function_declaration"
-  ) {
+  if (node.type === "function_declaration" || node.type === "generator_function_declaration") {
     const idNode = childByType(node, "identifier");
     if (Option.isNone(idNode)) return;
     registerFunctionSymbol(state, idNode.value.text, node, node, {

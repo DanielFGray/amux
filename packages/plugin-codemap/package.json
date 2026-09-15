@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@danielfgray/amux-highlight": "workspace:*",
+    "@danielfgray/amux-vim": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "effect": "catalog:"
   },

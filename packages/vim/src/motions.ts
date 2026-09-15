@@ -10,7 +10,11 @@
  */
 import { Match, Option } from "effect";
 import { Schema as S } from "effect";
-import { cellColumnOf, rowCells, stringIndexAtCell } from "@danielfgray/amux-cell-width/cell-width.ts";
+import {
+  cellColumnOf,
+  rowCells,
+  stringIndexAtCell,
+} from "@danielfgray/amux-cell-width/cell-width.ts";
 import type { Cursor } from "./schema.ts";
 
 export const MotionRange = S.Struct({
@@ -475,7 +479,16 @@ export const colAdvance = (line: string, curswant: number): number => {
 };
 
 /** Motions that must not refresh `curswant` from the landed column. */
-export const CURSWANT_PRESERVE = new Set(["j", "k", "ctrl-d", "ctrl-u"]);
+export const CURSWANT_PRESERVE = new Set([
+  "j",
+  "k",
+  "ctrl-d",
+  "ctrl-u",
+  "ctrl-f",
+  "ctrl-b",
+  "pagedown",
+  "pageup",
+]);
 
 /**
  * Next preferred-column state after a named motion.
@@ -758,6 +771,24 @@ export const halfPageUp: Motion = ({ lines, cursor, count, viewport, curswant })
   const step = Math.max(1, Math.floor(viewport.height / 2));
   const row = clampRow(cursor.row - step * count, lines);
   return { row, col: colAdvance(lines[row]!, curswant) };
+};
+
+/** `Ctrl-F` / PageDown — full viewport down. Cite: vim `nv_page`. */
+export const fullPageDown: Motion = ({ lines, cursor, count, viewport, curswant }) => {
+  const step = Math.max(1, viewport.height);
+  const row = clampRow(cursor.row + step * count, lines);
+  const line = lines[row];
+  if (line === undefined) return cursor;
+  return { row, col: colAdvance(line, curswant) };
+};
+
+/** `Ctrl-B` / PageUp — full viewport up. Cite: vim `nv_page`. */
+export const fullPageUp: Motion = ({ lines, cursor, count, viewport, curswant }) => {
+  const step = Math.max(1, viewport.height);
+  const row = clampRow(cursor.row - step * count, lines);
+  const line = lines[row];
+  if (line === undefined) return cursor;
+  return { row, col: colAdvance(line, curswant) };
 };
 
 const SENTENCE_END = new Set([".", "!", "?"]);

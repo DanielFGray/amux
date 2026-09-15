@@ -14,6 +14,7 @@ import type { BufferSnapshot, Cursor, EditorState, UndoNode, UndoTree } from "./
 import { clearPendingEdits, setBuffer } from "./buffer-state.ts";
 import { atomFromRecording } from "./cmd-atom.ts";
 import { pushChange } from "./jumps.ts";
+import { press, type Key } from "./key.ts";
 
 export const MAX_UNDO = 100;
 
@@ -56,8 +57,8 @@ export function seedBuffer(state: EditorState, buffer: TextBuffer, cursor?: Curs
 }
 
 /** Digits already typed as a count, expanded into recording keys. */
-export const countKeys = (state: EditorState): string[] =>
-  state.count === "" ? [] : [...state.count];
+export const countKeys = (state: EditorState): Key[] =>
+  state.count === "" ? [] : [...state.count].map((digit) => press(digit));
 
 const withHeadCursor = (tree: UndoTree, cursor: Cursor): UndoTree => {
   const head = tree.nodes[tree.head];
@@ -72,7 +73,7 @@ const withHeadCursor = (tree: UndoTree, cursor: Cursor): UndoTree => {
 };
 
 /** Begin a change: freeze the buffer and start the `.` key tape. */
-export function startChange(state: EditorState, keys: readonly string[]): EditorState {
+export function startChange(state: EditorState, keys: readonly Key[]): EditorState {
   if (state.changeBase !== null) {
     return {
       ...state,
@@ -90,7 +91,7 @@ export function startChange(state: EditorState, keys: readonly string[]): Editor
   };
 }
 
-export function appendChangeKey(state: EditorState, key: string): EditorState {
+export function appendChangeKey(state: EditorState, key: Key): EditorState {
   if (state.recording === null) return state;
   return { ...state, recording: [...state.recording, key] };
 }

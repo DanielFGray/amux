@@ -29,7 +29,7 @@ import {
 } from "@danielfgray/amux-plugin-lsp";
 import { EditorPane, type EditorController } from "../src/EditorPane.tsx";
 import { EditorIo, listEntriesWith, runShellCommand, type EditorIoService } from "../src/io.ts";
-import { bufferFromLines, textOf } from "../src/buffer-state.ts";
+import { bufferFromLines, textOf } from "@danielfgray/amux-vim";
 import type { EditorLspServices } from "../src/lsp-bridge.ts";
 
 const LINE_COUNTS = [1_000, 10_000] as const;

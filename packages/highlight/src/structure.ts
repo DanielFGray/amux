@@ -28,45 +28,12 @@ import * as Path from "effect/Path";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import { getDataPaths } from "@opentui/core";
 import { Language, Parser, type Node, type Tree } from "web-tree-sitter";
-
-export type StructurePoint = {
-  readonly row: number;
-  /** UTF-16 code unit column, matching the editor cursor. */
-  readonly col: number;
-};
-
-export type StructureNode = {
-  /**
-   * Tree-sitter node id — unique within one tree. Equal nodes (same
-   * underlying node reached via different wrappers) share this id.
-   */
-  readonly id: number;
-  readonly type: string;
-  readonly start: StructurePoint;
-  readonly end: StructurePoint;
-  readonly text: string;
-  readonly childCount: number;
-  child: (index: number) => StructureNode | null;
-  namedChild: (index: number) => StructureNode | null;
-  parent: () => StructureNode | null;
-  /** Walk this node then parents, innermost first. */
-  ancestors: () => Iterable<StructureNode>;
-};
-
-export type StructureTree = {
-  readonly content: string;
-  /** Program / document root. Valid until `delete()`. */
-  readonly root: StructureNode;
-  readonly nodeAt: (row: number, col: number) => StructureNode | null;
-  /** Free the underlying wasm tree. Safe to call once. */
-  readonly delete: () => void;
-};
-
-/** Loaded grammar: sync parse for the keypress path. */
-export type Grammar = {
-  readonly name: string;
-  readonly parse: (content: string) => StructureTree | null;
-};
+import type {
+  StructureGrammar,
+  StructureNode,
+  StructurePoint,
+  StructureTree,
+} from "@danielfgray/amux-vim";
 
 export class RuntimeWasmMissing extends S.TaggedError<RuntimeWasmMissing>()("RuntimeWasmMissing", {
   path: S.String,
@@ -104,7 +71,7 @@ export interface TreeSitterService {
    * Resolve bundled → cache → pinned download, memoized per grammar stem.
    * Concurrent callers share one load.
    */
-  readonly grammar: (filetype: string) => Effect.Effect<Grammar, GrammarUnavailable>;
+  readonly grammar: (filetype: string) => Effect.Effect<StructureGrammar, GrammarUnavailable>;
 }
 
 export class TreeSitter extends Context.Service<TreeSitter, TreeSitterService>()(
@@ -273,7 +240,7 @@ const make: Effect.Effect<
   /** In-flight / completed loads. Failed attempts are removed so the next
    *  open retries; concurrent callers share one Deferred. */
   const loads = yield* SynchronizedRef.make(
-    new Map<string, Deferred.Deferred<Grammar, GrammarUnavailable>>(),
+    new Map<string, Deferred.Deferred<StructureGrammar, GrammarUnavailable>>(),
   );
 
   const resolveBundled = (grammar: string): Effect.Effect<Option.Option<string>> => {
@@ -368,7 +335,7 @@ const make: Effect.Effect<
       catch: () => new GrammarWasmLoadFailed({ grammar, path: wasmPath }),
     });
 
-  const doLoad = (grammar: string): Effect.Effect<Grammar, GrammarUnavailable> =>
+  const doLoad = (grammar: string): Effect.Effect<StructureGrammar, GrammarUnavailable> =>
     Effect.gen(function* () {
       const local = yield* resolveBundled(grammar).pipe(
         Effect.flatMap((bundled) =>
@@ -391,14 +358,14 @@ const make: Effect.Effect<
           if (tree === null) return null;
           return makeStructureTree(content, tree);
         },
-      } satisfies Grammar;
+      } satisfies StructureGrammar;
     });
 
   const grammar = Effect.fnUntraced(function* (filetype: string) {
     const name = grammarForFiletype(filetype);
     // One Deferred per attempt: the winner of this modify runs doLoad; losers
     // await the same Deferred. Failures delete the slot so the next open retries.
-    const candidate = yield* Deferred.make<Grammar, GrammarUnavailable>();
+    const candidate = yield* Deferred.make<StructureGrammar, GrammarUnavailable>();
     const shared = yield* SynchronizedRef.modify(loads, (map) => {
       const hit = map.get(name);
       if (hit !== undefined) return [hit, map] as const;

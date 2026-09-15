@@ -1,13 +1,11 @@
 /**
- * Schema for the editor's data model.
+ * Schema for the vim engine's data model.
  *
- * Most of the editor's data is a `Schema` value, with the reducer's types
- * derived from the schemas. `EditorEvent` is the one place we keep a plain
- * TS discriminated union: the `key` variant carries a `KeyEvent` from
- * `@opentui/core`, a third-party type the editor does not own. Forcing
- * it through `S.Any as S.Schema<KeyEvent>` would be a lie to the type
- * system. The reducer never decodes `EditorEvent` from JSON, so the union
- * is internal-only.
+ * Most of the data is a `Schema` value, with the reducer's types derived
+ * from the schemas. `EditorEvent` is the one place we keep a plain TS
+ * discriminated union: the `key` variant carries a decoded {@link Key}.
+ * The reducer never decodes `EditorEvent` from JSON, so the union is
+ * internal-only.
  *
  * `Phase` uses `Schema.TaggedUnion` — the only place in the repo we
  * diverge from the established `TaggedStruct` + `Union` pattern — because
@@ -16,12 +14,12 @@
  * Buffer body is a TextBuffer (SumTree), not Schema — see buffer-state.ts.
  */
 import { Schema as S } from "effect";
-import type { KeyEvent } from "@opentui/core";
-import type { Grammar } from "@danielfgray/amux-highlight";
 import type { TextBuffer, TextEdit } from "@danielfgray/amux-text-buffer";
 import type { CmdAtom } from "./cmd-atom.ts";
 import type { ChangeList, JumpList } from "./jumps.ts";
+import type { Key } from "./key.ts";
 import type { MapEntry } from "./maps.ts";
+import type { StructureGrammar } from "./structure.ts";
 
 export const EditorMode = S.Literals([
   "normal",
@@ -62,8 +60,10 @@ export type UndoTree = {
   readonly nextSeq: number;
 };
 
-export const LastChange = S.Struct({ keys: S.Array(S.String) });
-export type LastChange = S.Schema.Type<typeof LastChange>;
+/** `.` change tape — decoded Keys, replayed without a codec pass. */
+export type LastChange = {
+  readonly keys: readonly Key[];
+};
 
 export const SearchDirection = S.Literals(["forward", "backward"]);
 export type SearchDirection = S.Schema.Type<typeof SearchDirection>;
@@ -247,7 +247,7 @@ export type EditorRequest = S.Schema.Type<typeof EditorRequest>;
 
 /** Plain TS union — see the file's header note. */
 export type EditorEvent =
-  | { readonly _tag: "key"; readonly key: KeyEvent }
+  | { readonly _tag: "key"; readonly key: Key }
   | { readonly _tag: "command-complete"; readonly command: string }
   | {
       readonly _tag: "loaded";
@@ -304,9 +304,9 @@ export type EditorState = {
   readonly file: string | null;
   /**
    * Loaded structural grammar for the current filetype, or null until the
-   * open path finishes TreeSitter.grammar (tag ops then no-op).
+   * open path finishes loading one (tag ops then no-op).
    */
-  readonly grammar: Grammar | null;
+  readonly grammar: StructureGrammar | null;
   /** Daemon OpenDocumentStore generation; null for scratch / offline buffers. */
   readonly generation: number | null;
   readonly dirty: boolean;
@@ -343,7 +343,7 @@ export type EditorState = {
   /** Snapshot taken when the current change began; null when idle. */
   readonly changeBase: BufferSnapshot | null;
   /** Keys that constitute the in-flight change, for `.`. */
-  readonly recording: readonly string[] | null;
+  readonly recording: readonly Key[] | null;
   readonly lastChange: LastChange | null;
   /** True while `.` is replaying `lastChange` — don't overwrite it. */
   readonly repeating: boolean;
@@ -417,9 +417,9 @@ export type EditorState = {
    */
   readonly macroReg: string | null;
   /** Keys captured while `macroReg` is set. */
-  readonly macroKeys: readonly string[];
+  readonly macroKeys: readonly Key[];
   /** Stored macros keyed by register name (`a`–`z`). */
-  readonly macros: Readonly<Record<string, readonly string[]>>;
+  readonly macros: Readonly<Record<string, readonly Key[]>>;
   /** Last played macro register, for `@@`. */
   readonly lastMacro: string | null;
   /** True while `@` is replaying — blocks nested infinite `@` loops. */

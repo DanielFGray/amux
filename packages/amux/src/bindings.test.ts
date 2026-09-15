@@ -1035,11 +1035,13 @@ test("a user override replaces a plugin default instead of adding to it", async 
       bindings: { "plugin.agent.new": ["<prefix>g"] },
     })[0]!.entries[0],
   ).toMatchObject({ keys: "^a g", custom: true });
-  expect(keysFor(commands[0]!, {
-    prefix: "ctrl+a",
-    leader: "space",
-    bindings: { "plugin.agent.new": ["<prefix>g"] },
-  })).toEqual(["<prefix>g"]);
+  expect(
+    keysFor(commands[0]!, {
+      prefix: "ctrl+a",
+      leader: "space",
+      bindings: { "plugin.agent.new": ["<prefix>g"] },
+    }),
+  ).toEqual(["<prefix>g"]);
   bindings.dispose();
   t.renderer.destroy();
 });
@@ -1807,12 +1809,10 @@ test("pending table rejects a second source for count or chord; grammar concaten
     table.register({ id: "a", role: "grammar", strokes: () => ["x"] });
     table.register({ id: "b", role: "grammar", strokes: () => ["y"] });
     expect(pendingStrokes(table, "grammar")).toEqual(["x", "y"]);
-    expect(() =>
-      table.register({ id: "c", role: "count", strokes: () => ["1"] }),
-    ).not.toThrow();
-    expect(() =>
-      table.register({ id: "d", role: "count", strokes: () => ["2"] }),
-    ).toThrow(/pending role 'count' is already registered by 'c'/);
+    expect(() => table.register({ id: "c", role: "count", strokes: () => ["1"] })).not.toThrow();
+    expect(() => table.register({ id: "d", role: "count", strokes: () => ["2"] })).toThrow(
+      /pending role 'count' is already registered by 'c'/,
+    );
   } finally {
     t.renderer.destroy();
   }

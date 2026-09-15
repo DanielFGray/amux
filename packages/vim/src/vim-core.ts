@@ -1,6 +1,5 @@
 /**
- * The vim state machine the editor plugin runs — pure, renderer-free, and the
- * part "much will depend on". The plugin shell only feeds it key events and
+ * The vim state machine — pure, renderer-free. Callers feed it key events and
  * file-load/write outcomes; every rule of normal/insert/command mode lives here
  * so the mode-switching behaviour is testable without a screen.
  *
@@ -11,10 +10,10 @@
  *
  * The data model lives in `./schema.ts`; this file owns the reducer.
  */
-import type { KeyEvent } from "@opentui/core";
 import { Option } from "effect";
-import type { Grammar } from "@danielfgray/amux-highlight";
-import { BUILTIN_COMMANDS, resolveCommand, type RegisteredCommand } from "./api.ts";
+import { BUILTIN_COMMANDS, resolveCommand, type RegisteredCommand } from "./commands.ts";
+import { press, type Key } from "./key.ts";
+import type { StructureGrammar } from "./structure.ts";
 import {
   adjustCursorPastEol,
   allMotions,
@@ -25,6 +24,8 @@ import {
   findIsInclusive,
   findMotion,
   flipFind,
+  fullPageDown,
+  fullPageUp,
   halfPageDown,
   halfPageUp,
   INCLUSIVE_MOTIONS,
@@ -43,7 +44,14 @@ import {
   type MotionContext,
   type MotionRange,
 } from "./motions.ts";
-import { type BuiltinMapId, type MapScope, BUILTIN_MAP_ENTRIES, isMapPrefixStroke, pushMap, strokeFromKey } from "./maps.ts";
+import {
+  type BuiltinMapId,
+  type MapScope,
+  BUILTIN_MAP_ENTRIES,
+  isMapPrefixStroke,
+  pushMap,
+  strokeFromKey,
+} from "./maps.ts";
 import {
   appendChangeKey,
   cancelChange,
@@ -97,7 +105,6 @@ import {
   applyCaseRange,
   armInsertCtrlO,
   autoIndentRows,
-  encodeKey,
   initialSliceState,
   insertClearLineEnd,
   insertClearLineStart,
@@ -333,11 +340,7 @@ export function reduceEditor(
   }
 }
 
-function onKey(
-  state: EditorState,
-  key: KeyEvent,
-  commands: readonly RegisteredCommand[],
-): EditorState {
+function onKey(state: EditorState, key: Key, commands: readonly RegisteredCommand[]): EditorState {
   // A request is a one-shot instruction to the shell. Only `:wq`-style
   // execution produces one; any other key must not carry a stale request
   // forward, or the shell would fulfil it again. executeCommand sets the new
@@ -364,8 +367,7 @@ function onKey(
   // Macro tape: append after the key is handled, never the `q` that stops
   // or the `q{reg}` that starts. Cite: checklist E — distinct from `.` recording.
   if (beforeMacro !== null && next.macroReg === beforeMacro && !base.replayingMacro) {
-    const encoded = encodeKey(key);
-    if (encoded !== null) next = appendMacroKey(next, encoded);
+    next = appendMacroKey(next, key);
   }
 
   return maybeResumeAfterCtrlO(base, next);
@@ -375,13 +377,12 @@ function onKey(
  * The printable character a keypress carries, or null.
  *
  * Named control keys (enter, backspace…) come back null so their callers switch
- * on `key.name` instead. OpenTUI calls printable space `space`, however, so it
- * is the named-key exception. The parser reports capitals as lowercase names
- * plus a shift flag, so the *character* has to come from `sequence`, which
- * carries the actual glyph. Releases and ctrl/meta combos are never text.
+ * on `key.name` instead. Printable space uses `name: "space"` with
+ * `sequence: " "` — that is the named-key exception. Capitals arrive as
+ * lowercase `name` plus `shift: true`, so the printable glyph comes from
+ * `sequence`. Releases and ctrl/meta combos are never text.
  */
-export function charFromKey(key: KeyEvent): string | null {
-  if (key.eventType === "release") return null;
+export function charFromKey(key: Key): string | null {
   if (key.ctrl || key.meta || key.option) return null;
   if (key.name === "space" && key.sequence === " ") return " ";
   const name = key.name;
@@ -394,7 +395,7 @@ export function charFromKey(key: KeyEvent): string | null {
 // Normal mode
 // ---------------------------------------------------------------------------
 
-function normalKey(state: EditorState, key: KeyEvent): EditorState {
+function normalKey(state: EditorState, key: Key): EditorState {
   // Esc clears anything pending — operator, count, map prefix, find, or surround.
   if (key.name === "escape") return cancelPendingOnEscape(state);
 
@@ -464,8 +465,7 @@ function normalKey(state: EditorState, key: KeyEvent): EditorState {
       state.pendingRegister === "";
     if (
       stroke !== null &&
-      (state.pendingMap.length > 0 ||
-        (canStartMap && isMapPrefixStroke(state.maps, scope, stroke)))
+      (state.pendingMap.length > 0 || (canStartMap && isMapPrefixStroke(state.maps, scope, stroke)))
     ) {
       const result = pushMap(state.maps, scope, state.pendingMap, stroke);
       if (result._tag === "pending") {
@@ -557,7 +557,7 @@ const cancelPendingOnEscape = (state: EditorState): EditorState => {
   return { ...state, message: null };
 };
 
-const continueOperator = (state: EditorState, key: KeyEvent): EditorState => {
+const continueOperator = (state: EditorState, key: Key): EditorState => {
   const pending = state.pending!;
   // Motion force: `dv` / `dV` / `dCtrl-v` before the motion (nvim oparg.motion_force).
   if (
@@ -571,20 +571,20 @@ const continueOperator = (state: EditorState, key: KeyEvent): EditorState => {
         ? "V"
         : "v";
     return {
-      ...appendChangeKey(state, key.ctrl ? "ctrl+v" : key.name),
+      ...appendChangeKey(state, key),
       pending: { ...pending, motionForce: force },
       message: null,
     };
   }
   // `ys` / `ds` / `cs` — pivot the armed operator into surround (tpope).
   if (pending.textObject === undefined && key.name === "s") {
-    return armSurround(appendChangeKey(state, "s"), pending.kind, pending.count);
+    return armSurround(appendChangeKey(state, press("s")), pending.kind, pending.count);
   }
   // `d i` / `d a` — promote to text-object wait; the following key names
   // the symbol (w, p, (, ", etc.).
   if (pending.textObject === undefined && (key.name === "i" || key.name === "a")) {
     return {
-      ...appendChangeKey(state, key.name),
+      ...appendChangeKey(state, key),
       pending: {
         kind: pending.kind,
         count: pending.count,
@@ -597,12 +597,12 @@ const continueOperator = (state: EditorState, key: KeyEvent): EditorState => {
   const findKind = findKindOf(key);
   if (pending.textObject === undefined && findKind !== null) {
     return {
-      ...appendChangeKey(state, findKind),
+      ...appendChangeKey(state, press(findKind)),
       pendingFind: { kind: findKind },
       message: null,
     };
   }
-  const recorded = appendChangeKey(state, motionRecordKey(key));
+  const recorded = appendChangeKey(state, key);
   const range = resolveMotion(recorded, key);
   if (range === null) return unknownKey(state, key.name);
   const applied = applyOperator(recorded, range.range);
@@ -640,7 +640,7 @@ const armSurround = (state: EditorState, kind: OperatorKind, count: number): Edi
   return { ...cleared, pendingSurround: { mode: "change", phase: "old" } };
 };
 
-const grammarOf = (state: EditorState): Option.Option<Grammar> =>
+const grammarOf = (state: EditorState): Option.Option<StructureGrammar> =>
   Option.fromNullishOr(state.grammar);
 
 const applySurroundEdit = (
@@ -667,7 +667,7 @@ const applySurroundEdit = (
     },
   });
 
-const continueSurround = (state: EditorState, key: KeyEvent): EditorState => {
+const continueSurround = (state: EditorState, key: Key): EditorState => {
   const pending = state.pendingSurround!;
   if (pending.mode === "add" && pending.phase === "motion") {
     return continueSurroundMotion(state, pending, key);
@@ -707,7 +707,7 @@ const continueSurround = (state: EditorState, key: KeyEvent): EditorState => {
 const continueTagPrompt = (
   state: EditorState,
   pending: Extract<SurroundPending, { phase: "tag" }>,
-  key: KeyEvent,
+  key: Key,
 ): EditorState => {
   if (key.name === "return" || key.name === "enter" || charFromKey(key) === ">") {
     return finishTagPrompt(state, pending);
@@ -722,7 +722,7 @@ const continueTagPrompt = (
   const char = charFromKey(key);
   if (char === null) return unknownKey(state, key.name);
   return {
-    ...appendChangeKey(state, char),
+    ...appendChangeKey(state, press(char)),
     pendingSurround: { ...pending, name: pending.name + char },
     message: null,
   };
@@ -732,7 +732,7 @@ const finishTagPrompt = (
   state: EditorState,
   pending: Extract<SurroundPending, { phase: "tag" }>,
 ): EditorState => {
-  const recorded = appendChangeKey(state, ">");
+  const recorded = appendChangeKey(state, press(">"));
   if (pending.mode === "add") {
     return applySurroundEdit(
       recorded,
@@ -765,7 +765,7 @@ const finishTagPrompt = (
 const continueSurroundMotion = (
   state: EditorState,
   pending: Extract<SurroundPending, { mode: "add"; phase: "motion" }>,
-  key: KeyEvent,
+  key: Key,
 ): EditorState => {
   // `yss` — surround the current line (from first non-blank).
   if (!("textObject" in pending) && key.name === "s") {
@@ -842,14 +842,14 @@ const awaitSurroundChar = (state: EditorState, range: MotionRange, count: number
 const finishSurroundAdd = (
   state: EditorState,
   pending: Extract<SurroundPending, { mode: "add"; phase: "char" }>,
-  key: KeyEvent,
+  key: Key,
 ): EditorState => {
   const char = charFromKey(key);
   if (char === null) return unknownKey(state, key.name);
   // `t` — collect a tag name until `>` / Enter.
   if (char === "t") {
     return {
-      ...appendChangeKey(state, char),
+      ...appendChangeKey(state, press(char)),
       pendingSurround: {
         mode: "add",
         phase: "tag",
@@ -863,7 +863,7 @@ const finishSurroundAdd = (
       message: null,
     };
   }
-  const recorded = appendChangeKey(state, char);
+  const recorded = appendChangeKey(state, press(char));
   return applySurroundEdit(
     recorded,
     addSurround(
@@ -880,10 +880,10 @@ const finishSurroundAdd = (
   );
 };
 
-const finishSurroundDelete = (state: EditorState, key: KeyEvent): EditorState => {
+const finishSurroundDelete = (state: EditorState, key: Key): EditorState => {
   const char = charFromKey(key);
   if (char === null) return unknownKey(state, key.name);
-  const recorded = appendChangeKey(state, char);
+  const recorded = appendChangeKey(state, press(char));
   return applySurroundEdit(
     recorded,
     deleteSurround(linesOf(recorded.buffer), recorded.cursor, char, grammarOf(recorded)),
@@ -891,10 +891,10 @@ const finishSurroundDelete = (state: EditorState, key: KeyEvent): EditorState =>
   );
 };
 
-const finishSurroundChange = (state: EditorState, old: string, key: KeyEvent): EditorState => {
+const finishSurroundChange = (state: EditorState, old: string, key: Key): EditorState => {
   const char = charFromKey(key);
   if (char === null) return unknownKey(state, key.name);
-  const recorded = appendChangeKey(state, char);
+  const recorded = appendChangeKey(state, press(char));
   return applySurroundEdit(
     recorded,
     changeSurround(linesOf(recorded.buffer), recorded.cursor, old, char, grammarOf(recorded)),
@@ -935,7 +935,7 @@ export const runBuiltinMap = (state: EditorState, id: BuiltinMapId): EditorState
       if (state.pendingCase !== null) {
         return finishChange(
           applyCaseRange(
-            startChange({ ...cleared, pendingCase: null }, ["g", "e"]),
+            startChange({ ...cleared, pendingCase: null }, [press("g"), press("e")]),
             range,
             state.pendingCase.kind,
           ),
@@ -961,7 +961,7 @@ export const runBuiltinMap = (state: EditorState, id: BuiltinMapId): EditorState
     case "gv":
       return restoreVisual(cleared);
     case "gi":
-      return resumeInsert(startChange(cleared, ["gi"]));
+      return resumeInsert(startChange(cleared, [press("g"), press("i")]));
     case "gu":
       return {
         ...cleared,
@@ -993,9 +993,13 @@ export const runBuiltinMap = (state: EditorState, id: BuiltinMapId): EditorState
   }
 };
 
-const dispatchNormalKey = (state: EditorState, key: KeyEvent): EditorState => {
+const dispatchNormalKey = (state: EditorState, key: Key): EditorState => {
   if (key.ctrl && key.name === "d") return moveTo(state, halfPageDown, state, "ctrl-d");
   if (key.ctrl && key.name === "u") return moveTo(state, halfPageUp, state, "ctrl-u");
+  if (key.ctrl && key.name === "f") return moveTo(state, fullPageDown, state, "ctrl-f");
+  if (key.ctrl && key.name === "b") return moveTo(state, fullPageUp, state, "ctrl-b");
+  if (key.name === "pagedown") return moveTo(state, fullPageDown, state, "pagedown");
+  if (key.name === "pageup") return moveTo(state, fullPageUp, state, "pageup");
   if (key.ctrl && key.name === "r") return redo(state);
   if (key.ctrl && key.name === "o") return walkJump(state, "older");
   if (key.ctrl && key.name === "i") return walkJump(state, "newer");
@@ -1038,7 +1042,7 @@ const dispatchNormalKey = (state: EditorState, key: KeyEvent): EditorState => {
     case "`":
       return { ...state, pendingJump: "`", message: null };
     case "~":
-      return finishChange(toggleCaseChars(startChange(state, ["~"]), parsedCount(state)));
+      return finishChange(toggleCaseChars(startChange(state, [press("~")]), parsedCount(state)));
     case "=":
       return {
         ...state,
@@ -1047,38 +1051,38 @@ const dispatchNormalKey = (state: EditorState, key: KeyEvent): EditorState => {
         message: null,
       };
     case "i":
-      return enterInsert(startChange(state, ["i"]), "here");
+      return enterInsert(startChange(state, [press("i")]), "here");
     case "a":
-      return enterInsert(startChange(state, ["a"]), "after");
+      return enterInsert(startChange(state, [press("a")]), "after");
     case "A":
-      return enterInsert(startChange(state, ["A"]), "end");
+      return enterInsert(startChange(state, [press("A")]), "end");
     case "I":
-      return enterInsert(startChange(state, ["I"]), "start");
+      return enterInsert(startChange(state, [press("I")]), "start");
     case "o":
-      return openLine(startChange(state, ["o"]), "below");
+      return openLine(startChange(state, [press("o")]), "below");
     case "O":
-      return openLine(startChange(state, ["O"]), "above");
+      return openLine(startChange(state, [press("O")]), "above");
     case "x":
     case "X": {
       const backward = key.name === "X" || key.shift === true;
       const count = parsedCount(state);
       return finishChange(
-        deleteChars(startChange(state, [backward ? "X" : "x"]), backward ? -1 : 1, count),
+        deleteChars(startChange(state, [press(backward ? "X" : "x")]), backward ? -1 : 1, count),
       );
     }
     case "D":
       return applyOperator(
-        { ...startChange(state, ["D"]), pending: { kind: "delete", count: 1 } },
+        { ...startChange(state, [press("D")]), pending: { kind: "delete", count: 1 } },
         lineRestRange(state),
       );
     case "C":
       return applyOperator(
-        { ...startChange(state, ["C"]), pending: { kind: "change", count: 1 } },
+        { ...startChange(state, [press("C")]), pending: { kind: "change", count: 1 } },
         lineRestRange(state),
       );
     case "Y":
       return applyOperator(
-        { ...startChange(state, ["Y"]), pending: { kind: "yank", count: 1 } },
+        { ...startChange(state, [press("Y")]), pending: { kind: "yank", count: 1 } },
         currentLineRange(state),
       );
     case "d":
@@ -1086,22 +1090,22 @@ const dispatchNormalKey = (state: EditorState, key: KeyEvent): EditorState => {
     case "y":
       return armOperator(state, key.name);
     case "p":
-      return finishChange(putAfter(startChange(state, ["p"])));
+      return finishChange(putAfter(startChange(state, [press("p")])));
     case "P":
-      return finishChange(putBefore(startChange(state, ["P"])));
+      return finishChange(putBefore(startChange(state, [press("P")])));
     case "R":
-      return enterReplace(startChange(state, ["R"]));
+      return enterReplace(startChange(state, [press("R")]));
     case "r":
-      if (key.shift) return enterReplace(startChange(state, ["R"]));
+      if (key.shift) return enterReplace(startChange(state, [press("R")]));
       return {
-        ...startChange(state, ["r"]),
+        ...startChange(state, [press("r")]),
         pendingReplace: { count: parsedCount(state) },
         message: null,
       };
     case '"':
       return { ...state, pendingRegister: REGISTER_PICKING, message: null };
     case "J":
-      return finishChange(joinLines(startChange(state, ["J"]), parsedCount(state)));
+      return finishChange(joinLines(startChange(state, [press("J")]), parsedCount(state)));
     case ">":
       return {
         ...state,
@@ -1149,12 +1153,12 @@ const dispatchNormalKey = (state: EditorState, key: KeyEvent): EditorState => {
     case "u":
       return undo(state);
     default:
-      // OpenTUI may deliver `~` / `=` / `@` only via sequence.
+      // `~` / `=` / `@` may arrive only on `sequence` (empty or unrelated `name`).
       if (key.sequence === "@") {
         return { ...state, pendingAt: true, message: null };
       }
       if (key.sequence === "~") {
-        return finishChange(toggleCaseChars(startChange(state, ["~"]), parsedCount(state)));
+        return finishChange(toggleCaseChars(startChange(state, [press("~")]), parsedCount(state)));
       }
       if (key.sequence === "=") {
         return {
@@ -1176,7 +1180,7 @@ const movePercent = (state: EditorState): EditorState => {
   return moveTo(state, allMotions["%"]!, state, "%");
 };
 
-const continueCase = (state: EditorState, key: KeyEvent): EditorState => {
+const continueCase = (state: EditorState, key: Key): EditorState => {
   const pending = state.pendingCase;
   if (pending === null) return state;
   // Doubled letter: g~~ / guu / gUU → current line × count.
@@ -1197,10 +1201,10 @@ const continueCase = (state: EditorState, key: KeyEvent): EditorState => {
     };
     const keys =
       pending.kind === "toggle"
-        ? ["g", "~", "~"]
+        ? [press("g"), press("~"), press("~")]
         : pending.kind === "lower"
-          ? ["g", "u", "u"]
-          : ["g", "U", "U"];
+          ? [press("g"), press("u"), press("u")]
+          : [press("g"), press("U"), press("U")];
     return finishChange(
       applyCaseRange(startChange({ ...state, pendingCase: null }, keys), range, pending.kind),
     );
@@ -1213,9 +1217,9 @@ const continueCase = (state: EditorState, key: KeyEvent): EditorState => {
     return { ...state, pendingCase: null, message: null };
   }
   const keys = [
-    "g",
-    pending.kind === "toggle" ? "~" : pending.kind === "lower" ? "u" : "U",
-    motionRecordKey(key),
+    press("g"),
+    press(pending.kind === "toggle" ? "~" : pending.kind === "lower" ? "u" : "U"),
+    key,
   ];
   return finishChange(
     applyCaseRange(
@@ -1226,14 +1230,18 @@ const continueCase = (state: EditorState, key: KeyEvent): EditorState => {
   );
 };
 
-const continueEqual = (state: EditorState, key: KeyEvent): EditorState => {
+const continueEqual = (state: EditorState, key: Key): EditorState => {
   const pending = state.pendingEqual;
   if (pending === null) return state;
   if (key.name === "=" || key.sequence === "=") {
     const from = state.cursor.row;
     const to = Math.min(rowCount(state.buffer) - 1, from + pending.count - 1);
     return finishChange(
-      autoIndentRows(startChange({ ...state, pendingEqual: null }, ["=", "="]), from, to),
+      autoIndentRows(
+        startChange({ ...state, pendingEqual: null }, [press("="), press("=")]),
+        from,
+        to,
+      ),
     );
   }
   const resolved = resolveMotion(
@@ -1247,17 +1255,11 @@ const continueEqual = (state: EditorState, key: KeyEvent): EditorState => {
   const end = Math.max(resolved.range.from.row, resolved.range.to.row);
   return finishChange(
     autoIndentRows(
-      startChange({ ...state, pendingEqual: null, count: "" }, ["=", motionRecordKey(key)]),
+      startChange({ ...state, pendingEqual: null, count: "" }, [press("="), key]),
       start,
       end,
     ),
   );
-};
-
-const motionRecordKey = (key: KeyEvent): string => {
-  const char = charFromKey(key);
-  if (char !== null) return char;
-  return motionKeyName(key);
 };
 
 const lineRestRange = (state: EditorState): MotionRange => ({
@@ -1356,8 +1358,8 @@ const isMotionKey = (name: string): name is MotionKey =>
 const isFindKind = (name: string): name is FindKind =>
   name === "f" || name === "F" || name === "t" || name === "T";
 
-/** Normalize OpenTUI's shift+letter / sequence into the vim key name. */
-const motionKeyName = (key: KeyEvent): string => {
+/** Normalize `Key.name` / `Key.sequence` / `Key.shift` into the vim motion name. */
+const motionKeyName = (key: Key): string => {
   if (key.name === "return" || key.name === "enter") return "CR";
   if (key.sequence === "+" || key.name === "+") return "+";
   if (key.sequence === "-" || key.name === "-") return "-";
@@ -1385,7 +1387,7 @@ const motionKeyName = (key: KeyEvent): string => {
   return key.name;
 };
 
-const findKindOf = (key: KeyEvent): FindKind | null => {
+const findKindOf = (key: Key): FindKind | null => {
   if (key.ctrl || key.meta || key.option) return null;
   const name = motionKeyName(key);
   return isFindKind(name) ? name : null;
@@ -1404,7 +1406,7 @@ function parsedCount(state: EditorState): number {
   return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
-function isCountDigit(state: EditorState, key: KeyEvent): boolean {
+function isCountDigit(state: EditorState, key: Key): boolean {
   if (state.pending) return false;
   if (state.pendingReplace !== null || state.pendingIndent !== null) return false;
   if (state.pendingSurround !== null) {
@@ -1497,7 +1499,7 @@ function moveTo(state: EditorState, motion: Motion, base = state, jumpKey?: stri
   };
 }
 
-function completeFind(state: EditorState, key: KeyEvent): EditorState {
+function completeFind(state: EditorState, key: Key): EditorState {
   const pending = state.pendingFind;
   if (pending === null) return state;
   const char = charFromKey(key);
@@ -1509,7 +1511,7 @@ function completeFind(state: EditorState, key: KeyEvent): EditorState {
   }
   const lastFind = { kind: pending.kind, char };
   const withFind: EditorState = {
-    ...appendChangeKey(state, char),
+    ...appendChangeKey(state, press(char)),
     pendingFind: null,
     lastFind,
   };
@@ -1571,7 +1573,7 @@ function armOperator(state: EditorState, name: string): EditorState {
   // resolver when the second key matches the operator letter, not here.
   if (state.pending) return unknownKey(state, name);
   return {
-    ...startChange(state, [name]),
+    ...startChange(state, [press(name)]),
     pending: { kind: operatorKind(name), count: parsedCount(state) },
   };
 }
@@ -1583,7 +1585,7 @@ const operatorKind = (name: string): OperatorKind =>
  *  operator. Returns null for keys that don't constitute a motion. */
 function resolveMotion(
   state: EditorState,
-  key: KeyEvent,
+  key: Key,
 ): { range: MotionRange; message?: string } | null {
   const pending = state.pending;
   const force = Option.fromNullishOr(pending?.motionForce);
@@ -1591,6 +1593,18 @@ function resolveMotion(
 
   if (key.ctrl && (key.name === "d" || key.name === "u")) {
     const motion = key.name === "d" ? halfPageDown : halfPageUp;
+    return {
+      range: forceRange(applyMotion(motion, motionCtx(state, effectiveCount(state)))),
+    };
+  }
+  if (key.ctrl && (key.name === "f" || key.name === "b")) {
+    const motion = key.name === "f" ? fullPageDown : fullPageUp;
+    return {
+      range: forceRange(applyMotion(motion, motionCtx(state, effectiveCount(state)))),
+    };
+  }
+  if (key.name === "pagedown" || key.name === "pageup") {
+    const motion = key.name === "pagedown" ? fullPageDown : fullPageUp;
     return {
       range: forceRange(applyMotion(motion, motionCtx(state, effectiveCount(state)))),
     };
@@ -1768,11 +1782,11 @@ const operatorLetter = (kind: OperatorKind): string =>
   kind === "delete" ? "d" : kind === "change" ? "c" : "y";
 
 /** Read the closing character of a text object from the key's sequence.
- *  OpenTUI's `i<` and `a<` arrive as `name: "a"` (or `"i"`) with a
- *  shift-modified sequence carrying the punctuation glyph. */
+ *  `i<` / `a<` arrive as `name: "a"` (or `"i"`) with `sequence` carrying the
+ *  punctuation glyph (and often `shift: true`). */
 function readTextObject(
   state: EditorState,
-  key: KeyEvent,
+  key: Key,
   inner: boolean,
 ): { range: MotionRange; message?: string } | null {
   const symbol = textObjectSymbol(key);
@@ -1786,11 +1800,11 @@ function readTextObject(
   return { range };
 }
 
-const textObjectSymbol = (key: KeyEvent): string | null => {
-  // OpenTUI reports shift+punctuation as name == punctuation with shift
-  // true; bare punctuation as name == punctuation, shift false. The sequence
-  // carries the printable glyph in both cases. Shift+letter for `iW`/`aW`
-  // may keep a lowercase sequence — normalize like `motionKeyName`.
+const textObjectSymbol = (key: Key): string | null => {
+  // Shift+punctuation: `name` is the punctuation char with `shift: true`;
+  // bare punctuation: same `name`, `shift: false`. `sequence` carries the
+  // printable glyph in both cases. Shift+letter for `iW`/`aW` may keep a
+  // lowercase `sequence` — normalize like `motionKeyName`.
   const sequence = key.sequence;
   if (sequence && sequence.length === 1) {
     if (key.shift && (sequence === "w" || key.name === "w")) return "W";
@@ -2199,7 +2213,7 @@ function deleteCharAt(state: EditorState): EditorState {
  * Cite: VS Code CUA; ep-b64a91 / ts-e7d63c. Reuses `visual` as selection
  * anchor while staying in insert (half-open range).
  */
-function cuaKey(state: EditorState, key: KeyEvent): EditorState {
+function cuaKey(state: EditorState, key: Key): EditorState {
   if (key.name === "escape") {
     return {
       ...state,
@@ -2330,7 +2344,7 @@ function cuaCopy(state: EditorState): EditorState {
 function cuaCut(state: EditorState): EditorState {
   const range = cuaSelectionRange(state);
   if (range === null) return state;
-  const armed = startChange({ ...state, selectedRegister: "+" }, ["ctrl+x"]);
+  const armed = startChange({ ...state, selectedRegister: "+" }, [press("x", { ctrl: true })]);
   const deleted = deleteRange(armed, range);
   return finishChange({
     ...deleted,
@@ -2341,7 +2355,8 @@ function cuaCut(state: EditorState): EditorState {
 }
 
 function cuaPaste(state: EditorState): EditorState {
-  const armed = state.changeBase === null ? startChange(state, ["ctrl+v"]) : state;
+  const armed =
+    state.changeBase === null ? startChange(state, [press("v", { ctrl: true })]) : state;
   const cleared =
     cuaSelectionRange(armed) !== null ? deleteCuaSelection(armed) : clearCuaSelection(armed);
   const plus = readRegister(cleared, "+");
@@ -2349,7 +2364,7 @@ function cuaPaste(state: EditorState): EditorState {
   return finishChange(insertPasteRegister(cleared, reg));
 }
 
-function cuaMotion(state: EditorState, key: KeyEvent, extend: boolean): EditorState {
+function cuaMotion(state: EditorState, key: Key, extend: boolean): EditorState {
   const anchor = extend ? (state.visual?.anchor ?? { ...state.cursor }) : null;
   const base = extend ? state : clearCuaSelection(state);
   let next: EditorState;
@@ -2406,14 +2421,14 @@ function insertRight(state: EditorState): EditorState {
   return { ...state, cursor: { row: row + 1, col: 0 }, count: "", message: null };
 }
 
-function insertKey(state: EditorState, key: KeyEvent): EditorState {
+function insertKey(state: EditorState, key: Key): EditorState {
   if (key.ctrl && key.name === "c") return leaveInsert(state);
   return insertKeyBody(state, key, { leaveOnEscape: true, vimInsertOnly: true });
 }
 
 function insertKeyBody(
   state: EditorState,
-  key: KeyEvent,
+  key: Key,
   opts: { leaveOnEscape: boolean; vimInsertOnly: boolean },
 ): EditorState {
   // Ctrl-r {reg}: wait for the register name, then paste (vim insert only).
@@ -2515,7 +2530,7 @@ function insertLineEnd(state: EditorState): EditorState {
 function insertDeleteForward(state: EditorState): EditorState {
   const { row, col } = state.cursor;
   const line = lineAtRow(state.buffer, row);
-  const armed = state.changeBase === null ? startChange(state, ["delete"]) : state;
+  const armed = state.changeBase === null ? startChange(state, [press("delete")]) : state;
   if (col < line.length) {
     return finishChange({
       ...editDelete(armed, { row, col }, { row, col: col + 1 }),
@@ -2540,7 +2555,7 @@ function leaveInsert(state: EditorState): EditorState {
       ? writeRegister(state, ".", { text: state.insertAccum.split("\n"), linewise: false }, "set")
       : state;
   const left = {
-    ...appendChangeKey(withDot, "escape"),
+    ...appendChangeKey(withDot, press("escape")),
     mode: "normal" as const,
     // vim steps the cursor back one column when insert closes; it never walks
     // off the front of a line.
@@ -2562,7 +2577,7 @@ function leaveInsert(state: EditorState): EditorState {
 function insertChar(state: EditorState, char: string): EditorState {
   const { row, col } = state.cursor;
   return {
-    ...appendChangeKey(editInsert(state, row, col, char), char),
+    ...appendChangeKey(editInsert(state, row, col, char), press(char)),
     cursor: { row, col: col + char.length },
     insertAccum: state.insertAccum + char,
     message: null,
@@ -2613,7 +2628,7 @@ function enterReplace(state: EditorState): EditorState {
   };
 }
 
-function replaceKey(state: EditorState, key: KeyEvent): EditorState {
+function replaceKey(state: EditorState, key: Key): EditorState {
   if (key.ctrl && key.name === "c") return leaveInsert(state);
   switch (key.name) {
     case "escape":
@@ -2644,7 +2659,7 @@ function replaceChar(state: EditorState, char: string): EditorState {
   if (col < line.length) {
     const next = editInsert(editDelete(state, { row, col }, { row, col: 1 + col }), row, col, char);
     return {
-      ...appendChangeKey(next, char),
+      ...appendChangeKey(next, press(char)),
       cursor: { row, col: col + 1 },
       insertAccum: state.insertAccum + char,
       message: null,
@@ -2657,7 +2672,7 @@ function replaceChar(state: EditorState, char: string): EditorState {
 // Replace / indent / join / search / visual / dot-repeat
 // ---------------------------------------------------------------------------
 
-function completeReplace(state: EditorState, key: KeyEvent): EditorState {
+function completeReplace(state: EditorState, key: Key): EditorState {
   const pending = state.pendingReplace;
   if (pending === null) return state;
   if (key.name === "escape") {
@@ -2671,10 +2686,10 @@ function completeReplace(state: EditorState, key: KeyEvent): EditorState {
   const line = lineAtRow(state.buffer, row);
   const count = Math.min(pending.count, Math.max(0, line.length - col));
   if (count === 0) {
-    return finishChange({ ...appendChangeKey(state, char), pendingReplace: null });
+    return finishChange({ ...appendChangeKey(state, press(char)), pendingReplace: null });
   }
   const next = editDelete(
-    { ...appendChangeKey(state, char), pendingReplace: null },
+    { ...appendChangeKey(state, press(char)), pendingReplace: null },
     { row, col },
     { row, col: col + count },
   );
@@ -2686,7 +2701,7 @@ function completeReplace(state: EditorState, key: KeyEvent): EditorState {
   });
 }
 
-function completeIndent(state: EditorState, key: KeyEvent): EditorState {
+function completeIndent(state: EditorState, key: Key): EditorState {
   const pending = state.pendingIndent;
   if (pending === null) return state;
   if (key.name === "escape") {
@@ -2696,8 +2711,8 @@ function completeIndent(state: EditorState, key: KeyEvent): EditorState {
   const isLt = key.name === "<" || key.sequence === "<" || (key.shift && key.name === ",");
   if ((pending.dir === 1 && isGt) || (pending.dir === -1 && isLt)) {
     const started = startChange({ ...state, pendingIndent: null }, [
-      pending.dir === 1 ? ">" : "<",
-      pending.dir === 1 ? ">" : "<",
+      press(pending.dir === 1 ? ">" : "<"),
+      press(pending.dir === 1 ? ">" : "<"),
     ]);
     return finishChange(indentLines(started, pending.dir, pending.count));
   }
@@ -2742,7 +2757,7 @@ function joinLines(state: EditorState, count: number): EditorState {
   };
 }
 
-function searchKey(state: EditorState, key: KeyEvent): EditorState {
+function searchKey(state: EditorState, key: Key): EditorState {
   switch (key.name) {
     case "escape":
       return { ...state, mode: idleMode(state), command: "", message: null };
@@ -2775,10 +2790,10 @@ function repeatSearch(state: EditorState, reverse: boolean): EditorState {
   return runSearch(state, state.lastSearch.direction, reverse);
 }
 
-const isStarKey = (key: KeyEvent): boolean =>
+const isStarKey = (key: Key): boolean =>
   key.name === "*" || key.sequence === "*" || (key.shift && key.name === "8");
 
-const isHashKey = (key: KeyEvent): boolean =>
+const isHashKey = (key: Key): boolean =>
   key.name === "#" || key.sequence === "#" || (key.shift && key.name === "3");
 
 /**
@@ -2902,7 +2917,7 @@ function findBackward(
   return null;
 }
 
-function visualKey(state: EditorState, key: KeyEvent): EditorState {
+function visualKey(state: EditorState, key: Key): EditorState {
   if (key.name === "escape") {
     return leaveVisual(state);
   }
@@ -2949,39 +2964,47 @@ function visualKey(state: EditorState, key: KeyEvent): EditorState {
     case "d":
     case "x":
       return finishChange({
-        ...deleteRange(startChange(cleared, [key.name]), range),
+        ...deleteRange(startChange(cleared, [press(key.name)]), range),
         mode: "normal",
         visual: null,
       });
     case "c":
-      return changeRange(startChange(cleared, ["c"]), range);
+      return changeRange(startChange(cleared, [press("c")]), range);
     case "y":
       return finishChange({
-        ...yankRange(startChange(cleared, ["y"]), range),
+        ...yankRange(startChange(cleared, [press("y")]), range),
         mode: "normal",
         visual: null,
       });
     case "~":
-      return finishChange(applyCaseRange(startChange(cleared, ["~"]), range, "toggle"));
+      return finishChange(applyCaseRange(startChange(cleared, [press("~")]), range, "toggle"));
     case "=":
       return finishChange(
-        autoIndentRows(startChange(cleared, ["="]), range.from.row, range.to.row),
+        autoIndentRows(startChange(cleared, [press("=")]), range.from.row, range.to.row),
       );
     case ">":
       return finishChange(
-        indentLines(startChange(cleared, [">", ">"]), 1, range.to.row - range.from.row + 1),
+        indentLines(
+          startChange(cleared, [press(">"), press(">")]),
+          1,
+          range.to.row - range.from.row + 1,
+        ),
       );
     case "<":
       return finishChange(
-        indentLines(startChange(cleared, ["<", "<"]), -1, range.to.row - range.from.row + 1),
+        indentLines(
+          startChange(cleared, [press("<"), press("<")]),
+          -1,
+          range.to.row - range.from.row + 1,
+        ),
       );
     default:
       if (key.sequence === "~") {
-        return finishChange(applyCaseRange(startChange(cleared, ["~"]), range, "toggle"));
+        return finishChange(applyCaseRange(startChange(cleared, [press("~")]), range, "toggle"));
       }
       if (key.sequence === "=") {
         return finishChange(
-          autoIndentRows(startChange(cleared, ["="]), range.from.row, range.to.row),
+          autoIndentRows(startChange(cleared, [press("=")]), range.from.row, range.to.row),
         );
       }
       return { ...state, message: `not a visual-mode key: ${key.name}` };
@@ -3027,15 +3050,13 @@ function repeatLastChange(state: EditorState): EditorState {
     pendingFind: null,
     pendingMap: [],
   };
-  for (const name of keys) {
-    current = reduceEditor(current, { _tag: "key", key: keyFromName(name) });
+  for (const key of keys) {
+    current = reduceEditor(current, { _tag: "key", key });
   }
   const done: EditorState = { ...current, repeating: false };
   // `.` does not bump atomGeneration (repeating); still cascade to extras.
   if (done.extraCursors.length > 0 && done.lastAtom !== null && isCascadeable(done.lastAtom)) {
-    return cascadeAtom(done, done.lastAtom, (s, name) =>
-      reduceEditor(s, { _tag: "key", key: keyFromName(name) }),
-    );
+    return cascadeAtom(done, done.lastAtom, (s, key) => reduceEditor(s, { _tag: "key", key }));
   }
   return done;
 }
@@ -3054,71 +3075,9 @@ function settleCascade(
   if (after.atomGeneration === before.atomGeneration) return after;
   if (after.lastAtom === null || after.extraCursors.length === 0) return after;
   if (!isCascadeable(after.lastAtom)) return after;
-  return cascadeAtom(after, after.lastAtom, (s, name) =>
-    reduceEditor(s, { _tag: "key", key: keyFromName(name) }, commands),
+  return cascadeAtom(after, after.lastAtom, (s, key) =>
+    reduceEditor(s, { _tag: "key", key }, commands),
   );
-}
-
-function keyFromName(name: string): KeyEvent {
-  if (name.startsWith("ctrl+")) {
-    return {
-      name: name.slice("ctrl+".length),
-      eventType: "press",
-      ctrl: true,
-      meta: false,
-      shift: false,
-      sequence: "",
-    } as KeyEvent;
-  }
-  if (name === "escape") {
-    return {
-      name: "escape",
-      eventType: "press",
-      ctrl: false,
-      meta: false,
-      shift: false,
-      sequence: "\x1b",
-    } as KeyEvent;
-  }
-  if (name === "return" || name === "enter") {
-    return {
-      name: "return",
-      eventType: "press",
-      ctrl: false,
-      meta: false,
-      shift: false,
-      sequence: "\r",
-    } as KeyEvent;
-  }
-  if (name === "backspace") {
-    return {
-      name: "backspace",
-      eventType: "press",
-      ctrl: false,
-      meta: false,
-      shift: false,
-      sequence: "\b",
-    } as KeyEvent;
-  }
-  if (name === " ") {
-    return {
-      name: "space",
-      eventType: "press",
-      ctrl: false,
-      meta: false,
-      shift: false,
-      sequence: " ",
-    } as KeyEvent;
-  }
-  const shift = name.length === 1 && name !== name.toLowerCase();
-  return {
-    name: shift ? name.toLowerCase() : name,
-    eventType: "press",
-    ctrl: false,
-    meta: false,
-    shift,
-    sequence: name,
-  } as KeyEvent;
 }
 
 /** Replay a stored macro `count` times. `@@` uses `lastMacro`. */
@@ -3143,8 +3102,8 @@ function playMacro(state: EditorState, reg: string, count: number): EditorState 
   };
   const times = Math.max(1, count);
   for (let i = 0; i < times; i++) {
-    for (const name of keys) {
-      current = reduceEditor(current, { _tag: "key", key: keyFromName(name) });
+    for (const key of keys) {
+      current = reduceEditor(current, { _tag: "key", key });
     }
   }
   return { ...current, replayingMacro: false, pendingAt: false };
@@ -3156,7 +3115,7 @@ function playMacro(state: EditorState, reg: string, count: number): EditorState 
 
 function commandKey(
   state: EditorState,
-  key: KeyEvent,
+  key: Key,
   commands: readonly RegisteredCommand[],
 ): EditorState {
   switch (key.name) {
@@ -3400,8 +3359,8 @@ export function applySurround(state: EditorState, target: string): EditorState {
   const range = surroundRange(state);
   const mode = state.options.keyProfile === "cua" ? ("insert" as const) : ("normal" as const);
   const armed = startChange({ ...state, mode, visual: null, pendingSurround: null }, [
-    "surround",
-    char,
+    press("surround"),
+    press(char),
   ]);
   return applySurroundEdit(
     armed,

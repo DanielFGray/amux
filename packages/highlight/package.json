@@ -13,6 +13,7 @@
     "./*": "./src/*"
   },
   "dependencies": {
+    "@danielfgray/amux-vim": "workspace:*",
     "@opentui/core": "catalog:",
     "effect": "catalog:",
     "web-tree-sitter": "0.25.10"

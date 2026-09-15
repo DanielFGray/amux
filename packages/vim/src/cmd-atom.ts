@@ -11,6 +11,7 @@
  */
 import type { TextBuffer } from "@danielfgray/amux-text-buffer";
 import type { Cursor, EditorState, UndoTree } from "./schema.ts";
+import { encodeKey, type Key } from "./key.ts";
 
 /** Subset of nvim CmdAtomType — enough for dot-repeat and cascade. */
 export type CmdAtomType = "operator" | "insert" | "visual" | "motion" | "jump" | "ex" | "normal";
@@ -18,7 +19,7 @@ export type CmdAtomType = "operator" | "insert" | "visual" | "motion" | "jump" |
 /**
  * Structured redo fields. Mirrors nvim CmdSpec lightly: register + count are
  * the functional prefix; `body` is the resolved keysequence without that
- * prefix (we store the full replay string on `CmdAtom.keys`).
+ * prefix (we store the full replay Keys on `CmdAtom.keys`).
  */
 export type CmdSpec = {
   readonly register: string | null;
@@ -28,37 +29,50 @@ export type CmdSpec = {
 
 export type CmdAtom = {
   readonly type: CmdAtomType;
-  /** Resolved keysequence for replay (includes count/register when recorded). */
-  readonly keys: readonly string[];
+  /** Resolved keys for replay (includes count/register when recorded). */
+  readonly keys: readonly Key[];
   readonly spec: CmdSpec;
   /** Cursor before the action — cascade / jump context. */
   readonly origin: Cursor;
   readonly changed: boolean;
 };
 
-export const atomTypeFromKeys = (keys: readonly string[]): CmdAtomType => {
+const headGlyph = (key: Key): string | null => {
+  if (key.ctrl || key.meta || key.option) return null;
+  if (key.sequence.length === 1) return key.sequence;
+  if (key.name.length === 1) {
+    return key.shift && /[a-z]/.test(key.name) ? key.name.toUpperCase() : key.name;
+  }
+  return null;
+};
+
+export const atomTypeFromKeys = (keys: readonly Key[]): CmdAtomType => {
   const head = keys[0];
+  if (head === undefined) return "operator";
+  const ch = headGlyph(head);
   if (
-    head === "i" ||
-    head === "a" ||
-    head === "A" ||
-    head === "I" ||
-    head === "o" ||
-    head === "O" ||
-    head === "s" ||
-    head === "S" ||
-    head === "c" ||
-    head === "C"
+    ch === "i" ||
+    ch === "a" ||
+    ch === "A" ||
+    ch === "I" ||
+    ch === "o" ||
+    ch === "O" ||
+    ch === "s" ||
+    ch === "S" ||
+    ch === "c" ||
+    ch === "C"
   ) {
     return "insert";
   }
-  if (head === "v" || head === "V") return "visual";
+  if (ch === "v" || ch === "V") return "visual";
   return "operator";
 };
 
+const bodyOf = (keys: readonly Key[]): string => keys.map((key) => encodeKey(key) ?? "").join("");
+
 export const atomFromKeys = (
   type: CmdAtomType,
-  keys: readonly string[],
+  keys: readonly Key[],
   origin: Cursor,
   changed: boolean,
   register: string | null = null,
@@ -69,7 +83,7 @@ export const atomFromKeys = (
   spec: {
     register,
     count,
-    body: keys.join(""),
+    body: bodyOf(keys),
   },
   origin: { ...origin },
   changed,
@@ -77,7 +91,7 @@ export const atomFromKeys = (
 
 /** Infer type from the recorded key list (dot-repeat settlement). */
 export const atomFromRecording = (
-  keys: readonly string[],
+  keys: readonly Key[],
   origin: Cursor,
   changed: boolean,
 ): CmdAtom => atomFromKeys(atomTypeFromKeys(keys), keys, origin, changed);
@@ -108,7 +122,7 @@ export const amendHeadBuffer = (tree: UndoTree, buffer: TextBuffer, cursor: Curs
   };
 };
 
-export type ReduceKey = (state: EditorState, keyName: string) => EditorState;
+export type ReduceKey = (state: EditorState, key: Key) => EditorState;
 
 /**
  * Replay `atom` at each extra cursor on a state where the primary has already
@@ -131,8 +145,8 @@ export function cascadeAtom(state: EditorState, atom: CmdAtom, reduceKey: Reduce
       continue;
     }
     current = { ...current, cursor: { ...cursor }, changeBase: null, recording: null };
-    for (const name of atom.keys) {
-      current = reduceKey(current, name);
+    for (const key of atom.keys) {
+      current = reduceKey(current, key);
     }
     nextExtras.push({ ...current.cursor });
   }

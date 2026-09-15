@@ -30,17 +30,17 @@ import { EditorControllerTag, EditorPane, type EditorController } from "./Editor
 import { EditorIo, listEntriesWith, runShellCommand, type EditorIoService } from "./io.ts";
 import {
   BUILTIN_MAP_ENTRIES,
-  mapContinuationHints,
-  type MapEntry,
-} from "./maps.ts";
-import {
   applySurround,
   beginSearch,
   beginSubstitute,
   beginSurround,
+  mapContinuationHints,
   mapScopeOf,
-} from "./vim-core.ts";
-import { showcmdStrokes } from "./showcmd.ts";
+  showcmdStrokes,
+  type Key,
+  type MapEntry,
+} from "@danielfgray/amux-vim";
+import { keyFromEvent } from "./key-event.ts";
 import { registerLspUi, type LspUi } from "./lsp-ui.tsx";
 import { registerFileUi, type FileUi } from "./file-ui.tsx";
 import { SearchService } from "@danielfgray/amux-plugin-search";
@@ -584,20 +584,22 @@ export const editorPlugin: PluginDefinition = definePlugin({
         const lhs = event.sequence.length === 1 ? event.sequence : event.name;
         const rhs = editor.keymap.lookup(mode, lhs);
         if (rhs !== undefined && rhs.length === 1) {
-          // Single-key remap: synthesize a printable key and dispatch that.
+          // Single-key remap: synthesize a printable Key and dispatch that.
           // Multi-key / ex-command rhs is a later spike.
-          controller.dispatch(
-            {
-              ...event,
-              name: rhs,
-              sequence: rhs,
-              shift: rhs !== rhs.toLowerCase(),
-            } as KeyEvent,
-            value,
-          );
+          const remapped: Key = {
+            name: rhs,
+            sequence: rhs,
+            shift: rhs !== rhs.toLowerCase(),
+            ctrl: false,
+            meta: false,
+            option: false,
+          };
+          controller.dispatch(remapped, value);
           return true;
         }
-        controller.dispatch(event, value);
+        const key = keyFromEvent(event);
+        if (key === null) return true;
+        controller.dispatch(key, value);
         return true;
       }
 
@@ -642,6 +644,10 @@ export const editorPlugin: PluginDefinition = definePlugin({
         ["shift+l", "screen bottom"],
         ["ctrl+d", "half page down"],
         ["ctrl+u", "half page up"],
+        ["ctrl+f", "page down"],
+        ["ctrl+b", "page up"],
+        ["pagedown", "page down"],
+        ["pageup", "page up"],
         ["f", "find char forward"],
         ["shift+f", "find char back"],
         ["t", "till char forward"],
@@ -708,6 +714,10 @@ export const editorPlugin: PluginDefinition = definePlugin({
         ["shift+l", "screen bottom"],
         ["ctrl+d", "half page down"],
         ["ctrl+u", "half page up"],
+        ["ctrl+f", "page down"],
+        ["ctrl+b", "page up"],
+        ["pagedown", "page down"],
+        ["pageup", "page up"],
         ["f", "find char forward"],
         ["shift+f", "find char back"],
         ["t", "till char forward"],
@@ -1145,11 +1155,4 @@ function spaceDirOf(panel: PanelContext): string {
 
 export default editorPlugin;
 
-export {
-  createEditor,
-  Editor,
-  type AddCommandSpec,
-  type CommandRunArgs,
-  type EditorService,
-  type RegisteredCommand,
-} from "./api.ts";
+export { createEditor, Editor, type AddCommandSpec, type EditorService } from "./api.ts";

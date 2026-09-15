@@ -10,12 +10,7 @@ import {
   testPluginEnvironment,
   waitFor,
 } from "@danielfgray/amux/testing";
-import {
-  ContextsTag,
-  OptionsTag,
-  resolveOptions,
-  SettingsTag,
-} from "@danielfgray/amux";
+import { ContextsTag, OptionsTag, resolveOptions, SettingsTag } from "@danielfgray/amux";
 import type { Command, PaneViewProps } from "@danielfgray/amux";
 import { Schema as S } from "effect";
 import { theme } from "@danielfgray/amux";
@@ -37,7 +32,7 @@ import {
 } from "@danielfgray/amux-highlight";
 import { makeTestEditorIo, type TestEditorIoState } from "./test/io.ts";
 import type { EditorService } from "./api.ts";
-import { linesOf } from "./buffer-state.ts";
+import { linesOf } from "@danielfgray/amux-vim";
 
 const applyHostConfig = (host: PluginHost, entries: Parameters<PluginHost["prepare"]>[0]) =>
   host.prepare(entries).pipe(Effect.tap(() => host.publish));
@@ -642,7 +637,14 @@ testEffect(
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
     const highlight = yield* makeHighlightProvider();
-    const { press } = yield* mount(t, ioState, descriptorText({ file: "main.ts" }), sent, true, highlight);
+    const { press } = yield* mount(
+      t,
+      ioState,
+      descriptorText({ file: "main.ts" }),
+      sent,
+      true,
+      highlight,
+    );
 
     // The worker parses off-fiber, so wait for the mauve keyword span rather
     // than the frame the open triggered. `from` is asserted instead of the

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { BUILTIN_COMMANDS, createEditor } from "./api.ts";
+import { createEditor } from "./api.ts";
+import { BUILTIN_COMMANDS } from "@danielfgray/amux-vim";
 import { fileArgCompletion, fileCompletionItems, splitPathPrefix } from "./command-completion.ts";
 
 test("edit declares complete=file", () => {
