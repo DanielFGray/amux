@@ -24,8 +24,8 @@ import {
   theme,
 } from "@danielfgray/amux";
 import { contextCommand, type ContextSpec, type PanelContext } from "@danielfgray/amux";
-import { command } from "@danielfgray/amux";
 import type { OptionSpec } from "@danielfgray/amux";
+import { editorOpenCommand } from "./command-args.ts";
 import { EditorControllerTag, EditorPane, type EditorController } from "./EditorPane.tsx";
 import { EditorIo, listEntriesWith, runShellCommand, type EditorIoService } from "./io.ts";
 import { BUILTIN_MAPS, type BuiltinMapId, type MapScope } from "./maps.ts";
@@ -1074,7 +1074,9 @@ export const editorPlugin: PluginDefinition = definePlugin({
           focused.openPath(path);
           return;
         }
-        Effect.runForkWith(runtime)(panel.run(command("editor.open", { file: path })));
+        Effect.runForkWith(runtime)(
+          editorOpenCommand({ file: path }).pipe(Effect.flatMap((cmd) => panel.run(cmd))),
+        );
       };
       const findFiles = (title: string, query: string) => {
         const search = getSearch();
@@ -1085,7 +1087,9 @@ export const editorPlugin: PluginDefinition = definePlugin({
         fileUi.findFiles(search, title, query, openPicked);
       };
       const openEditor = () => {
-        Effect.runForkWith(runtime)(panel.run(command("editor.open")));
+        Effect.runForkWith(runtime)(
+          editorOpenCommand({}).pipe(Effect.flatMap((cmd) => panel.run(cmd))),
+        );
       };
       const findFile = () => findFiles("find files", "");
       const findSibling = () => {

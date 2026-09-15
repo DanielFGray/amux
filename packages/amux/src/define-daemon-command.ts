@@ -4,8 +4,8 @@
  * live on the handles declared beside the registration.
  */
 import { Effect, Schema as S, SchemaIssue } from "effect";
-import type { Meta, RuntimeCommand } from "./commands.ts";
-import { CommandError } from "./commands.ts";
+import type { Meta, RegisteredCommand } from "./commands.ts";
+import { CommandError, encodeRegisteredCommand } from "./commands.ts";
 import type { DaemonSessionCommandContext, DefinedDaemonCommand } from "./plugin/services.ts";
 import type { PluginActionRegistration } from "./effect/WorkspaceTransaction.ts";
 import type { PaneTypeRegistration } from "./pane-descriptors.ts";
@@ -23,14 +23,8 @@ import {
   type WorkspaceChangeBuild,
 } from "./workspace-change-builders.ts";
 import type { DaemonSessions } from "./daemon-sessions.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
 
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
-
-const stripTag = (command: RuntimeCommand): { readonly [key: string]: JsonValue } => {
-  const { _tag: _drop, ...fields } = command;
-  return fields;
-};
 
 export type DefineDaemonCommandReduceInput<A, Result> = {
   readonly command: A & { readonly _tag: string };
@@ -55,9 +49,9 @@ export function defineDaemonCommand<A, Result = unknown>(spec: {
     command: A & { readonly _tag: string },
     context: DaemonSessionCommandContext,
   ) => Effect.Effect<unknown, CommandError, DaemonSessions>;
-}): DefinedDaemonCommand {
-  const decodeCommandFields = (command: RuntimeCommand): Effect.Effect<A, PluginReducerError> =>
-    S.decodeUnknownEffect(spec.fields)(stripTag(command)).pipe(
+}): DefinedDaemonCommand<A> {
+  const decodeCommandFields = (command: RegisteredCommand): Effect.Effect<A, PluginReducerError> =>
+    S.decodeEffect(S.fromJsonString(spec.fields))(command.args).pipe(
       Effect.mapError(
         (error) =>
           new PluginReducerError({
@@ -91,7 +85,7 @@ export function defineDaemonCommand<A, Result = unknown>(spec: {
   const run =
     runAuthor === undefined
       ? undefined
-      : (command: RuntimeCommand, context: DaemonSessionCommandContext) =>
+      : (command: RegisteredCommand, context: DaemonSessionCommandContext) =>
           Effect.gen(function* () {
             const decoded = yield* decodeCommandFields(command).pipe(
               Effect.mapError(
@@ -104,12 +98,13 @@ export function defineDaemonCommand<A, Result = unknown>(spec: {
             return yield* runAuthor({ ...decoded, _tag: spec.tag }, context);
           });
 
-  const registration: DefinedDaemonCommand = {
+  const registration: DefinedDaemonCommand<A> = {
     tag: spec.tag,
     fields: spec.fields.fields,
     meta: spec.meta,
     // Typed `A` — callers (CLI/skill) already decoded through the same fields.
     resources: spec.resources,
+    command: encodeRegisteredCommand(spec.tag, spec.fields),
     __brand: "DefinedDaemonCommand",
   };
   if (spec.result !== undefined) Object.assign(registration, { result: spec.result });

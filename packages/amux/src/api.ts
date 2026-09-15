@@ -222,7 +222,8 @@ export { type ScreenRegion } from "./screen-regions.ts";
 // Commands: constructing one, and the failure a handler reports.
 export {
   command,
-  runtimeCommand,
+  registeredCommand,
+  encodeRegisteredCommand,
   CommandError,
   clientPluginCommandTag,
   parseClientPluginCommandTag,
@@ -231,7 +232,7 @@ export {
   type CommandTag,
   type CommandOf,
   type CommandResult,
-  type RuntimeCommand,
+  type RegisteredCommand,
 } from "./commands.ts";
 
 export { quoteSendKeysLiteral } from "./send.ts";

@@ -15,12 +15,15 @@ import {
   decodeCommand,
   fieldDeclaresPaneTarget,
   isClientPluginCommandTag,
+  encodeRegisteredCommand,
   makeCommands,
   isCoreCommandTag,
   parseClientPluginCommandTag,
+  registeredCommand,
   runDetached,
   type CommandHandlerTable,
 } from "./commands.ts";
+import { nestOwnerArgs } from "./test-owner-args.ts";
 
 /** Invocation for unit tests that do not care about source/pane. */
 const inv = commandInvocation("key");
@@ -404,24 +407,41 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
   );
 
   expect(commands.list().map((m) => m.name)).toContain("plugin.agent-awareness.focus");
-  expect(
-    Effect.runSync(commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" }, inv)),
-  ).toBe("focused");
-  expect(seen).toEqual([{ _tag: "plugin.agent-awareness.focus", target: "pane-1" }]);
-  expect(commands.resourcesFor({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })).toEqual(
-    ["pane-1"],
+  const focusArgs = Schema.Struct({ target: Schema.String });
+  const focusCmd = Effect.runSync(
+    encodeRegisteredCommand("plugin.agent-awareness.focus", focusArgs)({ target: "pane-1" }),
   );
-  expect(commands.resourcesFor({ _tag: "plugin.nobody.nothing" })).toBeUndefined();
+  expect(Effect.runSync(commands.run(focusCmd, inv))).toBe("focused");
+  expect(seen).toEqual([{ _tag: "plugin.agent-awareness.focus", target: "pane-1" }]);
+  expect(commands.resourcesFor(focusCmd)).toEqual(["pane-1"]);
+  expect(
+    commands.resourcesFor(
+      registeredCommand("plugin.nobody.nothing", Effect.runSync(nestOwnerArgs({}))),
+    ),
+  ).toBeUndefined();
 
   // Arguments are validated against the registered schema, not trusted as-is.
   const badArgs = Effect.runSync(
-    Effect.result(commands.run({ _tag: "plugin.agent-awareness.focus", target: 42 }, inv)),
+    Effect.result(
+      commands.run(
+        registeredCommand(
+          "plugin.agent-awareness.focus",
+          Effect.runSync(nestOwnerArgs({ target: 42 })),
+        ),
+        inv,
+      ),
+    ),
   );
   expect(Result.isFailure(badArgs)).toBe(true);
 
   // A tag no one registered fails cleanly rather than throwing.
   const missing = Effect.runSync(
-    Effect.result(commands.run({ _tag: "plugin.nobody.nothing" }, inv)),
+    Effect.result(
+      commands.run(
+        registeredCommand("plugin.nobody.nothing", Effect.runSync(nestOwnerArgs({}))),
+        inv,
+      ),
+    ),
   );
   expect(Result.isFailure(missing)).toBe(true);
 
@@ -440,9 +460,7 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
   // The disposer frees the tag: it disappears from the list and fails to run.
   dispose();
   expect(commands.list().map((m) => m.name)).not.toContain("plugin.agent-awareness.focus");
-  const afterDispose = Effect.runSync(
-    Effect.result(commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" }, inv)),
-  );
+  const afterDispose = Effect.runSync(Effect.result(commands.run(focusCmd, inv)));
   expect(Result.isFailure(afterDispose)).toBe(true);
 });
 
@@ -450,7 +468,12 @@ test("runtime core arguments are validated before reaching a handler", () => {
   const { handlers, seen } = recording();
   const commands = makeCommands(handlers);
   const result = Effect.runSync(
-    Effect.result(commands.run({ _tag: "window.select", number: "invalid" }, inv)),
+    Effect.result(
+      commands.run(
+        registeredCommand("window.select", Effect.runSync(nestOwnerArgs({ number: "invalid" }))),
+        inv,
+      ),
+    ),
   );
   expect(Result.isFailure(result)).toBe(true);
   expect(seen).toEqual([]);
@@ -466,7 +489,10 @@ test("a disposed command cannot remove its replacement and saved effects use the
     () => [],
     () => Effect.succeed("old"),
   );
-  const saved = commands.run({ _tag: "custom.run" }, inv);
+  const saved = commands.run(
+    registeredCommand("custom.run", Effect.runSync(nestOwnerArgs({}))),
+    inv,
+  );
   expect(Effect.runSync(saved)).toBe("old");
   dispose();
   const disposeReplacement = commands.registerFullCommand(
@@ -489,7 +515,13 @@ test("prototype property names are ordinary unregistered tags", () => {
   expect(isCoreCommandTag("pane.split")).toBe(true);
   expect(commands.isWorkspaceCommand("constructor")).toBe(false);
   expect(
-    Result.isFailure(Effect.runSync(Effect.result(commands.run({ _tag: "toString" }, inv)))),
+    Result.isFailure(
+      Effect.runSync(
+        Effect.result(
+          commands.run(registeredCommand("toString", Effect.runSync(nestOwnerArgs({}))), inv),
+        ),
+      ),
+    ),
   ).toBe(true);
   const dispose = commands.registerFullCommand(
     "constructor",
@@ -498,6 +530,10 @@ test("prototype property names are ordinary unregistered tags", () => {
     () => [],
     () => Effect.succeed("registered"),
   );
-  expect(Effect.runSync(commands.run({ _tag: "constructor" }, inv))).toBe("registered");
+  expect(
+    Effect.runSync(
+      commands.run(registeredCommand("constructor", Effect.runSync(nestOwnerArgs({}))), inv),
+    ),
+  ).toBe("registered");
   dispose();
 });

@@ -10,7 +10,7 @@ import type { AgentResumePlan } from "./agent-resume.ts";
 import type { AgentSessionRef } from "./agent-session.ts";
 import type { JsonSchemaObject } from "./command-cli.ts";
 import { JsonSchemaObjectSchema } from "./command-cli.ts";
-import { CommandError, COMMAND_TARGETS, type Meta, type RuntimeCommand } from "./commands.ts";
+import { CommandError, COMMAND_TARGETS, type Meta, type RegisteredCommand } from "./commands.ts";
 import type { DaemonSessionsService } from "./daemon-sessions.ts";
 import { DaemonSessions } from "./daemon-sessions.ts";
 import { errorMessage } from "./error-message.ts";
@@ -134,7 +134,7 @@ export interface PluginBehaviourService {
   readonly declarations: Effect.Effect<PluginDeclarations>;
 
   readonly reduce: (
-    command: RuntimeCommand,
+    command: RegisteredCommand,
     context: WorkspaceCommandContext,
     reads: WorkspaceReadPackage,
   ) => Effect.Effect<WorkspaceReducerAnswer, PluginReducerError | PluginPublicationChanged>;
@@ -149,7 +149,7 @@ export interface PluginBehaviourService {
   ) => Effect.Effect<void, PluginBehaviourError | PluginPublicationChanged>;
 
   readonly runSession: (
-    command: RuntimeCommand,
+    command: RegisteredCommand,
     context: DaemonSessionCommandContext,
   ) => Effect.Effect<JsonValue | undefined, CommandError | PluginPublicationChanged>;
 
@@ -385,7 +385,7 @@ export const buildPluginBehaviour = (
  * `runRemote` and tests share this one site.
  */
 export const runPluginSessionCommand = (
-  command: RuntimeCommand,
+  command: RegisteredCommand,
   context: DaemonSessionCommandContext,
 ): Effect.Effect<JsonValue | undefined, CommandError, PluginBehaviour> =>
   Effect.gen(function* () {

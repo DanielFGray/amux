@@ -3,7 +3,14 @@ import { Deferred, Effect, Fiber, Layer, Option, Redacted } from "effect";
 import { For, Show, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
-import { command, runtimeCommand } from "@danielfgray/amux";
+import { command, CommandError } from "@danielfgray/amux";
+import {
+  agentCompactCommand,
+  agentInterruptCommand,
+  agentNewCommand,
+  agentPermissionCommand,
+  agentPromptCommand,
+} from "./command-args.ts";
 import { Default as IntegrationDefault, integrations } from "./integration.ts";
 import { Default as ModelCatalogDefault } from "./model-catalog.ts";
 import { definePlugin, type PluginDefinition } from "@danielfgray/amux";
@@ -272,7 +279,8 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       const start = Effect.suspend(() =>
         agentPreflight(panel.options()["agent.model"] as string),
       ).pipe(
-        Effect.flatMap(() => panel.run(runtimeCommand("agent.new"))),
+        Effect.flatMap(() => agentNewCommand({})),
+        Effect.flatMap((cmd) => panel.run(cmd)),
         Effect.asVoid,
         Effect.provide(llmServices),
       );
@@ -329,11 +337,16 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         run: openSessionPicker,
       });
 
-      const run = (value: Parameters<typeof panel.run>[0]) =>
+      const run = (value: Effect.Effect<Parameters<typeof panel.run>[0], CommandError>) =>
         Effect.runForkWith(runtime)(
-          panel
-            .run(value)
-            .pipe(Effect.catch((error) => Effect.sync(() => panel.reportError(error.message)))),
+          value.pipe(
+            Effect.flatMap((cmd) => panel.run(cmd)),
+            Effect.catch((error) =>
+              Effect.sync(() =>
+                panel.reportError(error instanceof Error ? error.message : String(error)),
+              ),
+            ),
+          ),
         );
 
       // Scoped to the plugin: the worker spawns lazily on the first fence
@@ -375,11 +388,11 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
                   command === "/compact" ? undefined : command.slice("/compact ".length).trim();
                 run(
                   instructions !== undefined && instructions !== ""
-                    ? runtimeCommand("agent.compact", {
+                    ? agentCompactCommand({
                         target: props.sessionId,
                         instructions,
                       })
-                    : runtimeCommand("agent.compact", { target: props.sessionId }),
+                    : agentCompactCommand({ target: props.sessionId }),
                 );
                 return true;
               }
@@ -455,7 +468,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             onSubmit={(message, options) => {
               if (options?.delivery !== undefined && options.replace !== undefined) {
                 return run(
-                  runtimeCommand("agent.prompt", {
+                  agentPromptCommand({
                     target: props.sessionId,
                     text: message,
                     delivery: options.delivery,
@@ -465,7 +478,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
               }
               if (options?.delivery !== undefined) {
                 return run(
-                  runtimeCommand("agent.prompt", {
+                  agentPromptCommand({
                     target: props.sessionId,
                     text: message,
                     delivery: options.delivery,
@@ -474,7 +487,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
               }
               if (options?.replace !== undefined) {
                 return run(
-                  runtimeCommand("agent.prompt", {
+                  agentPromptCommand({
                     target: props.sessionId,
                     text: message,
                     replace: options.replace,
@@ -482,7 +495,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
                 );
               }
               return run(
-                runtimeCommand("agent.prompt", {
+                agentPromptCommand({
                   target: props.sessionId,
                   text: message,
                 }),
@@ -490,15 +503,17 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             }}
             onPermission={(request, decision, feedback) =>
               run(
-                runtimeCommand(
-                  "agent.permission",
-                  feedback
-                    ? { target: props.sessionId, request, decision, feedback }
-                    : { target: props.sessionId, request, decision },
-                ),
+                feedback
+                  ? agentPermissionCommand({
+                      target: props.sessionId,
+                      request,
+                      decision,
+                      feedback,
+                    })
+                  : agentPermissionCommand({ target: props.sessionId, request, decision }),
               )
             }
-            onInterrupt={() => run(runtimeCommand("agent.interrupt", { target: props.sessionId }))}
+            onInterrupt={() => run(agentInterruptCommand({ target: props.sessionId }))}
           />
         ),
       ]);

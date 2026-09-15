@@ -1,7 +1,6 @@
 import { Cause, Context, Effect, Exit, JsonSchema, Option, Schema as S, SchemaIssue } from "effect";
 
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
-import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import { LAYOUT_PRESETS, DescriptorSchema, OwnerJsonText } from "./layout.ts";
 import { creationResultSchema } from "./creation-result.ts";
 import {
@@ -1321,9 +1320,6 @@ export function commandDefinition(tag: CommandTag) {
 export const isCoreCommandTag = (tag: string): tag is CommandTag =>
   Object.hasOwn(COMMAND_META, tag);
 
-export const isCoreCommand = (command: Command | RuntimeCommand): command is Command =>
-  isCoreCommandTag(command._tag);
-
 type CommandDefs = typeof COMMAND_DEFS;
 
 /**
@@ -1335,6 +1331,18 @@ type CommandDefs = typeof COMMAND_DEFS;
 export const Command = S.Union(COMMAND_DEFS.map((def) => def.schema));
 export type Command = typeof Command.Type;
 export type CommandTag = Command["_tag"];
+
+/** A registration-owned command: `_tag` for routing, `args` opaque until the owner decodes. */
+export const RegisteredCommandSchema = S.Struct({
+  _tag: S.String,
+  args: OwnerJsonText,
+});
+export type RegisteredCommand = typeof RegisteredCommandSchema.Type;
+
+export const isRegisteredCommand = S.is(RegisteredCommandSchema);
+
+export const isCoreCommand = (command: Command | RegisteredCommand): command is Command =>
+  isCoreCommandTag(command._tag);
 
 export type CommandOf<T extends CommandTag> = Extract<Command, { _tag: T }>;
 type ArgsOf<T extends CommandTag> = Omit<CommandOf<T>, "_tag">;
@@ -1349,14 +1357,13 @@ export type AnyCommandResult = CommandResult<CommandTag>;
  *
  * `command("window.select", { number: 3 })` — the tag picks the argument type,
  * so a binding that supplies the wrong shape is a type error at the table.
+ * Registration-owned verbs use {@link encodeRegisteredCommand}, not this.
  */
 export function command<T extends CommandTag>(
   tag: T,
   ...args: {} extends ArgsOf<T> ? [args?: ArgsOf<T>] : [args: ArgsOf<T>]
-): Command;
-export function command(tag: string, args?: Record<string, JsonValue>): RuntimeCommand;
-export function command(tag: string, args?: Record<string, JsonValue>): Command | RuntimeCommand {
-  return { _tag: tag, ...args } as Command | RuntimeCommand;
+): CommandOf<T> {
+  return { _tag: tag, ...(args[0] ?? {}) } as CommandOf<T>;
 }
 
 /** Decode a command off the wire — the socket and the CLI in ts-14b665. */
@@ -1447,22 +1454,31 @@ export type CommandHandlerTable = Readonly<
   >
 >;
 
-/** A command value arriving at runtime under a tag the compiler has never seen
- *  — a plugin verb, or one read off the wire before it is known to exist. */
-export type RuntimeCommand = { readonly _tag: string } & Record<string, JsonValue>;
+/**
+ * A registration-owned command: `_tag` for routing, `args` already encoded by
+ * the owner schema ({@link encodeRegisteredCommand}).
+ */
+export const registeredCommand = (tag: string, args: OwnerJsonText): RegisteredCommand => ({
+  _tag: tag,
+  args,
+});
 
 /**
- * Build a runtime command value, the way a caller thinks of it.
- *
- * `command()` is total over the core union; this is the equivalent for tags
- * core never declared — daemon-plugin commands and client-plugin verbs.
- * Nothing is validated here: the receiving table decodes the arguments
- * against the schema the tag's owner registered.
+ * Encode typed fields into a {@link RegisteredCommand}. The fields Schema is
+ * the owner; encode fails rather than inventing empty args.
  */
-export const runtimeCommand = (tag: string, args?: Record<string, JsonValue>): RuntimeCommand => ({
-  _tag: tag,
-  ...args,
-});
+export const encodeRegisteredCommand =
+  <A>(tag: string, fields: S.Codec<A>) =>
+  (args: A): Effect.Effect<RegisteredCommand, CommandError> =>
+    S.encodeEffect(S.fromJsonString(fields))(args).pipe(
+      Effect.map((text) => registeredCommand(tag, text)),
+      Effect.mapError(
+        (error) =>
+          new CommandError({
+            message: `${tag}: ${formatSchemaIssue(error.issue)}`,
+          }),
+      ),
+    );
 
 /**
  * The wire shape of a plugin verb: `Command` is a closed compile-time union,
@@ -1472,16 +1488,13 @@ export const runtimeCommand = (tag: string, args?: Record<string, JsonValue>): R
  * does not recognise is worth forwarding to an attached client rather than
  * rejecting outright.
  */
-export const RuntimeCommandSchema = S.StructWithRest(S.Struct({ _tag: S.String }), [
-  S.Record(S.String, JsonValueSchema),
-]);
-
-/** Every command a caller can send to the daemon: core commands plus plugin verbs. */
-export const WireCommand = S.Union([Command, RuntimeCommandSchema]);
+export const WireCommand = S.Union([Command, RegisteredCommandSchema]);
 
 interface CommandEntry {
   readonly meta: CommandMeta;
   readonly schema: S.Codec<any>;
+  /** Fields only (no `_tag`) — decode {@link RegisteredCommand.args} with this. */
+  readonly arguments: S.Codec<any>;
   readonly resources: (args: any) => readonly string[];
   readonly handler: (args: any) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>;
 }
@@ -1499,7 +1512,10 @@ export interface Commands {
       command: Command,
       invocation: CommandInvocation,
     ): Effect.Effect<AnyCommandResult, CommandError>;
-    (command: RuntimeCommand, invocation: CommandInvocation): Effect.Effect<unknown, CommandError>;
+    (
+      command: Command | RegisteredCommand,
+      invocation: CommandInvocation,
+    ): Effect.Effect<unknown, CommandError>;
   };
   /**
    * Provide {@link Realm} (and {@link CurrentInvocation}) for a key-dispatched
@@ -1524,7 +1540,7 @@ export interface Commands {
    * unregistered — the next gate (Commands.run) only asks after a successful
    * decode against a known entry.
    */
-  readonly resourcesFor: (command: RuntimeCommand) => readonly string[] | undefined;
+  readonly resourcesFor: (command: Command | RegisteredCommand) => readonly string[] | undefined;
   /**
    * Claim `plugin.<pluginId>.<verb>` for the lifetime of the plugin instance.
    *
@@ -1602,6 +1618,7 @@ export const makeCommands = (
       {
         meta: COMMAND_META[def.tag],
         schema: def.schema,
+        arguments: def.arguments,
         resources: def.resources as (args: any) => readonly string[],
         handler:
           (handlers as CommandHandlerTable)[def.tag] ??
@@ -1649,6 +1666,12 @@ export const makeCommands = (
         exposure: meta.exposure,
       },
       schema: schema as any,
+      // Struct<Fields> carries DecodingServices=unknown; Codec<any> wants never —
+      // same wall as schema above. Exact tsc without the cast:
+      // Type 'Struct<Fields>' is not assignable to type 'Codec<any, any, never, never>'.
+      // Types of property '"DecodingServices"' are incompatible.
+      // Type 'unknown' is not assignable to type 'never'.
+      arguments: S.Struct(fields) as any,
       resources,
       handler,
     };
@@ -1677,10 +1700,18 @@ export const makeCommands = (
 
   const resourcesFor: Commands["resourcesFor"] = (command) => {
     const entry = entries.get(command._tag);
-    return entry === undefined ? undefined : entry.resources(command);
+    if (entry === undefined) return undefined;
+    if (isRegisteredCommand(command)) {
+      const fields = Option.getOrUndefined(
+        S.decodeOption(S.fromJsonString(entry.arguments))(command.args),
+      );
+      if (fields === undefined) return undefined;
+      return entry.resources(fields);
+    }
+    return entry.resources(command);
   };
 
-  const run = ((command: RuntimeCommand, invocation: CommandInvocation) =>
+  const run = ((command: Command | RegisteredCommand, invocation: CommandInvocation) =>
     // Suspended, because a caller builds the effect once — a binding's `run` is
     // built when the table is built — and the handler has to read the workspace
     // at the moment it runs, not at the moment it was named.
@@ -1688,18 +1719,26 @@ export const makeCommands = (
       const entry = entries.get(command._tag);
       if (!entry)
         return Effect.fail(new CommandError({ message: `unknown command: ${command._tag}` }));
-      return withRealm(
-        invocation,
-        S.decodeEffect(entry.schema)(command).pipe(
-          Effect.mapError(
-            (error) =>
-              new CommandError({
-                message: `${command._tag}: ${formatSchemaIssue(error.issue)}`,
-              }),
-          ),
-          Effect.flatMap(entry.handler),
-        ),
-      );
+      const decoded = isRegisteredCommand(command)
+        ? S.decodeEffect(S.fromJsonString(entry.arguments))(command.args).pipe(
+            Effect.map((fields) => ({ _tag: command._tag, ...fields })),
+            Effect.flatMap((value) => S.decodeEffect(entry.schema)(value)),
+            Effect.mapError(
+              (error) =>
+                new CommandError({
+                  message: `${command._tag}: ${formatSchemaIssue(error.issue)}`,
+                }),
+            ),
+          )
+        : S.decodeEffect(entry.schema)(command).pipe(
+            Effect.mapError(
+              (error) =>
+                new CommandError({
+                  message: `${command._tag}: ${formatSchemaIssue(error.issue)}`,
+                }),
+            ),
+          );
+      return withRealm(invocation, decoded.pipe(Effect.flatMap(entry.handler)));
     })) as Commands["run"];
 
   const list: Commands["list"] = (filter) => {

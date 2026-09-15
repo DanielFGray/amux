@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Duration, Effect, Exit, Fiber, Schema as S } from "effect";
 import * as TestClock from "effect/testing/TestClock";
-import { command } from "./commands.ts";
+import { command, type Command, type RegisteredCommand } from "./commands.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { encodeLayout, layoutPanes, makeLayout } from "./layout.ts";
 import {
@@ -85,7 +85,7 @@ const paneBase = (layout = singlePaneLayout): SessionState => ({
 
 const apply = (
   workspace: WorkspaceSnapshot,
-  cmd: ReturnType<typeof command>,
+  cmd: Command | RegisteredCommand,
   algorithm = defaultTilingAlgorithm,
 ) => run(applyWorkspaceCommand(workspace, cmd, context, path, undefined, algorithm));
 

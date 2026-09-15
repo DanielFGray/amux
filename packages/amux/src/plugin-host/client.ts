@@ -8,7 +8,7 @@ import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import type { AgentResumePlan } from "../agent-resume.ts";
 import type { AgentSessionRef } from "../agent-session.ts";
-import type { CommandError, RuntimeCommand } from "../commands.ts";
+import type { CommandError, RegisteredCommand } from "../commands.ts";
 import type { PluginHostLoadInput } from "../config.ts";
 import type { JsonValue } from "../effect/AttachProtocol.ts";
 import type { OwnerJsonText } from "../layout.ts";
@@ -51,7 +51,7 @@ export type PluginHostClient = RpcClient.RpcClient<
 export type PluginHostBehaviourCalls = {
   readonly Reduce: (payload: {
     readonly revision: PluginPublicationRevision;
-    readonly command: RuntimeCommand;
+    readonly command: RegisteredCommand;
     readonly context: WorkspaceCommandContext;
     readonly reads: WorkspaceReadPackage;
   }) => Effect.Effect<
@@ -72,7 +72,7 @@ export type PluginHostBehaviourCalls = {
   }) => Effect.Effect<void, PluginBehaviourError | PluginPublicationChanged | RpcClientError>;
   readonly RunSession: (payload: {
     readonly revision: PluginPublicationRevision;
-    readonly command: RuntimeCommand;
+    readonly command: RegisteredCommand;
     readonly context: DaemonSessionCommandContext;
   }) => Effect.Effect<
     Option.Option<JsonValue>,

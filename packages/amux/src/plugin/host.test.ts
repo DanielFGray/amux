@@ -29,7 +29,7 @@ import type { SessionViews } from "./session-views.tsx";
 import type { LayoutKinds } from "../layout-kinds.ts";
 import { testPluginEnvironment, type TestPluginEnvironment } from "./test-environment.ts";
 import { testPanelContext } from "../ui/test-panel.ts";
-import { command } from "../commands.ts";
+import { agentPromptCommand } from "../../../plugin-agent-harness/src/command-args.ts";
 import { runCommandByTarget } from "../app.tsx";
 import type { PanelContext } from "../ui/panel.ts";
 import {
@@ -155,7 +155,9 @@ testEffect("plugin panel run accepts session-target commands", () =>
         effect: () =>
           PanelTag.pipe(
             Effect.flatMap((panel) =>
-              panel.run(command("agent.prompt", { target: "agent", text: "hello" })),
+              agentPromptCommand({ target: "agent", text: "hello" }).pipe(
+                Effect.flatMap((cmd) => panel.run(cmd)),
+              ),
             ),
             Effect.asVoid,
             Effect.orDie,

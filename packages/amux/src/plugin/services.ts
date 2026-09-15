@@ -15,7 +15,7 @@ import type { ContextPriorityConflict, ContextSpec } from "../key-context.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
 import type { OptionSpec } from "../options.ts";
 import type { ProcessDisplay, ProcessDisplayProvider } from "./process-display.ts";
-import type { CommandError, Commands, Meta, RuntimeCommand } from "../commands.ts";
+import type { CommandError, Commands, Meta, RegisteredCommand } from "../commands.ts";
 export { SessionFactsTag } from "../session-facts.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
@@ -132,7 +132,7 @@ export interface DaemonCommandSpec {
 export interface DaemonCommandRegistration extends DaemonCommandSpec {
   readonly reduce?: PluginWorkspaceReducer;
   readonly run?: (
-    command: RuntimeCommand,
+    command: RegisteredCommand,
     context: DaemonSessionCommandContext,
   ) => Effect.Effect<unknown, CommandError, DaemonSessions>;
   /** New WorkspaceAction variants this command's reducer may push, with the
@@ -145,8 +145,10 @@ export interface DaemonCommandRegistration extends DaemonCommandSpec {
 }
 
 /** Brand: only {@link defineDaemonCommand} produces a registrable daemon command. */
-export type DefinedDaemonCommand = DaemonCommandRegistration & {
+export type DefinedDaemonCommand<A = any> = DaemonCommandRegistration & {
   readonly __brand: "DefinedDaemonCommand";
+  /** Encode typed fields into a {@link RegisteredCommand} for callers outside the owner. */
+  readonly command: (args: A) => Effect.Effect<RegisteredCommand, CommandError>;
 };
 
 /**

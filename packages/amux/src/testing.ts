@@ -10,6 +10,7 @@ export { testEffect } from "./test-effect.ts";
 export { waitFor } from "./test-wait.ts";
 export { testPanelContext } from "./ui/test-panel.ts";
 export { testPluginEnvironment } from "./plugin/test-environment.ts";
+export { nestOwnerArgs } from "./test-owner-args.ts";
 
 // Standing up a real slot tree is a test-only need: the app builds its own.
 export { createSlots, type Slots } from "./ui/slots.ts";

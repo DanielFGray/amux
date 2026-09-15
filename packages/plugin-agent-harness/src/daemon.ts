@@ -12,7 +12,6 @@ import {
   CommandError,
   DaemonCommandsTag,
   DaemonSessions,
-  ProcessStateSchema,
   WorkspaceTransactionError,
   creationResultSchema,
   defineDaemonCommand,
@@ -27,6 +26,17 @@ import {
 } from "@danielfgray/amux";
 import { PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
 import { NativeControl } from "./native-control.ts";
+import {
+  AgentCompactArgs,
+  AgentGetArgs,
+  AgentInterruptArgs,
+  AgentListArgs,
+  AgentLogsArgs,
+  AgentNewArgs,
+  AgentPermissionArgs,
+  AgentPromptArgs,
+  AgentWatchArgs,
+} from "./command-args.ts";
 
 const encodeNativeControl = encodeOwner(NativeControl, "NativeControl");
 
@@ -38,7 +48,6 @@ const deliverNativeControl = Effect.fnUntraced(function* (agent: string, control
   yield* sessions.message(agent, message);
 });
 
-const sessionTarget = { target: S.String };
 const agentPluginMeta = (
   desc: string,
   target: "workspace" | "session",
@@ -74,16 +83,7 @@ const nativeProvider = defineSessionProvider("native", NativeControl);
 
 const agentNew = defineDaemonCommand({
   tag: "agent.new",
-  fields: S.Struct({
-    provider: S.optionalKey(S.String),
-    prompt: S.optionalKey(S.String),
-    // Force a sibling split even when invoked from a pane (AMUX_PANE_ID /
-    // focused leaf). Same flag as editor.open.
-    split: S.optionalKey(S.Boolean),
-    /** Resume this prior agent id: recreate it in the workspace so its
-     *  conversation + AgentLog (UI transcript) both come back. */
-    resumeFrom: S.optionalKey(S.String),
-  }),
+  fields: AgentNewArgs,
   meta: agentPluginMeta("start a coding agent", "workspace", "agent"),
   resources: (args) =>
     [args.provider, args.resumeFrom].flatMap((value) => (value !== undefined ? [value] : [])),
@@ -163,17 +163,7 @@ const agentNew = defineDaemonCommand({
 
 const agentPrompt = defineDaemonCommand({
   tag: "agent.prompt",
-  fields: S.Struct({
-    target: S.String,
-    text: S.String,
-    id: S.optionalKey(S.String),
-    delivery: S.optionalKey(S.Literals(["steer", "queue"])),
-    resume: S.optionalKey(S.Boolean),
-    replace: S.optionalKey(S.String),
-    wait: S.optionalKey(S.Boolean),
-    until: S.optionalKey(ProcessStateSchema),
-    timeout: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
-  }),
+  fields: AgentPromptArgs,
   meta: agentPluginMeta("send a prompt to an agent", "session", "agent"),
   resources: (args) => [args.target],
   run: (command, _context) =>
@@ -193,10 +183,7 @@ const agentPrompt = defineDaemonCommand({
 
 const agentWatch = defineDaemonCommand({
   tag: "agent.watch",
-  fields: S.Struct({
-    target: S.String,
-    after: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
-  }),
+  fields: AgentWatchArgs,
   meta: agentPluginMeta("stream durable agent events from a replay cursor", "session", "agent"),
   resources: (args) => [args.target],
   // The CLI consumes this declaration to parse its arguments, then follows
@@ -218,7 +205,7 @@ const interruptAction = definePluginAction({
 
 const agentInterrupt = defineDaemonCommand({
   tag: "agent.interrupt",
-  fields: S.Struct({ ...sessionTarget, reason: S.optionalKey(S.String) }),
+  fields: AgentInterruptArgs,
   meta: agentPluginMeta("interrupt an agent turn", "workspace", "human"),
   resources: (args) => [args.target],
   actions: [interruptAction],
@@ -246,10 +233,7 @@ const compactAction = definePluginAction({
 
 const agentCompact = defineDaemonCommand({
   tag: "agent.compact",
-  fields: S.Struct({
-    ...sessionTarget,
-    instructions: S.optionalKey(S.String),
-  }),
+  fields: AgentCompactArgs,
   meta: agentPluginMeta(
     "compact the native agent conversation to free context",
     "workspace",
@@ -294,12 +278,7 @@ const permissionAction = definePluginAction({
 
 const agentPermission = defineDaemonCommand({
   tag: "agent.permission",
-  fields: S.Struct({
-    ...sessionTarget,
-    request: S.String,
-    decision: PermissionDecisionSchema,
-    feedback: S.optionalKey(S.String),
-  }),
+  fields: AgentPermissionArgs,
   meta: agentPluginMeta("answer an agent's permission request", "workspace", "human"),
   resources: (args) => [args.target],
   actions: [permissionAction],
@@ -325,7 +304,7 @@ const agentPermission = defineDaemonCommand({
 
 const agentList = defineDaemonCommand({
   tag: "agent.list",
-  fields: S.Struct({}),
+  fields: AgentListArgs,
   meta: agentPluginMeta("list agents and where they live", "workspace", "agent"),
   resources: () => [],
   result: AgentListResultSchema,
@@ -337,7 +316,7 @@ const agentList = defineDaemonCommand({
 
 const agentGet = defineDaemonCommand({
   tag: "agent.get",
-  fields: S.Struct({ target: S.String }),
+  fields: AgentGetArgs,
   meta: agentPluginMeta("one agent, by its session id", "workspace", "agent"),
   resources: (args) => [args.target],
   result: AgentGetResultSchema,
@@ -350,7 +329,7 @@ const agentGet = defineDaemonCommand({
 
 const agentLogs = defineDaemonCommand({
   tag: "agent.logs",
-  fields: S.Struct({ target: S.String, lines: S.optionalKey(S.Int) }),
+  fields: AgentLogsArgs,
   meta: agentPluginMeta("read the harness durable log", "session", "agent"),
   resources: (args) => [args.target],
   run: (command, context) => {

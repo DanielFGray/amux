@@ -32,7 +32,8 @@ import { DaemonSessions, type DaemonSessionsService } from "../daemon-sessions.t
 import type { PersistedSession, SessionState } from "../session.ts";
 import { workspaceFromSession } from "../workspace.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
-import { command, runtimeCommand } from "../commands.ts";
+import { command, registeredCommand } from "../commands.ts";
+import { nestOwnerArgs } from "../test-owner-args.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
@@ -531,7 +532,7 @@ testEffect("a failing plugin reducer leaves the revision unchanged", () => {
       const tx = yield* WorkspaceTransaction;
       const before = initial.workspace.revision;
       const result = yield* Effect.exit(
-        tx.run(runtimeCommand("probe.fail", {}), before, context, behaviour),
+        tx.run(yield* probeFail.command({}), before, context, behaviour),
       );
       expect(result._tag).toBe("Failure");
       const persisted = yield* Ref.get(persistRef);
@@ -558,7 +559,7 @@ testEffect("a timed-out plugin reducer fails under TestClock", () => {
     const behaviour = yield* pluginBehaviourFromRegistrations([probeHang]);
     const declarations = yield* behaviour.declarations;
     const fiber = yield* reducePluginCommand(
-      runtimeCommand("probe.hang", {}),
+      yield* probeHang.command({}),
       initial.workspace,
       context,
       declarations,
@@ -727,7 +728,12 @@ testEffect("reduce and runAction both run on the PluginBehaviour passed to run",
   };
   return Effect.gen(function* () {
     const tx = yield* WorkspaceTransaction;
-    yield* tx.run(runtimeCommand("bind.cmd", {}), initial.workspace.revision, context, binding);
+    yield* tx.run(
+      registeredCommand("bind.cmd", yield* nestOwnerArgs({})),
+      initial.workspace.revision,
+      context,
+      binding,
+    );
     expect(calls).toEqual(["reduce", "runAction"]);
   }).pipe(Effect.provide(layer));
 });
@@ -780,7 +786,7 @@ testEffect(
     return Effect.gen(function* () {
       const tx = yield* WorkspaceTransaction;
       const result = yield* tx.run(
-        runtimeCommand("fake.cmd", {}),
+        registeredCommand("fake.cmd", yield* nestOwnerArgs({})),
         initial.workspace.revision,
         context,
         fake,

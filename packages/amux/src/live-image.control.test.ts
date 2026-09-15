@@ -17,7 +17,13 @@ import { ConfigProvider, Effect, Exit, Layer, Path, Scope, Stream } from "effect
 import * as FileSystem from "effect/FileSystem";
 import { createApp } from "./app.tsx";
 import { SessionClient, type SessionClientContract } from "./client.ts";
-import { command } from "./commands.ts";
+import {
+  command,
+  encodeRegisteredCommand,
+  type Command,
+  type RegisteredCommand,
+} from "./commands.ts";
+import { Schema as S } from "effect";
 import { DEFAULT_CONFIG, loadConfig, type Config } from "./config.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
@@ -114,7 +120,7 @@ const socketContext = {
   source: "socket" as const,
 };
 
-const batch = (id: string, env: NodeJS.ProcessEnv, value: ReturnType<typeof command>) =>
+const batch = (id: string, env: NodeJS.ProcessEnv, value: Command | RegisteredCommand) =>
   ctl(id, env, (c) => c.Batch({ values: [value], context: socketContext })).then(
     (result) => result.outputs[0]!,
   );
@@ -325,7 +331,15 @@ const waitForUiFailedClient = (id: string, env: NodeJS.ProcessEnv, pluginId: str
 };
 
 const echoToken = (id: string, env: NodeJS.ProcessEnv, pluginId: string, text: string) =>
-  Effect.promise(() => batch(id, env, command(`${pluginId}.echo`, { text })));
+  Effect.promise(() =>
+    batch(
+      id,
+      env,
+      Effect.runSync(
+        encodeRegisteredCommand(`${pluginId}.echo`, S.Struct({ text: S.String }))({ text }),
+      ),
+    ),
+  );
 
 testEffect(
   "demo loop over control socket: eval → inspect → promote → fresh load",
@@ -582,9 +596,7 @@ testEffect(
       clientB.close();
       clients.splice(0, clients.length);
       const echoDetached = yield* echoToken(daemon.id, env, pluginId, "step5");
-      expect(echoDetached.result).toEqual(
-        expect.objectContaining({ token: "v2", text: "step5" }),
-      );
+      expect(echoDetached.result).toEqual(expect.objectContaining({ token: "v2", text: "step5" }));
 
       // 6. Reattach two clients; both share the active publication revision / UI readiness.
       const clientC = yield* attachClient(daemon.id, env, "life-c");
@@ -665,9 +677,7 @@ testEffect(
       daemons.push(restarted);
       yield* waitForHostReady(restarted.id, env);
       const echoRestart = yield* echoToken(restarted.id, env, pluginId, "step8");
-      expect(echoRestart.result).toEqual(
-        expect.objectContaining({ token: "v2", text: "step8" }),
-      );
+      expect(echoRestart.result).toEqual(expect.objectContaining({ token: "v2", text: "step8" }));
 
       const clientE = yield* attachClient(restarted.id, env, "life-e");
       const clientF = yield* attachClient(restarted.id, env, "life-f");

@@ -66,7 +66,7 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
                     number: row.windowNumber!,
                   }),
                 )
-              : panelContext.run(command("session.reveal", { session: row.agentId! }));
+              : panelContext.run(command("session.reveal", { target: row.agentId! }));
 
         Effect.runForkWith(runtime)(
           effect.pipe(

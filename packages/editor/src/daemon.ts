@@ -11,6 +11,7 @@ import {
   registerDaemonCommand,
   type PluginDefinition,
 } from "@danielfgray/amux";
+import { EditorOpenArgs } from "./command-args.ts";
 
 /** Descriptor for panes of type `amux.editor`. */
 export const EditorDescriptorSchema = S.Struct({
@@ -21,13 +22,7 @@ const editorPane = definePaneType("amux.editor", EditorDescriptorSchema);
 
 const editorOpen = defineDaemonCommand({
   tag: "editor.open",
-  fields: S.Struct({
-    // Optional path: `amux editor.open src/foo.ts` opens that file. Relative
-    // paths resolve against the calling cwd (CLI / pane), matching :e.
-    file: S.optionalKey(S.String),
-    // Force a sibling split even when invoked from a pane (AMUX_PANE_ID).
-    split: S.optionalKey(S.Boolean),
-  }),
+  fields: EditorOpenArgs,
   meta: { desc: "open an editor pane", group: "editor", target: "workspace", exposure: "human" },
   resources: (args) => (args.file !== undefined ? [args.file] : []),
   result: creationResultSchema("pane.open-plugin"),

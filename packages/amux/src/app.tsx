@@ -68,7 +68,7 @@ import {
   type CommandInvocation,
   type CommandTag,
   type CommandResult,
-  type RuntimeCommand,
+  type RegisteredCommand,
 } from "./commands.ts";
 import { saveConfig as saveConfigEffect, type Config } from "./config.ts";
 import {
@@ -232,7 +232,7 @@ export interface AppHandle {
 }
 
 export function runCommandByTarget<A, B>(
-  command: Command | RuntimeCommand,
+  command: Command | RegisteredCommand,
   workspace: () => Effect.Effect<A, CommandError>,
   session: () => Effect.Effect<B, CommandError>,
 ): Effect.Effect<A | B, CommandError> {
@@ -933,8 +933,8 @@ function buildApp(
   // "session" (ignores it). That target lives only in the daemon's command
   // table, invisible from here, so this always attaches the panel's live
   // context — a "session"-target command simply never reads it.
-  const runRuntimeCommand = (
-    value: RuntimeCommand,
+  const runRegisteredCommand = (
+    value: RegisteredCommand,
     input?: string,
   ): Effect.Effect<unknown, CommandError> =>
     Effect.gen(function* () {
@@ -3209,7 +3209,7 @@ function buildApp(
     run: (value, input) =>
       isCoreCommand(value)
         ? runCommand(value, input).pipe(Effect.as(session.workspace()))
-        : runRuntimeCommand(value, input).pipe(Effect.as(session.workspace())),
+        : runRegisteredCommand(value, input).pipe(Effect.as(session.workspace())),
     options: allOptions,
     setOption: changeOption,
     saveOptions,

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { command, type RuntimeCommand } from "./commands.ts";
+import { command, registeredCommand, type Command, type RegisteredCommand } from "./commands.ts";
+import { nestOwnerArgs } from "./test-owner-args.ts";
 import { Effect, Cause, Path, Schema as S } from "effect";
 import {
   applyWorkspaceCommand as applyWorkspaceCommandWithPath,
@@ -16,7 +17,13 @@ import {
 } from "./workspace.ts";
 import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import { nodePath } from "./effect/node-path.ts";
-import { layoutPanes, makeLayout, DescriptorSchema, encodeLayout, OwnerJsonText } from "./layout.ts";
+import {
+  layoutPanes,
+  makeLayout,
+  DescriptorSchema,
+  encodeLayout,
+  OwnerJsonText,
+} from "./layout.ts";
 import { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";
 import { tilingAlgorithmFromMethods } from "./tiling-algorithm.ts";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
@@ -26,7 +33,14 @@ import { defineDaemonCommand } from "./define-daemon-command.ts";
 import { definePaneType } from "./pane-descriptors.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
+import {
+  agentGetCommand,
+  agentListCommand,
+  agentNewCommand,
+  agentPermissionCommand,
+} from "../../plugin-agent-harness/src/command-args.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
+import { editorOpenCommand } from "../../editor/src/command-args.ts";
 
 /** Build descriptor JSON text the way an owner Schema encodes it. */
 const descriptorText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
@@ -45,7 +59,7 @@ const path = run(nodePath);
 const pluginApplyFor = (
   regs: readonly DaemonCommandRegistration[],
   workspace: WorkspaceSnapshot,
-  cmd: RuntimeCommand,
+  cmd: Command | RegisteredCommand,
   context: WorkspaceCommandContext,
 ) =>
   run(
@@ -65,10 +79,7 @@ const applyWorkspaceCommand = (
   regs?: readonly DaemonCommandRegistration[],
   algorithm?: Parameters<typeof applyWorkspaceCommandWithPath>[5],
 ): WorkspaceMutation => {
-  const prepared =
-    regs === undefined
-      ? undefined
-      : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
+  const prepared = regs === undefined ? undefined : pluginApplyFor(regs, workspace, cmd, context);
   return run(
     applyWorkspaceCommandWithPath(
       workspace,
@@ -1029,7 +1040,7 @@ test("pane.open-plugin creates no spawn action", () => {
 
 test("a daemon plugin can place a sessionless pane through the neutral capability", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
-  const opened = applyWorkspaceCommand(adopted, command("editor.open"), context, editorPlugins);
+  const opened = applyWorkspaceCommand(adopted, run(editorOpenCommand({})), context, editorPlugins);
   const window = opened.snapshot.spaces[0]!.windows[0]!;
   const editor = layoutPanes(window.layout.root)[1]!;
   expect(editor.content).toEqual({ kind: "plugin", type: "amux.editor", descriptor: "{}" });
@@ -1043,7 +1054,7 @@ test("editor.open from a calling pane replaces it and keeps the displaced PTY al
   const shellId = "agent-a";
   const opened = applyWorkspaceCommand(
     adopted,
-    command("editor.open"),
+    run(editorOpenCommand({})),
     { ...context, pane: "pane-a" },
     editorPlugins,
   );
@@ -1070,7 +1081,7 @@ test("editor.open replace of a non-focused pane keeps layout.focus in sync", () 
   const adopted = run(workspaceFromSession(twoPaneSession()));
   const opened = applyWorkspaceCommand(
     adopted,
-    command("editor.open"),
+    run(editorOpenCommand({})),
     { ...context, pane: "pane-b" },
     editorPlugins,
   );
@@ -1099,7 +1110,7 @@ test("exiting a displaced session clears the keepalive instead of poisoning the 
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   const opened = applyWorkspaceCommand(
     adopted,
-    command("editor.open"),
+    run(editorOpenCommand({})),
     { ...context, pane: "pane-a" },
     editorPlugins,
   ).snapshot;
@@ -1120,7 +1131,7 @@ test("reloading a workspace keeps a live displaced PTY on the roster", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   const opened = applyWorkspaceCommand(
     adopted,
-    command("editor.open"),
+    run(editorOpenCommand({})),
     { ...context, pane: "pane-a" },
     editorPlugins,
   ).snapshot;
@@ -1157,7 +1168,7 @@ test("pane.close restores a displaced PTY instead of killing it", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   const opened = applyWorkspaceCommand(
     adopted,
-    command("editor.open"),
+    run(editorOpenCommand({})),
     { ...context, pane: "pane-a" },
     editorPlugins,
   ).snapshot;
@@ -1177,7 +1188,7 @@ test("pane.close after agent.new kills the agent and restores the displaced PTY"
   const current = run(workspaceFromSession(base(singlePaneLayout)));
   const opened = applyWorkspaceCommand(
     current,
-    command("agent.new", { provider: "test" }),
+    run(agentNewCommand({ provider: "test" })),
     { ...context, pane: "pane-a" },
     agentPlugins,
   ).snapshot;
@@ -1200,7 +1211,7 @@ test("session.reveal restores into the leaf that displaced it", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   const opened = applyWorkspaceCommand(
     adopted,
-    command("editor.open"),
+    run(editorOpenCommand({})),
     { ...context, pane: "pane-a" },
     editorPlugins,
   ).snapshot;
@@ -1235,7 +1246,7 @@ test("closing a sibling pane does not kill a displaced PTY", () => {
   )!;
   const opened = applyWorkspaceCommand(
     split,
-    command("editor.open"),
+    run(editorOpenCommand({})),
     { ...context, pane: shellPane.id },
     editorPlugins,
   ).snapshot;
@@ -1723,12 +1734,14 @@ test("agent.permission carries the answer to the session that asked", () => {
   const context = { cwd: "/tmp", shell: ["sh"], size: { cols: 80, rows: 24 } };
   const answered = applyWorkspaceCommand(
     current,
-    command("agent.permission", {
-      target: "agent-7",
-      request: "req-1",
-      decision: "reject",
-      feedback: "not that file",
-    }),
+    run(
+      agentPermissionCommand({
+        target: "agent-7",
+        request: "req-1",
+        decision: "reject",
+        feedback: "not that file",
+      }),
+    ),
     context,
     agentPlugins,
   );
@@ -1750,7 +1763,10 @@ test("agent.permission carries the answer to the session that asked", () => {
   expect(() =>
     applyWorkspaceCommand(
       current,
-      command("agent.permission", { request: "req-1", decision: "once" }),
+      registeredCommand(
+        "agent.permission",
+        run(nestOwnerArgs({ request: "req-1", decision: "once" })),
+      ),
       context,
       agentPlugins,
     ),
@@ -1765,10 +1781,12 @@ test("agent.new creates an agent session without pushing a prompt through core",
   const current = run(workspaceFromSession(base(twoPaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
-    command("agent.new", {
-      provider: "native",
-      prompt: "Inspect this",
-    }),
+    run(
+      agentNewCommand({
+        provider: "native",
+        prompt: "Inspect this",
+      }),
+    ),
     {
       cwd: "/tmp",
       shell: ["sh"],
@@ -1794,9 +1812,7 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
   const current = run(workspaceFromSession(base(twoPaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
-    command("agent.new", {
-      provider: "test",
-    }),
+    run(agentNewCommand({ provider: "test" })),
     {
       cwd: "/tmp",
       shell: ["sh"],
@@ -1817,7 +1833,7 @@ test("agent.new from a calling pane replaces it and keeps the displaced PTY", ()
   const current = run(workspaceFromSession(base(singlePaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
-    command("agent.new", { provider: "test" }),
+    run(agentNewCommand({ provider: "test" })),
     { ...context, pane: "pane-a" },
     agentPlugins,
   );
@@ -1844,7 +1860,7 @@ test("chained agent.new replace keeps the original shell and reaps the middle ag
   // invariant ("live but no pane retains it").
   const first = applyWorkspaceCommand(
     run(workspaceFromSession(base(singlePaneLayout))),
-    command("agent.new", { provider: "test" }),
+    run(agentNewCommand({ provider: "test" })),
     { ...context, pane: "pane-a" },
     agentPlugins,
   );
@@ -1853,7 +1869,7 @@ test("chained agent.new replace keeps the original shell and reaps the middle ag
   )!;
   const second = applyWorkspaceCommand(
     first.snapshot,
-    command("agent.new", { provider: "test" }),
+    run(agentNewCommand({ provider: "test" })),
     { ...context, pane: "pane-a" },
     agentPlugins,
   );
@@ -1880,7 +1896,7 @@ test("agent.new --split forces a sibling even from a calling pane", () => {
   const current = run(workspaceFromSession(base(singlePaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
-    command("agent.new", { provider: "test", split: true }),
+    run(agentNewCommand({ provider: "test", split: true })),
     { ...context, pane: "pane-a" },
     agentPlugins,
   );
@@ -2023,7 +2039,7 @@ test("pane.list reports every pane with its home, session and focus flags", () =
 
 test("agent.list and agent.get report agents with their home and pane", () => {
   const adopted = run(workspaceFromSession(wideBase()));
-  const list = applyWorkspaceCommand(adopted, command("agent.list"), context, agentPlugins);
+  const list = applyWorkspaceCommand(adopted, run(agentListCommand({})), context, agentPlugins);
   expect(list.changed).toBe(false);
   expect(asResult(list.result)).toEqual([
     expect.objectContaining({
@@ -2038,7 +2054,7 @@ test("agent.list and agent.get report agents with their home and pane", () => {
   ]);
   const get = applyWorkspaceCommand(
     adopted,
-    command("agent.get", { target: "agent-b2" }),
+    run(agentGetCommand({ target: "agent-b2" })),
     context,
     agentPlugins,
   );
@@ -2047,7 +2063,7 @@ test("agent.list and agent.get report agents with their home and pane", () => {
   );
   const missing = applyWorkspaceCommand(
     adopted,
-    command("agent.get", { target: "agent-gone" }),
+    run(agentGetCommand({ target: "agent-gone" })),
     context,
     agentPlugins,
   );
@@ -2204,7 +2220,7 @@ test("plugin.place with no target pane or window fails", () => {
     }),
   );
   expect(() =>
-    applyWorkspaceCommand(empty, command("editor.open"), context, editorPlugins),
+    applyWorkspaceCommand(empty, run(editorOpenCommand({})), context, editorPlugins),
   ).toThrow(/plugin\.place requires a target/);
 });
 
@@ -2255,7 +2271,7 @@ test("duplicate proposed session id is rejected and leaves the workspace unchang
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   const before = structuredClone(adopted);
   expect(() =>
-    applyWorkspaceCommand(adopted, command("probe.duplicate-id"), context, [duplicateIdProbe]),
+    applyWorkspaceCommand(adopted, run(duplicateIdProbe.command({})), context, [duplicateIdProbe]),
   ).toThrow(/already exists/);
   expect(adopted).toEqual(before);
 });
@@ -2280,7 +2296,7 @@ const existingIdProbe = defineDaemonCommand({
 test("proposed session id that already exists is rejected", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   expect(() =>
-    applyWorkspaceCommand(adopted, command("probe.existing-id"), context, [existingIdProbe]),
+    applyWorkspaceCommand(adopted, run(existingIdProbe.command({})), context, [existingIdProbe]),
   ).toThrow(/already exists/);
 });
 
@@ -2307,7 +2323,9 @@ const malformedPaneProbe = defineDaemonCommand({
 test("malformed proposed pane id is rejected", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   expect(() =>
-    applyWorkspaceCommand(adopted, command("probe.malformed-pane"), context, [malformedPaneProbe]),
+    applyWorkspaceCommand(adopted, run(malformedPaneProbe.command({})), context, [
+      malformedPaneProbe,
+    ]),
   ).toThrow(/pane id/);
 });
 
@@ -2325,7 +2343,9 @@ const unregisteredActionProbe = defineDaemonCommand({
 test("unregistered action tag is rejected", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   expect(() =>
-    applyWorkspaceCommand(adopted, command("probe.bad-action"), context, [unregisteredActionProbe]),
+    applyWorkspaceCommand(adopted, run(unregisteredActionProbe.command({})), context, [
+      unregisteredActionProbe,
+    ]),
   ).toThrow(/action tag 'not.registered' is not registered/);
 });
 
@@ -2341,7 +2361,7 @@ const noResultProbe = defineDaemonCommand({
 test("result.set on a command with no declared result is rejected", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   expect(() =>
-    applyWorkspaceCommand(adopted, command("probe.no-result"), context, [noResultProbe]),
+    applyWorkspaceCommand(adopted, run(noResultProbe.command({})), context, [noResultProbe]),
   ).toThrow(/declared result/);
 });
 
@@ -2368,7 +2388,7 @@ const unknownProviderProbe = defineDaemonCommand({
 test("firstMessage for an unregistered provider is rejected at apply", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   expect(() =>
-    applyWorkspaceCommand(adopted, command("probe.unknown-provider"), context, [
+    applyWorkspaceCommand(adopted, run(unknownProviderProbe.command({})), context, [
       unknownProviderProbe,
     ]),
   ).toThrow(/unknown session provider/);
@@ -2401,7 +2421,7 @@ const gitRefActionProbe = defineDaemonCommand({
 
 test("action.push payload field named ref is not treated specially", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
-  const mutation = applyWorkspaceCommand(adopted, command("probe.git-ref-action"), context, [
+  const mutation = applyWorkspaceCommand(adopted, run(gitRefActionProbe.command({})), context, [
     gitRefActionProbe,
   ]);
   const queued = mutation.actions.find((action) => "payload" in action);
@@ -2416,7 +2436,7 @@ test("agent.new result ids match the created session and pane", () => {
   const current = run(workspaceFromSession(base(twoPaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
-    command("agent.new", { provider: "native" }),
+    run(agentNewCommand({ provider: "native" })),
     context,
     agentPlugins,
   );
@@ -2429,7 +2449,7 @@ test("editor.open result pane matches the created pane", () => {
   const current = run(workspaceFromSession(base(singlePaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
-    command("editor.open", {}),
+    run(editorOpenCommand({})),
     context,
     editorPlugins,
   );

@@ -12,7 +12,7 @@ import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import { Layer, Schema as S } from "effect";
 import { AgentResumePlanSchema } from "../agent-resume.ts";
 import { AgentSessionRefSchema } from "../agent-session.ts";
-import { CommandError, RuntimeCommandSchema } from "../commands.ts";
+import { CommandError, RegisteredCommandSchema } from "../commands.ts";
 import { PluginHostLoadInputSchema } from "../config.ts";
 import { JsonValueSchema } from "../effect/AttachProtocol.ts";
 import { OwnerJsonText } from "../layout.ts";
@@ -125,7 +125,7 @@ export class PluginHostRpcs extends RpcGroup.make(
   Rpc.make("Reduce", {
     payload: {
       revision: PluginPublicationRevisionSchema,
-      command: RuntimeCommandSchema,
+      command: RegisteredCommandSchema,
       context: WorkspaceCommandContextSchema,
       reads: WorkspaceReadPackageSchema,
     },
@@ -152,7 +152,7 @@ export class PluginHostRpcs extends RpcGroup.make(
   Rpc.make("RunSession", {
     payload: {
       revision: PluginPublicationRevisionSchema,
-      command: RuntimeCommandSchema,
+      command: RegisteredCommandSchema,
       context: DaemonSessionCommandContextSchema,
     },
     // Option: NDJSON cannot round-trip `undefined` (becomes JSON null).

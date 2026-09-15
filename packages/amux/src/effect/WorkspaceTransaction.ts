@@ -43,7 +43,7 @@ import { encodeOwner } from "../workspace-change-builders.ts";
 import { type JsonValue } from "./AttachProtocol.ts";
 import { type OwnerJsonText } from "../layout.ts";
 import { nodePath } from "./node-path.ts";
-import { COMMAND_META, isCoreCommand, type Command, type RuntimeCommand } from "../commands.ts";
+import { COMMAND_META, isCoreCommand, type Command, type RegisteredCommand } from "../commands.ts";
 import type { PaneEntry } from "../read-model.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
@@ -203,7 +203,7 @@ export const definePluginAction = <A, E>(reg: {
  * site) and assemble the {@link PluginCommandApply} the sync apply path consumes.
  */
 export const reducePluginCommand = (
-  command: RuntimeCommand,
+  command: RegisteredCommand,
   workspace: WorkspaceSnapshot,
   context: WorkspaceCommandContext,
   declarations: PluginDeclarations,
@@ -249,7 +249,7 @@ export const checkOpenPluginDescriptor = (
   });
 
 export type PreparedPluginCommand = {
-  readonly command: RuntimeCommand;
+  readonly command: Command | RegisteredCommand;
   readonly apply: PluginCommandApply;
 };
 
@@ -259,7 +259,7 @@ export type PreparedPluginCommand = {
  * Sync apply then reads the command and apply facts with no codec closures.
  */
 export const preparePluginCommandApply = (
-  command: RuntimeCommand,
+  command: Command | RegisteredCommand,
   workspace: WorkspaceSnapshot,
   context: WorkspaceCommandContext,
   declarations: PluginDeclarations,
@@ -384,7 +384,7 @@ export class WorkspaceTransactionLifecycle extends Context.Service<
 
 export interface WorkspaceTransactionService {
   readonly run: (
-    value: Command | RuntimeCommand,
+    value: Command | RegisteredCommand,
     expectedRevision: number,
     context: WorkspaceCommandContext,
     behaviour: PluginBehaviourService,
@@ -435,9 +435,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
             const next = markSessionExited(cur2.workspace, sid, code);
             if (next === cur2.workspace) return;
             const newState = yield* workspaceSession(next, cur2.state).pipe(
-              Effect.mapError(
-                (error) => new WorkspaceTransactionError({ message: error.message }),
-              ),
+              Effect.mapError((error) => new WorkspaceTransactionError({ message: error.message })),
             );
             yield* persistence.persistUntilSuccess(newState, `natural exit for '${sid}'`);
             yield* model.commitWorkspace(next, newState);
@@ -448,7 +446,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
       });
 
       const run = (
-        value: Command | RuntimeCommand,
+        value: Command | RegisteredCommand,
         expectedRevision: number,
         context: WorkspaceCommandContext,
         behaviour: PluginBehaviourService,
@@ -670,7 +668,7 @@ interface GitWorktreePlan {
 }
 
 export function gitWorktreesFor(
-  value: Command | RuntimeCommand,
+  value: Command | RegisteredCommand,
   next: WorkspaceSnapshot,
   current: WorkspaceSnapshot,
 ): GitWorktreePlan {

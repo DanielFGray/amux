@@ -1,7 +1,7 @@
 import { Effect, Match, Option, Schema as S } from "effect";
 import { COMMAND_DEFS, COMMAND_META } from "./commands.ts";
 import { errorMessage } from "./error-message.ts";
-import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
+import type { OwnerJsonText } from "./layout.ts";
 import type { PluginCommandDeclaration } from "./plugin-behaviour.ts";
 
 /**
@@ -14,6 +14,22 @@ type FieldSpec =
   | { name: string; kind: "boolean"; required: boolean }
   | { name: string; kind: "literal"; required: boolean; literals: readonly string[] }
   | { name: string; kind: "array"; required: boolean };
+
+/** Closed coerce ADT matching {@link FieldSpec} kinds — not open JSON. */
+export type CliArgValue = string | number | boolean | ReadonlyArray<string | number | boolean>;
+
+const CliArgAtom = S.Union([S.String, S.Finite, S.Boolean]);
+const CliArgArray = S.Array(CliArgAtom);
+export const CliArgValueSchema: S.Codec<CliArgValue> = S.Union([CliArgAtom, CliArgArray]);
+export const CliParsedArgsSchema = S.Record(S.String, CliArgValueSchema);
+
+/** Encode CLI-parsed flags to owner JSON text for {@link registeredCommand}. */
+export const encodeCliParsedArgs = (
+  parsed: Record<string, CliArgValue>,
+): Effect.Effect<OwnerJsonText, string> =>
+  S.encodeEffect(S.fromJsonString(CliParsedArgsSchema))(parsed).pipe(
+    Effect.mapError((error) => errorMessage(error)),
+  );
 
 export type JsonSchemaObject = {
   properties?: Record<string, JsonSchemaObject>;
@@ -117,7 +133,7 @@ function fieldsForSchema(schema: JsonSchemaObject): FieldSpec[] {
 }
 
 export interface ParseArgsResult {
-  parsed: Record<string, JsonValue> | null;
+  parsed: Record<string, CliArgValue> | null;
   errors: string[];
 }
 
@@ -141,7 +157,7 @@ function parseFieldSpecs(tag: string, fields: FieldSpec[], argv: string[]): Pars
     return { parsed: {}, errors: [] };
   }
 
-  const parsed: Record<string, JsonValue> = {};
+  const parsed: Record<string, CliArgValue> = {};
   const errors: string[] = [];
   const consumed = new Set<string>();
   const requiredFields = fields.filter((f) => f.required);
@@ -226,7 +242,7 @@ function parseFieldSpecs(tag: string, fields: FieldSpec[], argv: string[]): Pars
   return { parsed, errors: [] };
 }
 
-function coerce(value: string | undefined, field: FieldSpec): JsonValue | undefined {
+function coerce(value: string | undefined, field: FieldSpec): CliArgValue | undefined {
   if (value === undefined) {
     if (field.kind === "boolean") return true;
     return undefined;
@@ -241,10 +257,7 @@ function coerce(value: string | undefined, field: FieldSpec): JsonValue | undefi
         if (f.minimum !== undefined && n < f.minimum) return undefined;
         return n;
       },
-      array: () => {
-        const parsed = S.decodeOption(S.fromJsonString(S.Array(JsonValueSchema)))(value);
-        return Option.getOrUndefined(parsed);
-      },
+      array: () => Option.getOrUndefined(S.decodeOption(S.fromJsonString(CliArgArray))(value)),
       boolean: () => {
         if (value === "true" || value === "1") return true;
         if (value === "false" || value === "0") return false;
@@ -264,7 +277,7 @@ function coerce(value: string | undefined, field: FieldSpec): JsonValue | undefi
  * as a number and a boolean), falling back to the raw string otherwise.
  */
 export function parsePluginArgs(argv: readonly string[]): ParseArgsResult {
-  const parsed: Record<string, JsonValue> = {};
+  const parsed: Record<string, CliArgValue> = {};
   const errors: string[] = [];
   for (const arg of argv) {
     const flagMatch = arg.match(/^--([a-zA-Z][a-zA-Z0-9_-]*)=(.*)$/);
@@ -273,7 +286,7 @@ export function parsePluginArgs(argv: readonly string[]): ParseArgsResult {
       continue;
     }
     const [, name, raw] = flagMatch as [string, string, string];
-    const decoded = S.decodeOption(S.fromJsonString(JsonValueSchema))(raw);
+    const decoded = S.decodeOption(S.fromJsonString(CliArgAtom))(raw);
     parsed[name] = Option.getOrElse(decoded, () => raw);
   }
   if (errors.length > 0) return { parsed: null, errors };

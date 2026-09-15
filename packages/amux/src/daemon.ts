@@ -103,11 +103,12 @@ import {
   COMMAND_META,
   fieldDeclaresPaneTarget,
   isCoreCommand,
+  isRegisteredCommand,
   isClientPluginCommandTag,
   WireCommand,
   Command,
   type CommandMeta,
-  type RuntimeCommand,
+  type RegisteredCommand,
 } from "./commands.ts";
 import {
   findPaneBySession,
@@ -247,7 +248,7 @@ export interface SessionDaemonService {
   /** Completes when stop or close has finished releasing daemon resources. */
   readonly closed: Effect.Effect<void>;
   readonly runWorkspaceCommand: (
-    value: Command | RuntimeCommand,
+    value: Command | RegisteredCommand,
     expectedRevision: number,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<WorkspaceTransactionResult, DaemonError>;
@@ -1464,7 +1465,7 @@ export const makeDaemonService = Effect.fnUntraced(
     ).pipe(Effect.asVoid);
 
     const runWorkspaceWithBehaviour = (
-      value: Command | RuntimeCommand,
+      value: Command | RegisteredCommand,
       expectedRevision: number,
       context: WorkspaceCommandContext,
       behaviour: PluginBehaviourService,
@@ -1483,7 +1484,7 @@ export const makeDaemonService = Effect.fnUntraced(
     };
 
     const runWorkspaceCommand = (
-      value: Command | RuntimeCommand,
+      value: Command | RegisteredCommand,
       expectedRevision: number,
       context: WorkspaceCommandContext,
     ): Effect.Effect<WorkspaceTransactionResult, DaemonError> =>
@@ -1582,7 +1583,7 @@ export const makeDaemonService = Effect.fnUntraced(
     };
 
     const runRemote = Effect.fnUntraced(function* (
-      value: Command | RuntimeCommand,
+      value: Command | RegisteredCommand,
       expectedRevision?: number,
       context?: WorkspaceCommandRequestContext,
       caller?: { readonly client: string; readonly connection: string },
@@ -1622,6 +1623,11 @@ export const makeDaemonService = Effect.fnUntraced(
                 } satisfies PluginRemoteRoute;
               }
               if (registration.meta.target === "session") {
+                if (!isRegisteredCommand(value)) {
+                  return yield* controlFail(
+                    `daemon command '${value._tag}' requires registered command args`,
+                  );
+                }
                 const cur = yield* model.get;
                 const commandContext = {
                   snapshot: structuredClone(cur.workspace),
@@ -1790,7 +1796,7 @@ export const makeDaemonService = Effect.fnUntraced(
           Effect.gen(function* () {
             const cur = yield* model.get;
             const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
-            let workspaceCommand: Command | RuntimeCommand = command;
+            let workspaceCommand: Command | RegisteredCommand = command;
             if (command._tag === "process-plugin.pane.open") {
               const pluginContext = processPluginInvocationContextFromWorkspace({
                 workspace: cur.workspace,

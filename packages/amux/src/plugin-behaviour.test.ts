@@ -15,7 +15,8 @@ import {
 import * as TestClock from "effect/testing/TestClock";
 import { testEffect } from "./test-effect.ts";
 import { toJsonSchemaDocument, type JsonSchemaDocumentError } from "./command-cli.ts";
-import { runtimeCommand } from "./commands.ts";
+import { registeredCommand } from "./commands.ts";
+import { nestOwnerArgs } from "./test-owner-args.ts";
 import { defineDaemonCommand } from "./define-daemon-command.ts";
 import { definePaneType } from "./pane-descriptors.ts";
 import { definePluginAction } from "./effect/WorkspaceTransaction.ts";
@@ -195,7 +196,7 @@ testEffect(
       const reads = buildWorkspaceReadPackage(workspace, context);
 
       const answer = yield* behaviour.reduce(
-        runtimeCommand("probe.reduce", { label: "hi" }),
+        yield* workspaceCmd.command({ label: "hi" }),
         context,
         reads,
       );
@@ -209,7 +210,7 @@ testEffect(
         .pipe(Effect.provideService(DaemonSessions, idleSessions));
 
       const sessionResult = yield* behaviour
-        .runSession(runtimeCommand("probe.session", { target: "agent-1" }), {
+        .runSession(yield* sessionCmd.command({ target: "agent-1" }), {
           snapshot: workspace,
         })
         .pipe(Effect.provideService(DaemonSessions, idleSessions));
@@ -272,7 +273,7 @@ testClockEffect("a session-target run that exceeds its time limit fails clearly"
     });
     const behaviour = yield* pluginBehaviourFromRegistrations([hanging]);
     const workspace = yield* workspaceFromSession(baseState());
-    const fiber = yield* runPluginSessionCommand(runtimeCommand("probe.slow", {}), {
+    const fiber = yield* runPluginSessionCommand(yield* hanging.command({}), {
       snapshot: workspace,
     }).pipe(
       Effect.provideService(PluginBehaviour, behaviour),
@@ -382,7 +383,7 @@ testClockEffect("reduce and descriptor check keep their call-site time limits", 
     const reads = buildWorkspaceReadPackage(workspace, context);
 
     const reduceFiber = yield* behaviour
-      .reduce(runtimeCommand("probe.hang-reduce", {}), context, reads)
+      .reduce(yield* hangReduce.command({}), context, reads)
       .pipe(
         Effect.timeout(Duration.millis(PLUGIN_REDUCE_TIMEOUT_MS)),
         Effect.exit,
@@ -547,7 +548,7 @@ testEffect("bindPluginBehaviour fixes client and revision across slot changes", 
     const binding = yield* bindPluginBehaviour(slot);
     yield* SubscriptionRef.set(slot, Option.some(second));
 
-    yield* binding.reduce(runtimeCommand("probe.x", {}), context, reads);
+    yield* binding.reduce(registeredCommand("probe.x", yield* nestOwnerArgs({})), context, reads);
     yield* binding.runAction({ _tag: "a", payload: "null" });
     expect(calls).toEqual([
       { id: "first", revision: 3 },
@@ -566,7 +567,7 @@ testEffect("bindPluginBehaviour on an empty slot fails every method as not ready
     const binding = yield* bindPluginBehaviour(emptySlot);
     expect(yield* binding.declarations).toEqual(emptyPluginDeclarations);
     const reduce = yield* Effect.exit(
-      binding.reduce(runtimeCommand("probe.x", {}), context, reads),
+      binding.reduce(registeredCommand("probe.x", yield* nestOwnerArgs({})), context, reads),
     );
     expect(reduce._tag).toBe("Failure");
     if (reduce._tag === "Failure") {

@@ -2,7 +2,7 @@ import { expect } from "bun:test";
 import { Effect, Schema as S } from "effect";
 import { EditorDescriptorSchema, editorDaemonCommands } from "./daemon.ts";
 import type { WorkspaceCommandContext, WorkspaceReadPackage } from "@danielfgray/amux";
-import { creationResultSchema, runtimeCommand } from "@danielfgray/amux";
+import { creationResultSchema } from "@danielfgray/amux";
 import { testEffect } from "@danielfgray/amux/testing";
 
 const editorOpen = editorDaemonCommands.find((entry) => entry.tag === "editor.open")!;
@@ -29,7 +29,7 @@ const context = (pane?: string): WorkspaceCommandContext => {
 testEffect("editor.open splits when there is no calling pane", () =>
   Effect.gen(function* () {
     const answer = yield* editorOpen.reduce!({
-      command: runtimeCommand("editor.open", {}),
+      command: yield* editorOpen.command({}),
       context: context(),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp/project" }),
     });
@@ -46,9 +46,9 @@ testEffect("editor.open splits when there is no calling pane", () =>
       type: "amux.editor",
       mode: "split",
     });
-    expect(yield* S.decodeEffect(S.fromJsonString(EditorDescriptorSchema))(place.descriptor)).toEqual(
-      {},
-    );
+    expect(
+      yield* S.decodeEffect(S.fromJsonString(EditorDescriptorSchema))(place.descriptor),
+    ).toEqual({});
     const result = answer.changes[1] as { _tag: "result.set"; result: string };
     expect(result._tag).toBe("result.set");
     expect(yield* S.decodeEffect(S.fromJsonString(CreationResult))(result.result)).toEqual({
@@ -60,7 +60,7 @@ testEffect("editor.open splits when there is no calling pane", () =>
 testEffect("editor.open replaces when invoked from a pane", () =>
   Effect.gen(function* () {
     const answer = yield* editorOpen.reduce!({
-      command: runtimeCommand("editor.open", {}),
+      command: yield* editorOpen.command({}),
       context: context("pane-a"),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp/project" }),
     });
@@ -77,7 +77,7 @@ testEffect("editor.open replaces when invoked from a pane", () =>
 testEffect("editor.open --split forces a sibling even from a calling pane", () =>
   Effect.gen(function* () {
     const answer = yield* editorOpen.reduce!({
-      command: runtimeCommand("editor.open", { split: true }),
+      command: yield* editorOpen.command({ split: true }),
       context: context("pane-a"),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp/project" }),
     });
@@ -88,13 +88,15 @@ testEffect("editor.open --split forces a sibling even from a calling pane", () =
 testEffect("editor.open resolves a relative file against the calling cwd", () =>
   Effect.gen(function* () {
     const answer = yield* editorOpen.reduce!({
-      command: runtimeCommand("editor.open", { file: "src/foo.ts" }),
+      command: yield* editorOpen.command({ file: "src/foo.ts" }),
       context: context(),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp/project" }),
     });
     const place = answer.changes[0] as { _tag: "plugin.place"; descriptor: string };
     expect(place._tag).toBe("plugin.place");
-    expect(yield* S.decodeEffect(S.fromJsonString(EditorDescriptorSchema))(place.descriptor)).toEqual({
+    expect(
+      yield* S.decodeEffect(S.fromJsonString(EditorDescriptorSchema))(place.descriptor),
+    ).toEqual({
       file: "/tmp/project/src/foo.ts",
     });
   }),

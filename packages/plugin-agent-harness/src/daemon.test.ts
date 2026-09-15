@@ -1,9 +1,10 @@
 import { expect } from "bun:test";
 import { Effect, Option } from "effect";
 import { agentHarnessDaemonCommands } from "./daemon.ts";
+import { agentInterruptCommand, agentListCommand, agentNewCommand } from "./command-args.ts";
 import type { WorkspaceCommandContext, WorkspaceReadPackage } from "@danielfgray/amux";
-import { runtimeCommand } from "@danielfgray/amux";
-import { testEffect } from "@danielfgray/amux/testing";
+import { registeredCommand } from "@danielfgray/amux";
+import { nestOwnerArgs, testEffect } from "@danielfgray/amux/testing";
 import { OpaqueJsonText, decodeOpaqueJsonText } from "./protocol.ts";
 
 const jt = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
@@ -33,7 +34,7 @@ const context = (pane?: string): WorkspaceCommandContext => {
 testEffect("agent.new emits session.add with firstMessage when a prompt is given", () =>
   Effect.gen(function* () {
     const answer = yield* agentNew.reduce!({
-      command: runtimeCommand("agent.new", { prompt: "hello" }),
+      command: yield* agentNewCommand({ prompt: "hello" }),
       context: context(),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
     });
@@ -49,7 +50,7 @@ testEffect("agent.new emits session.add with firstMessage when a prompt is given
 testEffect("agent.new emits no firstMessage when no prompt is given", () =>
   Effect.gen(function* () {
     const answer = yield* agentNew.reduce!({
-      command: runtimeCommand("agent.new", {}),
+      command: yield* agentNewCommand({}),
       context: context(),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
     });
@@ -62,7 +63,7 @@ testEffect("agent.new emits no firstMessage when no prompt is given", () =>
 testEffect("agent.new from a calling pane replaces; --split forces a sibling", () =>
   Effect.gen(function* () {
     const replace = yield* agentNew.reduce!({
-      command: runtimeCommand("agent.new", {}),
+      command: yield* agentNewCommand({}),
       context: context("pane-a"),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
     });
@@ -77,7 +78,7 @@ testEffect("agent.new from a calling pane replaces; --split forces a sibling", (
       }),
     );
     const split = yield* agentNew.reduce!({
-      command: runtimeCommand("agent.new", { split: true }),
+      command: yield* agentNewCommand({ split: true }),
       context: context("pane-a"),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
     });
@@ -88,7 +89,7 @@ testEffect("agent.new from a calling pane replaces; --split forces a sibling", (
 testEffect("agent.interrupt pushes a typed action", () =>
   Effect.gen(function* () {
     const answer = yield* agentInterrupt.reduce!({
-      command: runtimeCommand("agent.interrupt", { target: "agent-a", reason: "stop" }),
+      command: yield* agentInterruptCommand({ target: "agent-a", reason: "stop" }),
       context: context(),
       reads: emptyReads(null),
     });
@@ -116,7 +117,7 @@ testEffect("agent.list sets the agents read package as the result", () =>
       },
     ];
     const answer = yield* agentList.reduce!({
-      command: runtimeCommand("agent.list", {}),
+      command: yield* agentListCommand({}),
       context: context(),
       reads: { ...emptyReads(null), agents },
     });
@@ -127,7 +128,7 @@ testEffect("agent.list sets the agents read package as the result", () =>
 testEffect("agent.new reduce is an Effect (contract smoke)", () =>
   Effect.gen(function* () {
     const answer = yield* agentNew.reduce!({
-      command: runtimeCommand("agent.new", {}),
+      command: yield* agentNewCommand({}),
       context: context(),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
     });
@@ -139,7 +140,7 @@ testEffect("agent.new rejects undecodable fields before reduce body", () =>
   Effect.gen(function* () {
     const result = yield* Effect.exit(
       agentNew.reduce!({
-        command: runtimeCommand("agent.new", { split: "yes" }),
+        command: registeredCommand("agent.new", yield* nestOwnerArgs({ split: "yes" })),
         context: context(),
         reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp" }),
       }),

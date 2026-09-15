@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { Effect, Schema as S } from "effect";
-import { command, type RuntimeCommand } from "./commands.ts";
+import { command, type Command, type RegisteredCommand } from "./commands.ts";
+import { editorOpenCommand } from "../../editor/src/command-args.ts";
 import { nodePath } from "./effect/node-path.ts";
 import { layoutPanes, OwnerJsonText } from "./layout.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
@@ -26,7 +27,7 @@ const path = run(nodePath);
 const pluginApplyFor = (
   regs: readonly DaemonCommandRegistration[],
   workspace: WorkspaceSnapshot,
-  cmd: RuntimeCommand,
+  cmd: Command | RegisteredCommand,
   context: WorkspaceCommandContext,
 ) =>
   run(
@@ -45,10 +46,7 @@ const applyWorkspaceCommand = (
   context: Parameters<typeof applyWorkspaceCommandWithPath>[2],
   regs?: readonly DaemonCommandRegistration[],
 ): WorkspaceMutation => {
-  const prepared =
-    regs === undefined
-      ? undefined
-      : pluginApplyFor(regs, workspace, cmd as RuntimeCommand, context);
+  const prepared = regs === undefined ? undefined : pluginApplyFor(regs, workspace, cmd, context);
   return run(
     applyWorkspaceCommandWithPath(
       workspace,
@@ -189,7 +187,7 @@ test("placement replace uses the same resolveTarget rule", () => {
   const workspace = run(workspaceFromSession(fixture()));
   const opened = applyWorkspaceCommand(
     workspace,
-    { _tag: "editor.open" },
+    run(editorOpenCommand({})),
     { ...context, pane: "pane-b1" },
     editorPlugins,
   );

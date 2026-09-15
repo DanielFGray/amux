@@ -1,4 +1,4 @@
-import { isCoreCommand, type Command, type RuntimeCommand } from "./commands.ts";
+import { isCoreCommand, type Command, type RegisteredCommand } from "./commands.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 import type { CreationResult } from "./creation-result.ts";
 import type { PaneMoveResult } from "./commands.ts";
@@ -241,7 +241,7 @@ export interface WorkspaceMutation {
  * the decoded answer synchronously; the reducer never holds a draft.
  */
 export type PluginWorkspaceReducer = (input: {
-  readonly command: RuntimeCommand;
+  readonly command: RegisteredCommand;
   readonly context: WorkspaceCommandContext;
   readonly reads: WorkspaceReadPackage;
 }) => Effect.Effect<WorkspaceReducerAnswer, PluginReducerError>;
@@ -809,7 +809,7 @@ type TilingAsk = (operation: TilingOperation) => Effect.Effect<TilingAnswer, Til
  */
 export const applyWorkspaceCommand = (
   current: WorkspaceSnapshot,
-  command: Command | RuntimeCommand,
+  command: Command | RegisteredCommand,
   request: WorkspaceCommandContext,
   path: Effect.Success<typeof nodePath>,
   plugins?: PluginCommandApply,
@@ -844,7 +844,7 @@ export const applyWorkspaceCommand = (
 
 const applyWorkspaceCommandOnce = (
   current: WorkspaceSnapshot,
-  command: Command | RuntimeCommand,
+  command: Command | RegisteredCommand,
   request: WorkspaceCommandContext,
   path: Effect.Success<typeof nodePath>,
   plugins: PluginCommandApply | undefined,

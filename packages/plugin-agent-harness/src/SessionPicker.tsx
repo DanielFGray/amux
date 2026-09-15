@@ -11,10 +11,10 @@ import {
   PanelTag,
   SlotsTag,
   command,
-  runtimeCommand,
   type ContextSpec,
   type OverlayOccupant,
 } from "@danielfgray/amux";
+import { agentNewCommand } from "./command-args.ts";
 import { projectRoot } from "@danielfgray/amux/git.ts";
 import {
   conversationPreview,
@@ -104,12 +104,10 @@ export const registerSessionPicker: Effect.Effect<
       return;
     }
     report(
-      panel.run(
-        runtimeCommand("agent.new", {
-          provider: "native",
-          resumeFrom: entry.value,
-        }),
-      ),
+      agentNewCommand({
+        provider: "native",
+        resumeFrom: entry.value,
+      }).pipe(Effect.flatMap((cmd) => panel.run(cmd))),
     );
   };
 

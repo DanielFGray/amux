@@ -90,10 +90,9 @@ testEffect("session-target command reaches prompt and capture through DaemonSess
     });
     const run = probePromptCommand.run;
     if (run === undefined) return yield* new CommandError({ message: "missing run" });
-    const result = yield* run(
-      { _tag: "probe.prompt", target: "a1", text: "hello" },
-      { snapshot: emptySnapshot },
-    ).pipe(Effect.provide(trackingLayer(state)));
+    const result = yield* run(yield* probePromptCommand.command({ target: "a1", text: "hello" }), {
+      snapshot: emptySnapshot,
+    }).pipe(Effect.provide(trackingLayer(state)));
     expect(result).toBe("screen");
     const tracked = yield* Ref.get(state);
     expect(tracked.prompted).toEqual([{ target: "a1", text: "hello" }]);

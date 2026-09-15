@@ -5,7 +5,7 @@ import { daemonBackend, type DaemonSession, type SessionBackendFactory } from ".
 import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
-import { WireCommand, type Command, type RuntimeCommand } from "./commands.ts";
+import { WireCommand, type Command, type RegisteredCommand } from "./commands.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 import type { OwnerJsonText } from "./layout.ts";
 import { parseWorkspaceJson, workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
@@ -79,7 +79,7 @@ export interface SessionClientContract extends DaemonSession {
   >;
   readonly respondCommand: (id: string, result?: JsonValue, error?: string) => void;
   readonly runWorkspace: (
-    command: Command | RuntimeCommand,
+    command: Command | RegisteredCommand,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<
     { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue },
@@ -88,7 +88,7 @@ export interface SessionClientContract extends DaemonSession {
   >;
   /** Raw control-protocol Run for commands that do not produce a workspace snapshot. */
   readonly run: (
-    command: Command | RuntimeCommand,
+    command: Command | RegisteredCommand,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<unknown, ControlError>;
   readonly resumeAgent: (input: {
@@ -207,7 +207,7 @@ const make = (
     );
     let workspace = initialWorkspace;
     const commandQueue = yield* Queue.unbounded<{
-      readonly command: Command | RuntimeCommand;
+      readonly command: Command | RegisteredCommand;
       readonly context: WorkspaceCommandContext;
       readonly done: Deferred.Deferred<
         { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue },
@@ -232,7 +232,7 @@ const make = (
       return workspace;
     };
     const runQueuedCommand = (request: {
-      readonly command: Command | RuntimeCommand;
+      readonly command: Command | RegisteredCommand;
       readonly context: WorkspaceCommandContext;
     }) =>
       Effect.gen(function* () {

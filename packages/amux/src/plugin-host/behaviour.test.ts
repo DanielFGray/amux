@@ -18,7 +18,8 @@ import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "../daemon.ts";
 import { SessionStore } from "../session.ts";
 import { controlCall, connectRpcPath } from "../control-client.ts";
-import { command, runtimeCommand } from "../commands.ts";
+import { command } from "../commands.ts";
+import { editorOpenCommand } from "../../../editor/src/command-args.ts";
 import { DEFAULT_CONFIG, type Config } from "../config.ts";
 import { waitFor } from "../test-wait.ts";
 import { registerCleanup, tempDir } from "../test-tmp.ts";
@@ -168,7 +169,7 @@ test("host Load publishes editor, agent, niri, and continuity declarations; edit
 
     const opened = await ctl(daemon.id, env, (c) =>
       c.Batch({
-        values: [runtimeCommand("editor.open", {})],
+        values: [Effect.runSync(editorOpenCommand({}))],
         context,
       }),
     );
@@ -336,7 +337,7 @@ test("killing the host fails plugin commands; core and PTY keep working; restart
     const pluginFail = await ctl(daemon.id, env, (c) =>
       Effect.flip(
         c.Batch({
-          values: [runtimeCommand("editor.open", {})],
+          values: [Effect.runSync(editorOpenCommand({}))],
           context,
         }),
       ),
@@ -364,7 +365,7 @@ test("killing the host fails plugin commands; core and PTY keep working; restart
     expect(decls.commands.some((entry) => entry.tag === "editor.open")).toBe(true);
     const opened = await ctl(daemon.id, env, (c) =>
       c.Batch({
-        values: [runtimeCommand("editor.open", {})],
+        values: [Effect.runSync(editorOpenCommand({}))],
         context,
       }),
     );

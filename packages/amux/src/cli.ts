@@ -40,9 +40,10 @@ import {
   Stream,
 } from "effect";
 import { BunRuntime } from "@effect/platform-bun";
-import type { RuntimeCommand } from "./commands.ts";
-import type { JsonValue, AgentEvent } from "./effect/AttachProtocol.ts";
+import type { RegisteredCommand } from "./commands.ts";
+import type { AgentEvent } from "./effect/AttachProtocol.ts";
 import type { PluginCommandDeclaration } from "./plugin-behaviour.ts";
+import type { CliArgValue } from "./command-cli.ts";
 
 const writeOut = (text: string) => process.stdout.write(text + "\n");
 const writeErr = (text: string) => process.stderr.write(text + "\n");
@@ -161,11 +162,11 @@ export function stripSessionFlag(
  */
 export function fillCommandSession(
   session: string | undefined,
-  parsed: Record<string, JsonValue>,
+  parsed: Record<string, CliArgValue>,
   hasSessionField: boolean,
 ) {
   if (session === undefined || "session" in parsed || !hasSessionField) return parsed;
-  return { ...parsed, session } satisfies Record<string, JsonValue>;
+  return { ...parsed, session } satisfies Record<string, CliArgValue>;
 }
 
 /**
@@ -342,7 +343,7 @@ function main(): Effect.Effect<number> {
       { SessionStore, isSessionId },
       { controlCall, agentWatch, AgentWaitError },
       commandsMod,
-      { parseArgs, fieldNames, parseFields, parsePluginArgs },
+      { parseArgs, fieldNames, parseFields, parsePluginArgs, encodeCliParsedArgs },
       { SESSION_STATE_TOPIC },
       { ProcessStateSchema },
     ] = yield* Effect.promise(() =>
@@ -361,7 +362,8 @@ function main(): Effect.Effect<number> {
       commandDefinition,
       isCoreCommandTag,
       isClientPluginCommandTag,
-      runtimeCommand,
+      isRegisteredCommand,
+      registeredCommand,
     } = commandsMod;
     // `new`, an out-of-schema plugin verb (its own single-command path
     // below, matched by the client-plugin namespace alone), and a bare
@@ -438,22 +440,31 @@ function main(): Effect.Effect<number> {
       originSession?: string;
       noFocus?: boolean;
     };
-    type PromptCommand = RuntimeCommand & {
-      readonly _tag: "agent.prompt";
-      readonly target: string;
-      readonly wait?: boolean;
-      readonly until?: string;
-      readonly timeout?: number;
+    const PromptFieldsSchema = Schema.Struct({
+      target: Schema.String,
+      wait: Schema.optionalKey(Schema.Boolean),
+      until: Schema.optionalKey(Schema.String),
+      timeout: Schema.optionalKey(Schema.Int),
+    });
+    const WatchFieldsSchema = Schema.Struct({
+      target: Schema.String,
+      after: Schema.optionalKey(Schema.Int),
+    });
+    const registeredArgs = <A>(
+      value: typeof Command.Type | RegisteredCommand,
+      schema: Schema.Codec<A>,
+    ): Option.Option<A> => {
+      if (!isRegisteredCommand(value)) return Option.none();
+      return Schema.decodeOption(Schema.fromJsonString(schema))(value.args);
     };
-    type WatchCommand = RuntimeCommand & {
-      readonly _tag: "agent.watch";
-      readonly target: string;
-      readonly after?: number;
-    };
-    const isPromptCommand = (value: typeof Command.Type | RuntimeCommand): value is PromptCommand =>
-      value._tag === "agent.prompt" && typeof value.target === "string";
-    const isWatchCommand = (value: typeof Command.Type | RuntimeCommand): value is WatchCommand =>
-      value._tag === "agent.watch" && typeof value.target === "string";
+    const isPromptCommand = (
+      value: typeof Command.Type | RegisteredCommand,
+    ): value is RegisteredCommand & { readonly _tag: "agent.prompt" } =>
+      value._tag === "agent.prompt";
+    const isWatchCommand = (
+      value: typeof Command.Type | RegisteredCommand,
+    ): value is RegisteredCommand & { readonly _tag: "agent.watch" } =>
+      value._tag === "agent.watch";
 
     function isCommandTag(s: string): s is CommandTag {
       return s in COMMAND_META || daemonCommandByTag.has(s) || isClientPluginCommandTag(s);
@@ -462,7 +473,7 @@ function main(): Effect.Effect<number> {
     function parseCommandGroup(argv: string[]): Effect.Effect<
       | {
           tag: CommandTag;
-          parsed: Record<string, JsonValue>;
+          parsed: Record<string, CliArgValue>;
           sessionFlag?: string;
         }
       | { errors: string[] }
@@ -515,6 +526,7 @@ function main(): Effect.Effect<number> {
         writeErr(`error: ${parsedArgs.errors.join("\n  ")}`);
         return 2;
       }
+      const parsed = parsedArgs.parsed;
       const targetId = resolveCommandSession("workspace", stripped.session);
       if (!targetId) {
         writeErr(`error: '${sub}' requires a session id`);
@@ -547,9 +559,14 @@ function main(): Effect.Effect<number> {
                       : originSession
                         ? { ...base, originSession }
                         : base;
-        return control.Batch({
-          values: [{ _tag: sub, ...parsedArgs.parsed }],
-          context,
+        return Effect.gen(function* () {
+          const argsText = yield* encodeCliParsedArgs(parsed).pipe(
+            Effect.mapError((message) => new Error(message)),
+          );
+          return yield* control.Batch({
+            values: [registeredCommand(sub, argsText)],
+            context,
+          });
         });
       }).pipe(
         Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
@@ -574,7 +591,7 @@ function main(): Effect.Effect<number> {
 
     if (isCommandTag(sub)) {
       const groups = splitCommandArgs(argv);
-      const cmds: Array<typeof Command.Type | RuntimeCommand> = [];
+      const cmds: Array<typeof Command.Type | RegisteredCommand> = [];
       let id: string | undefined;
       // --no-focus is a batch-level context flag, not a command field: it says
       // "this whole invocation is background work, do not move the human's focus".
@@ -610,13 +627,26 @@ function main(): Effect.Effect<number> {
         cmds.push(
           isCoreCommandTag(parsed.tag)
             ? yield* Schema.decodeUnknownEffect(Command)({ _tag: parsed.tag, ...parsed.parsed })
-            : runtimeCommand(parsed.tag, parsed.parsed),
+            : registeredCommand(
+                parsed.tag,
+                yield* encodeCliParsedArgs(parsed.parsed).pipe(
+                  Effect.mapError((message) => new Error(message)),
+                ),
+              ),
         );
       }
 
       const { BunFileSystem } = yield* Effect.promise(() => import("@effect/platform-bun"));
-      const prompt = cmds.length === 1 && cmds[0] && isPromptCommand(cmds[0]) ? cmds[0] : undefined;
-      const watch = cmds.length === 1 && cmds[0] && isWatchCommand(cmds[0]) ? cmds[0] : undefined;
+      const promptValue =
+        cmds.length === 1 && cmds[0] && isPromptCommand(cmds[0]) ? cmds[0] : undefined;
+      const watchValue =
+        cmds.length === 1 && cmds[0] && isWatchCommand(cmds[0]) ? cmds[0] : undefined;
+      const prompt = promptValue
+        ? Option.getOrUndefined(registeredArgs(promptValue, PromptFieldsSchema))
+        : undefined;
+      const watch = watchValue
+        ? Option.getOrUndefined(registeredArgs(watchValue, WatchFieldsSchema))
+        : undefined;
       if (watch) {
         return yield* controlCall(id!, (control) =>
           agentWatch(control, watch.target, watch.after).pipe(
