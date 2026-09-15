@@ -6,7 +6,7 @@ import { BoxRenderable, type CliRenderer, type KeyEvent, type RenderContext } fr
 import type * as Scope from "effect/Scope";
 import { Pane, PaneRenderable } from "./pane.ts";
 import type { SessionHandle } from "./session-handle.ts";
-import type { JsonValue } from "./layout.ts";
+import type { OwnerJsonText } from "./layout.ts";
 import type { Options } from "./options.ts";
 import { acquireRenderable } from "./bridge.ts";
 
@@ -31,8 +31,8 @@ export interface PaneViewProps {
   paneId: string;
   /** The pane type, which is what selected this view. */
   paneType: string;
-  /** The content's descriptor — the plugin's own, opaque to the pane host. */
-  descriptor: JsonValue;
+  /** The content's descriptor — owner JSON text, opaque to the pane host. */
+  descriptor: OwnerJsonText;
   /** The content rect, the pane's own less the sides it draws. */
   width: Accessor<number>;
   height: Accessor<number>;
@@ -110,7 +110,7 @@ class ComponentPaneView extends PaneRenderable {
       id: string;
       session: SessionHandle | null;
       paneType: string;
-      descriptor?: JsonValue;
+      descriptor?: OwnerJsonText;
       view?: PaneView;
     },
     optionsRuntime: Options,
@@ -142,7 +142,7 @@ class ComponentPaneView extends PaneRenderable {
       // A plugin pane is selected by its durable content, never by the
       // process a session happens to be running.
       paneType: options.paneType,
-      descriptor: options.descriptor ?? {},
+      descriptor: options.descriptor ?? "{}",
       width: () => {
         this.#size[0]();
         return this.content.width;
@@ -221,7 +221,7 @@ export class ComponentPane extends Pane {
       id: string;
       session: SessionHandle | null;
       paneType: string;
-      descriptor?: JsonValue;
+      descriptor?: OwnerJsonText;
       view?: PaneView;
     },
     optionsRuntime: Options,

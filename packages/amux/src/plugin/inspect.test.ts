@@ -1,15 +1,17 @@
 import { expect } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Schema as S } from "effect";
 import { pathToFileURL } from "node:url";
 import { testEffect } from "../test-effect.ts";
 import { COMMAND_META, type CommandMeta } from "../commands.ts";
 import type { CommandSpec, Keys } from "../bindings.ts";
 import type { ContextSpec } from "../key-context.ts";
-import type { PaneContent } from "../layout.ts";
+import { OwnerJsonText, type PaneContent } from "../layout.ts";
 import type { Contribution, PluginInstance } from "./contributions.ts";
 import { createPluginContributions } from "./contributions.ts";
 import { formatInspectResult, inspect, provenanceFor, type InspectCatalog } from "./inspect.ts";
 import type { PluginStatus } from "./types.ts";
+
+const emptyDescriptor = S.decodeSync(OwnerJsonText)({});
 
 const keys: Keys = { prefix: "ctrl+a", leader: "space", bindings: {} };
 
@@ -157,7 +159,9 @@ testEffect("inspect pane resolves pty vs plugin view ownership", () =>
     const viewOwner = owner("amux.editor", 4);
     const pluginPane = inspect(
       catalog({
-        panes: new Map([["p2", { kind: "plugin", type: "editor", descriptor: {}, session: "s2" }]]),
+        panes: new Map([
+          ["p2", { kind: "plugin", type: "editor", descriptor: emptyDescriptor, session: "s2" }],
+        ]),
         paneViews: new Map([["editor", viewOwner]]),
         statuses: [{ id: "amux.editor", phase: "active", waitingFor: [] }],
         generations: new Map([["amux.editor", 4]]),

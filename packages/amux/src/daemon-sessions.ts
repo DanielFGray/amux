@@ -9,7 +9,7 @@
  */
 import { Context, Effect, Layer, Schema as S } from "effect";
 import { errorMessage } from "./error-message.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
+import type { OwnerJsonText } from "./layout.ts";
 import { type PromptOptions, type PtyError } from "./effect/SessionRegistry.ts";
 
 const describe = errorMessage;
@@ -24,7 +24,7 @@ const sessionsError = <E>(error: E): DaemonSessionsError =>
 
 /** What the host must expose for {@link buildDaemonSessions}. */
 export interface DaemonSessionsHost {
-  readonly message: (id: string, message: JsonValue) => Effect.Effect<void, PtyError>;
+  readonly message: (id: string, message: OwnerJsonText) => Effect.Effect<void, PtyError>;
   readonly prompt: (
     id: string,
     text: string,
@@ -40,7 +40,7 @@ export interface DaemonSessionsService {
    * this, interpreted by whichever plugin's worker reads it. The worker
    * decodes through its own Schema (e.g. NativeControl).
    */
-  readonly message: (id: string, message: JsonValue) => Effect.Effect<void, DaemonSessionsError>;
+  readonly message: (id: string, message: OwnerJsonText) => Effect.Effect<void, DaemonSessionsError>;
   readonly prompt: (
     target: string,
     text: string,

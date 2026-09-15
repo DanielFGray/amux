@@ -23,7 +23,6 @@
 
 import { Effect, Match, Option, Schema as S, SchemaIssue } from "effect";
 import type { SplitDirection } from "./window.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
 import {
   PaneAgentSessionSnapshotSchema,
   persistedAgentSessionFromSnapshot,
@@ -42,13 +41,36 @@ export const LAYOUT_VERSION = 1;
 export type LayoutNode = LayoutPane | LayoutSplit | LayoutContainer;
 
 /**
- * A JSON value, what a plugin pane's descriptor is validated against. Defined
- * with the wire protocol (`effect/AttachProtocol.ts`) and re-exported here,
- * because a descriptor and a protocol payload are the same value seen at two
- * boundaries — two definitions drifted apart once already, over whether the
- * array member is readonly.
+ * Opaque JSON owned by a registration, held as text. Core never looks inside.
+ * Field schemas use this so save files and frames still nest real JSON
+ * (`S.flip`); only the owner decodes with `S.fromJsonString(ownerSchema)`.
+ * Precedent: plugin-lsp `LspJsonText` (9888955).
  */
-export type { JsonValue };
+export const OwnerJsonText = S.flip(S.fromJsonString(S.Unknown));
+export type OwnerJsonText = typeof OwnerJsonText.Type;
+
+/** Byte-length bound shared by Type-side text and the flipped field schema. */
+const descriptorWithinLimit = S.makeFilter(
+  (value: string) =>
+    Buffer.byteLength(value) <= MAX_DESCRIPTOR_BYTES ||
+    `descriptor exceeds the ${MAX_DESCRIPTOR_BYTES}-byte limit`,
+);
+
+/**
+ * Type-side bounds for descriptor JSON text that is already encoded
+ * (encodeOwner / in-process changes). Does not flip — input is the text.
+ * Needed so a Type-side string is not run through {@link OwnerJsonText}
+ * decode (Encoded→Type), which would treat the text as nested JSON and
+ * stringify it again.
+ */
+export const DescriptorTextSchema = S.String.pipe(S.check(descriptorWithinLimit));
+
+/**
+ * A plugin pane's descriptor field schema: nests as real JSON in parents;
+ * Type is sized JSON text.
+ */
+export const DescriptorSchema = OwnerJsonText.pipe(S.check(descriptorWithinLimit));
+export type Descriptor = typeof DescriptorSchema.Type;
 
 /**
  * What fills a pane: a pty session, or a plugin view.
@@ -66,7 +88,7 @@ export type PaneContent =
   | {
       readonly kind: "plugin";
       readonly type: string;
-      readonly descriptor: JsonValue;
+      readonly descriptor: OwnerJsonText;
       readonly session?: string;
       /**
        * Session that occupied this leaf before a replace-in-place open.
@@ -661,7 +683,11 @@ export function setPaneContent(layout: Layout, paneId: string, content: PaneCont
  * contract a plugin view reads back changes. A non-plugin pane, or a pane
  * the layout does not place, is left alone.
  */
-export function setPaneDescriptor(layout: Layout, paneId: string, descriptor: JsonValue): Layout {
+export function setPaneDescriptor(
+  layout: Layout,
+  paneId: string,
+  descriptor: OwnerJsonText,
+): Layout {
   const pane = layoutRefs(layout).find((item) => item.id === paneId);
   if (!pane || pane.content.kind !== "plugin") return layout;
   return setPaneContent(layout, paneId, { ...pane.content, descriptor });
@@ -1048,34 +1074,6 @@ const paneId = S.String.pipe(S.check(S.isMinLength(1))).annotate({
 const sessionId = S.String.pipe(S.check(S.isMinLength(1))).annotate({
   message: "content needs a session id",
 });
-/**
- * A plugin pane's descriptor: the remount contract between the pane type's
- * view and the daemon that persists it. Opaque to core — the plugin validates
- * it — but bounded (ts-a4e25e): it must be JSON-shaped and small enough that a
- * single pane cannot hoard the wire or the save file. The size is checked on
- * the serialized form, because that is what crosses every boundary; a
- * descriptor that only fits in memory is a descriptor that cannot be
- * persisted, so the schema rejects it rather than a later save failing.
- */
-const descriptorBytes = (value: JsonValue): number => Buffer.byteLength(JSON.stringify(value));
-export const DescriptorSchema: S.Codec<JsonValue> = S.suspend(() =>
-  S.Union([
-    S.Null,
-    S.String,
-    S.Boolean,
-    S.Finite,
-    S.Array(DescriptorSchema),
-    S.Record(S.String, DescriptorSchema),
-  ]).pipe(
-    S.check(
-      S.makeFilter(
-        (value) =>
-          descriptorBytes(value) <= MAX_DESCRIPTOR_BYTES ||
-          `descriptor exceeds the ${MAX_DESCRIPTOR_BYTES}-byte limit`,
-      ),
-    ),
-  ),
-) as S.Codec<JsonValue>;
 export const PaneContentSchema: S.Codec<PaneContent> = S.Union([
   S.Struct({
     kind: S.Literals(["pty"]),
@@ -1212,68 +1210,19 @@ export const LayoutSchema = S.Struct({
   algorithmVersion: S.optional(S.Int),
 });
 
-/** Serialize for session.json or the wire. Stable key order, so two equal
- *  layouts encode to equal strings and a diff of session.json stays readable. */
-export function encodeLayout(layout: Layout): string {
+/** Serialize for session.json or the wire.
+ *
+ * Encodes through {@link LayoutSchema}: its Struct field order is the stable
+ * key order (equal layouts stringify equal), and {@link OwnerJsonText} flip
+ * nests descriptors as real JSON. No hand-rolled nestContent/order pass.
+ */
+export function encodeLayout(layout: Layout): Effect.Effect<string, LayoutFormatError> {
   const normalized = makeLayout({ ...layout, root: collapse(layout.root) });
-  const docks = normalized.docks ?? emptyDockStrips();
-  const encodedDocks = Object.fromEntries(
-    DOCK_SIDES.map((side) => [side, docks[side].map(encodePaneRef)]),
+  return S.encodeEffect(S.fromJsonString(LayoutSchema))(normalized).pipe(
+    Effect.mapError(
+      (error) => new LayoutFormatError({ message: `layout encode failed: ${formatSchemaError(error)}` }),
+    ),
   );
-  const encoded = {
-    ...normalized,
-    root: order(normalized.root),
-    floats: normalized.floats.map(orderFloat),
-  };
-  if (DOCK_SIDES.some((side) => docks[side].length > 0)) {
-    Object.assign(encoded, { docks: encodedDocks });
-  }
-  return JSON.stringify(encoded);
-}
-
-function encodePaneRef(pane: PaneRef): {
-  id: string;
-  content: PaneContent;
-  agentSession?: PaneAgentSessionSnapshot;
-} {
-  return pane.agentSession === undefined
-    ? { id: pane.id, content: pane.content }
-    : { id: pane.id, content: pane.content, agentSession: pane.agentSession };
-}
-
-function orderFloat(float: LayoutFloat): LayoutFloat {
-  const base = {
-    id: float.id,
-    content: float.content,
-    x: float.x,
-    y: float.y,
-    width: float.width,
-    height: float.height,
-  };
-  return float.agentSession === undefined ? base : { ...base, agentSession: float.agentSession };
-}
-
-function order(node: LayoutNode | null): LayoutNode | null {
-  if (!node) return null;
-  if (node.type === "pane") {
-    const base = { type: "pane" as const, id: node.id, content: node.content, weight: node.weight };
-    return node.agentSession === undefined ? base : { ...base, agentSession: node.agentSession };
-  }
-  if (node.type === "container") {
-    return {
-      type: "container",
-      kind: node.kind,
-      weight: node.weight,
-      arrangement: node.arrangement,
-      children: node.children.map(order) as LayoutNode[],
-    };
-  }
-  return {
-    type: "split",
-    direction: node.direction,
-    weight: node.weight,
-    children: node.children.map(order) as LayoutNode[],
-  };
 }
 
 /**

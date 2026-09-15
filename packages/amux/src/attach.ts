@@ -19,6 +19,7 @@ import {
   type AttachFrame,
   type JsonValue,
 } from "./effect/AttachProtocol.ts";
+import type { OwnerJsonText } from "./layout.ts";
 import { errorMessage } from "./error-message.ts";
 import {
   Cause,
@@ -134,7 +135,7 @@ export interface AttachClientContract {
   respondCommand(id: string, result?: JsonValue, error?: string): void;
   /** Ask the daemon to run one command on this attach connection. */
   runCommand(
-    command: JsonValue,
+    command: OwnerJsonText,
     options?: {
       readonly expectedRevision?: number;
       readonly context?: WorkspaceCommandContext;
@@ -315,7 +316,7 @@ class AttachClientConnection {
   }
 
   runCommand(
-    command: JsonValue,
+    command: OwnerJsonText,
     options?: {
       readonly expectedRevision?: number;
       readonly context?: WorkspaceCommandContext;

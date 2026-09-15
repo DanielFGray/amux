@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { Clock, Config, Context, Effect, Layer, Option, Result, Schema as S } from "effect";
-import { layoutPanes, parseLayout } from "./layout.ts";
+import { layoutPanes, parseLayout, OwnerJsonText } from "./layout.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import {
   MAX_SESSIONS,
@@ -120,7 +120,7 @@ export interface PersistedSession {
    * provider's message Schema when session.add applies; ResumeAgent delivers
    * it via `DaemonSessions.message` after spawn, then clears the field.
    */
-  firstMessage?: JsonValue;
+  firstMessage?: OwnerJsonText;
 }
 
 export interface PersistedWindow {
@@ -221,7 +221,7 @@ export const PersistedSessionSchema = S.Struct({
   exited: S.Boolean,
   exitCode: S.NullOr(S.Int),
   transient: S.optional(S.Boolean),
-  firstMessage: S.optional(JsonValueSchema),
+  firstMessage: S.optional(OwnerJsonText),
 }).pipe(
   S.check(
     S.makeFilter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {

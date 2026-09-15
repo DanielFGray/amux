@@ -237,7 +237,7 @@ test("hold motions publish zero LSP changes; edit still publishes", () =>
           sessionId: "",
           paneId: "motion-lsp-pane",
           paneType: "amux.editor",
-          descriptor: { file },
+          descriptor: `{"file":${JSON.stringify(file)}}`,
           width: () => WIDTH,
           height: () => HEIGHT,
           active: () => true,

@@ -43,7 +43,8 @@ import {
   SessionSupervisor,
   type PreparedSession,
 } from "./SessionSupervisor.ts";
-import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./SessionRegistry.ts";
+import type { ManagedSession, PromptOptions, SessionSpec } from "./SessionRegistry.ts";
+import { PtyError } from "./SessionRegistry.ts";
 import { errorMessage } from "../error-message.ts";
 import { isSameUserPeer, socketFd } from "../peer-credentials.ts";
 import {
@@ -51,7 +52,7 @@ import {
   AgentSessionTable,
   type AgentSessionRecord,
 } from "../agent-session.ts";
-import { layoutRefs } from "../layout.ts";
+import { layoutRefs, OwnerJsonText } from "../layout.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
 
 /**
@@ -210,7 +211,7 @@ export interface AttachHostService {
     text: string,
     options?: PromptOptions,
   ) => Effect.Effect<void, PtyError>;
-  readonly message: (id: string, message: JsonValue) => Effect.Effect<void, PtyError>;
+  readonly message: (id: string, message: OwnerJsonText) => Effect.Effect<void, PtyError>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly capture: (id: string) => Effect.Effect<string, PtyError>;
@@ -556,27 +557,59 @@ export const makeAttachHost = <
           data: typeof data === "string" ? new TextEncoder().encode(data) : data,
         }),
       prompt: (id, text, options) =>
-        supervisor.handle({
-          _tag: "session.message",
-          session: id,
-          message: { _tag: "agent.prompt", text, ...options },
+        Effect.gen(function* () {
+          const message = yield* S.decodeEffect(OwnerJsonText)({
+            _tag: "agent.prompt",
+            text,
+            ...options,
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new PtyError({ operation: "prompt", message: errorMessage(error) }),
+            ),
+          );
+          yield* supervisor.handle({
+            _tag: "session.message",
+            session: id,
+            message,
+          });
         }),
       message: (id, message) =>
         supervisor.handle({ _tag: "session.message", session: id, message }),
       interrupt: (id, reason) =>
-        supervisor.handle({
-          _tag: "session.message",
-          session: id,
-          message:
+        Effect.gen(function* () {
+          const message = yield* S.decodeEffect(OwnerJsonText)(
             reason === undefined
               ? { _tag: "agent.interrupt" }
               : { _tag: "agent.interrupt", reason },
+          ).pipe(
+            Effect.mapError(
+              (error) =>
+                new PtyError({ operation: "interrupt", message: errorMessage(error) }),
+            ),
+          );
+          yield* supervisor.handle({
+            _tag: "session.message",
+            session: id,
+            message,
+          });
         }),
       decide: (id, answer) =>
-        supervisor.handle({
-          _tag: "session.message",
-          session: id,
-          message: { _tag: "agent.permission", ...answer },
+        Effect.gen(function* () {
+          const message = yield* S.decodeEffect(OwnerJsonText)({
+            _tag: "agent.permission",
+            ...answer,
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new PtyError({ operation: "decide", message: errorMessage(error) }),
+            ),
+          );
+          yield* supervisor.handle({
+            _tag: "session.message",
+            session: id,
+            message,
+          });
         }),
       capture: supervisor.capture,
       runOnClient,

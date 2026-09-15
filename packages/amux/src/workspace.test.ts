@@ -7,6 +7,7 @@ import {
   parseWorkspace,
   parseWorkspaceCommandContext,
   parseWorkspaceJson,
+  WorkspaceSnapshotJson,
   viewportSizeForCommand,
   workspaceFromSession,
   workspaceSession,
@@ -15,7 +16,7 @@ import {
 } from "./workspace.ts";
 import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import { nodePath } from "./effect/node-path.ts";
-import { layoutPanes, makeLayout, DescriptorSchema } from "./layout.ts";
+import { layoutPanes, makeLayout, DescriptorSchema, encodeLayout, OwnerJsonText } from "./layout.ts";
 import { defaultTilingAlgorithm, defaultTilingMethods } from "./tiling-algorithm-default.ts";
 import { tilingAlgorithmFromMethods } from "./tiling-algorithm.ts";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
@@ -26,6 +27,13 @@ import { definePaneType } from "./pane-descriptors.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
+
+/** Build descriptor JSON text the way an owner Schema encodes it. */
+const descriptorText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
+
+/** Plugin `result.set` / session firstMessage JSON text; nested core results pass through. */
+const asResult = (result: WorkspaceMutation["result"] | string | undefined) =>
+  typeof result === "string" ? S.encodeSync(OwnerJsonText)(result) : result;
 import { niriTilingAlgorithm, niriTilingMethods } from "../../plugin-niri/src/niri.ts";
 import { preparePluginCommandApply, definePluginAction } from "./effect/WorkspaceTransaction.ts";
 import { PluginBehaviour } from "./plugin-behaviour.ts";
@@ -829,7 +837,7 @@ test("pane.float moves the focused pane between the planes and back", () => {
 test("a window with a float survives the trip to an attached client", () => {
   const adopted = run(workspaceFromSession(twoPaneSession()));
   const floated = applyWorkspaceCommand(adopted, command("pane.float"), context).snapshot;
-  const received = run(parseWorkspaceJson(JSON.stringify(floated)));
+  const received = run(parseWorkspaceJson(S.encodeSync(WorkspaceSnapshotJson)(floated)));
   expect(received.spaces[0]!.windows[0]!.layout).toEqual(floated.spaces[0]!.windows[0]!.layout);
 });
 
@@ -855,7 +863,7 @@ test("a window with a container layout survives the trip to an attached client",
     },
     focus: a!.id,
   });
-  const received = run(parseWorkspaceJson(JSON.stringify(adopted)));
+  const received = run(parseWorkspaceJson(S.encodeSync(WorkspaceSnapshotJson)(adopted)));
   expect(received.spaces[0]!.windows[0]!.layout).toEqual(window.layout);
 });
 
@@ -904,12 +912,12 @@ test("a sessionless plugin pane survives the wire and the save round trip", () =
   pane.content = {
     kind: "plugin",
     type: "amux.editor",
-    descriptor: { file: "/work/note.txt" },
+    descriptor: descriptorText({ file: "/work/note.txt" }),
   };
   target.sessions = target.sessions.filter((agent) => agent.id !== orphan);
   const expected = target.layout;
 
-  const received = run(parseWorkspaceJson(JSON.stringify(withEditor)));
+  const received = run(parseWorkspaceJson(S.encodeSync(WorkspaceSnapshotJson)(withEditor)));
   expect(received.spaces[0]!.windows[0]!.layout).toEqual(expected);
 
   const reloaded = run(workspaceFromSession(run(workspaceSession(withEditor, base("null")))));
@@ -928,7 +936,7 @@ test("pane.set-descriptor rewrites a plugin pane's descriptor and keeps placemen
   const target = withEditor.spaces[0]!.windows[0]!;
   const pane = layoutPanes(target.layout.root)[1]!;
   const orphan = pane.content.session;
-  pane.content = { kind: "plugin", type: "amux.editor", descriptor: {} };
+  pane.content = { kind: "plugin", type: "amux.editor", descriptor: "{}" };
   target.sessions = target.sessions.filter((agent) => agent.id !== orphan);
   const focused = target.state.focus;
 
@@ -936,7 +944,7 @@ test("pane.set-descriptor rewrites a plugin pane's descriptor and keeps placemen
     withEditor,
     command("pane.set-descriptor", {
       pane: pane.id,
-      descriptor: { file: "/work/note.txt" },
+      descriptor: descriptorText({ file: "/work/note.txt" }),
     }),
     context,
   ).snapshot;
@@ -945,7 +953,7 @@ test("pane.set-descriptor rewrites a plugin pane's descriptor and keeps placemen
   expect(updatedPane.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: { file: "/work/note.txt" },
+    descriptor: descriptorText({ file: "/work/note.txt" }),
   });
   // Placement, focus and the sibling pane are untouched.
   expect(updatedPane.id).toBe(pane.id);
@@ -963,21 +971,21 @@ test("pane.set-descriptor targets the focused pane when no pane is named", () =>
   const target = withEditor.spaces[0]!.windows[0]!;
   const pane = layoutPanes(target.layout.root)[1]!;
   const orphan = pane.content.session;
-  pane.content = { kind: "plugin", type: "amux.editor", descriptor: {} };
+  pane.content = { kind: "plugin", type: "amux.editor", descriptor: "{}" };
   target.sessions = target.sessions.filter((agent) => agent.id !== orphan);
   // The split focuses the newcomer, so an unnamed target addresses it.
   expect(target.state.focus).toBe(pane.id);
 
   const updated = applyWorkspaceCommand(
     withEditor,
-    command("pane.set-descriptor", { descriptor: { file: "focused.txt" } }),
+    command("pane.set-descriptor", { descriptor: descriptorText({ file: "focused.txt" }) }),
     context,
   ).snapshot;
   const updatedPane = layoutPanes(updated.spaces[0]!.windows[0]!.layout.root)[1]!;
   expect(updatedPane.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: { file: "focused.txt" },
+    descriptor: descriptorText({ file: "focused.txt" }),
   });
 });
 
@@ -985,7 +993,10 @@ test("pane.open-plugin creates a sessionless plugin pane and reports its pane id
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   const opened = applyWorkspaceCommand(
     adopted,
-    command("pane.open-plugin", { type: "amux.editor", descriptor: { file: "/work/note.txt" } }),
+    command("pane.open-plugin", {
+      type: "amux.editor",
+      descriptor: descriptorText({ file: "/work/note.txt" }),
+    }),
     context,
     editorPlugins,
   );
@@ -996,19 +1007,19 @@ test("pane.open-plugin creates a sessionless plugin pane and reports its pane id
   expect(editor.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: { file: "/work/note.txt" },
+    descriptor: descriptorText({ file: "/work/note.txt" }),
   });
   // No backend: no session is added, and the newcomer has focus.
   expect(window.sessions).toHaveLength(1);
   expect(window.state.focus).toBe(editor.id);
-  expect(opened.result).toEqual({ pane: editor.id });
+  expect(asResult(opened.result)).toEqual({ pane: editor.id });
 });
 
 test("pane.open-plugin creates no spawn action", () => {
   const adopted = run(workspaceFromSession(base(singlePaneLayout)));
   const opened = applyWorkspaceCommand(
     adopted,
-    command("pane.open-plugin", { type: "amux.editor", descriptor: {} }),
+    command("pane.open-plugin", { type: "amux.editor", descriptor: "{}" }),
     context,
     editorPlugins,
   );
@@ -1021,10 +1032,10 @@ test("a daemon plugin can place a sessionless pane through the neutral capabilit
   const opened = applyWorkspaceCommand(adopted, command("editor.open"), context, editorPlugins);
   const window = opened.snapshot.spaces[0]!.windows[0]!;
   const editor = layoutPanes(window.layout.root)[1]!;
-  expect(editor.content).toEqual({ kind: "plugin", type: "amux.editor", descriptor: {} });
+  expect(editor.content).toEqual({ kind: "plugin", type: "amux.editor", descriptor: "{}" });
   expect(window.sessions).toHaveLength(1);
   expect(opened.actions).toEqual([]);
-  expect(opened.result).toEqual({ pane: editor.id });
+  expect(asResult(opened.result)).toEqual({ pane: editor.id });
 });
 
 test("editor.open from a calling pane replaces it and keeps the displaced PTY alive", () => {
@@ -1043,7 +1054,7 @@ test("editor.open from a calling pane replaces it and keeps the displaced PTY al
   expect(panes[0]!.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: {},
+    descriptor: "{}",
     displaced: shellId,
   });
   expect(window.sessions).toHaveLength(1);
@@ -1052,7 +1063,7 @@ test("editor.open from a calling pane replaces it and keeps the displaced PTY al
   expect(window.state.focus).toBe("pane-a");
   expect(window.layout.focus).toBe("pane-a");
   expect(opened.actions).toEqual([]);
-  expect(opened.result).toEqual({ pane: "pane-a" });
+  expect(asResult(opened.result)).toEqual({ pane: "pane-a" });
 });
 
 test("editor.open replace of a non-focused pane keeps layout.focus in sync", () => {
@@ -1072,7 +1083,7 @@ test("editor.open replace of a non-focused pane keeps layout.focus in sync", () 
   expect(layoutPanes(window.layout.root).find((pane) => pane.id === "pane-b")!.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: {},
+    descriptor: "{}",
     displaced: "agent-b",
   });
 });
@@ -1097,7 +1108,7 @@ test("exiting a displaced session clears the keepalive instead of poisoning the 
   expect(layoutPanes(window.layout.root)[0]!.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: {},
+    descriptor: "{}",
   });
   expect(window.sessions[0]!.exited).toBe(true);
   expect(run(parseWorkspace(exited))).toEqual(exited);
@@ -1116,16 +1127,16 @@ test("reloading a workspace keeps a live displaced PTY on the roster", () => {
   const window = opened.spaces[0]!.windows[0]!;
   const again = run(
     workspaceFromSession({
-      ...base(JSON.stringify(window.layout)),
+      ...base(run(encodeLayout(window.layout))),
       spaces: [
         {
-          ...base(JSON.stringify(window.layout)).spaces[0]!,
+          ...base(run(encodeLayout(window.layout))).spaces[0]!,
           windows: [
             {
               number: 1,
               name: null,
               sessions: window.sessions,
-              layout: JSON.stringify(window.layout),
+              layout: run(encodeLayout(window.layout)),
             },
           ],
         },
@@ -1137,7 +1148,7 @@ test("reloading a workspace keeps a live displaced PTY on the roster", () => {
   expect(layoutPanes(again.spaces[0]!.windows[0]!.layout.root)[0]!.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: {},
+    descriptor: "{}",
     displaced: "agent-a",
   });
 });
@@ -1724,7 +1735,7 @@ test("agent.permission carries the answer to the session that asked", () => {
   expect(answered.actions).toEqual([
     {
       _tag: "agent.permission",
-      payload: {
+      payload: descriptorText({
         _tag: "agent.permission",
         agent: "agent-7",
         answer: {
@@ -1732,7 +1743,7 @@ test("agent.permission carries the answer to the session that asked", () => {
           decision: "reject",
           feedback: "not that file",
         },
-      },
+      }),
     },
   ]);
 
@@ -1767,12 +1778,12 @@ test("agent.new creates an agent session without pushing a prompt through core",
   );
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.sessions.at(-1)!;
   const pane = mutation.snapshot.spaces[0]!.windows[0]!.layout.focus!;
-  expect(mutation.result).toEqual({ session: agent.id, pane });
+  expect(asResult(mutation.result)).toEqual({ session: agent.id, pane });
   expect(agent.kind).toBe("component");
   expect(agent.cmd).toBeUndefined();
   expect(agent.provider).toBe("native");
   expect(agent.declaredAgent).toBe("native");
-  expect(agent.firstMessage).toEqual({ _tag: "agent.prompt", text: "Inspect this" });
+  expect(asResult(agent.firstMessage)).toEqual({ _tag: "agent.prompt", text: "Inspect this" });
   expect(mutation.actions).toEqual([{ _tag: "spawn", agent, pane }]);
 });
 
@@ -1818,12 +1829,12 @@ test("agent.new from a calling pane replaces it and keeps the displaced PTY", ()
   expect(panes[0]!.content).toEqual({
     kind: "plugin",
     type: "test",
-    descriptor: {},
+    descriptor: "{}",
     session: agent.id,
     displaced: "agent-a",
   });
   expect(window.sessions.some((session) => session.id === "agent-a" && !session.exited)).toBe(true);
-  expect(mutation.result).toEqual({ session: agent.id, pane: "pane-a" });
+  expect(asResult(mutation.result)).toEqual({ session: agent.id, pane: "pane-a" });
   expect(mutation.actions).toEqual([{ _tag: "spawn", agent, pane: "pane-a" }]);
 });
 
@@ -1853,7 +1864,7 @@ test("chained agent.new replace keeps the original shell and reaps the middle ag
   expect(panes[0]!.content).toEqual({
     kind: "plugin",
     type: "test",
-    descriptor: {},
+    descriptor: "{}",
     session: latest.id,
     displaced: "agent-a",
   });
@@ -2014,7 +2025,7 @@ test("agent.list and agent.get report agents with their home and pane", () => {
   const adopted = run(workspaceFromSession(wideBase()));
   const list = applyWorkspaceCommand(adopted, command("agent.list"), context, agentPlugins);
   expect(list.changed).toBe(false);
-  expect(list.result).toEqual([
+  expect(asResult(list.result)).toEqual([
     expect.objectContaining({
       id: "agent-a",
       space: "space-a",
@@ -2031,7 +2042,7 @@ test("agent.list and agent.get report agents with their home and pane", () => {
     context,
     agentPlugins,
   );
-  expect(get.result).toEqual(
+  expect(asResult(get.result)).toEqual(
     expect.objectContaining({ id: "agent-b2", space: "space-b", window: 1, pane: "pane-b2" }),
   );
   const missing = applyWorkspaceCommand(
@@ -2040,7 +2051,7 @@ test("agent.list and agent.get report agents with their home and pane", () => {
     context,
     agentPlugins,
   );
-  expect(missing.result).toBeNull();
+  expect(asResult(missing.result)).toBeNull();
 });
 
 test("pane.current with a calling pane resolves the caller, not the focused pane", () => {
@@ -2202,7 +2213,7 @@ test("unknown pane type is rejected", () => {
   expect(() =>
     applyWorkspaceCommand(
       adopted,
-      command("pane.open-plugin", { type: "missing.pane", descriptor: {} }),
+      command("pane.open-plugin", { type: "missing.pane", descriptor: "{}" }),
       context,
       editorPlugins,
     ),
@@ -2287,7 +2298,7 @@ const malformedPaneProbe = defineDaemonCommand({
           mode: "split" as const,
           pane: "not-a-pane",
           type: "amux.editor",
-          descriptor: {},
+          descriptor: "{}",
         },
       ]),
     ),
@@ -2307,7 +2318,7 @@ const unregisteredActionProbe = defineDaemonCommand({
   resources: () => [],
   reduce: ({ build }) =>
     Effect.succeed(
-      build.answer([{ _tag: "action.push" as const, action: { _tag: "not.registered" } }]),
+      build.answer([{ _tag: "action.push" as const, action: '{"_tag":"not.registered"}' }]),
     ),
 });
 
@@ -2324,7 +2335,7 @@ const noResultProbe = defineDaemonCommand({
   meta: probeMeta,
   resources: () => [],
   reduce: ({ build }) =>
-    Effect.succeed(build.answer([{ _tag: "result.set" as const, result: { ok: true } }])),
+    Effect.succeed(build.answer([{ _tag: "result.set" as const, result: '{"ok":true}' }])),
 });
 
 test("result.set on a command with no declared result is rejected", () => {
@@ -2348,7 +2359,7 @@ const unknownProviderProbe = defineDaemonCommand({
           target: { space: "space-a", window: 1 },
           dir: "/tmp",
           provider: "native",
-          firstMessage: { _tag: "agent.prompt", text: "hi" },
+          firstMessage: '{"_tag":"agent.prompt","text":"hi"}',
         },
       ]),
     ),
@@ -2397,7 +2408,7 @@ test("action.push payload field named ref is not treated specially", () => {
   if (queued === undefined || !("payload" in queued)) {
     throw new Error("expected queued plugin action");
   }
-  const payload = S.decodeUnknownSync(GitRefAction)(queued.payload);
+  const payload = S.decodeSync(S.fromJsonString(GitRefAction))(queued.payload);
   expect(payload.ref).toBe("main");
 });
 
@@ -2411,7 +2422,7 @@ test("agent.new result ids match the created session and pane", () => {
   );
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.sessions.at(-1)!;
   const pane = mutation.snapshot.spaces[0]!.windows[0]!.layout.focus!;
-  expect(mutation.result).toEqual({ session: agent.id, pane });
+  expect(asResult(mutation.result)).toEqual({ session: agent.id, pane });
 });
 
 test("editor.open result pane matches the created pane", () => {
@@ -2423,5 +2434,5 @@ test("editor.open result pane matches the created pane", () => {
     editorPlugins,
   );
   const pane = mutation.snapshot.spaces[0]!.windows[0]!.layout.focus!;
-  expect(mutation.result).toEqual({ pane });
+  expect(asResult(mutation.result)).toEqual({ pane });
 });

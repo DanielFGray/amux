@@ -201,11 +201,11 @@ testEffect(
       );
       expect(answer.changes.length).toBeGreaterThan(0);
 
-      const checked = yield* behaviour.checkDescriptor("probe.pane", { label: "hi" });
-      expect(checked).toEqual({ label: "hi" });
+      const checked = yield* behaviour.checkDescriptor("probe.pane", '{"label":"hi"}');
+      expect(checked).toEqual('{"label":"hi"}');
 
       yield* behaviour
-        .runAction({ _tag: "probe.ping", payload: { n: 3 } })
+        .runAction({ _tag: "probe.ping", payload: '{"n":3}' })
         .pipe(Effect.provideService(DaemonSessions, idleSessions));
 
       const sessionResult = yield* behaviour
@@ -372,7 +372,7 @@ testClockEffect("reduce and descriptor check keep their call-site time limits", 
       paneTypes: [
         {
           type: hangPane.type,
-          check: () => Effect.sleep(Duration.minutes(1)).pipe(Effect.as({})),
+          check: () => Effect.sleep(Duration.minutes(1)).pipe(Effect.as("{}")),
         },
       ],
       reduce: () => Effect.succeed({ changes: [] }),
@@ -392,7 +392,7 @@ testClockEffect("reduce and descriptor check keep their call-site time limits", 
     expect(Exit.isFailure(yield* Fiber.join(reduceFiber))).toBe(true);
 
     const checkFiber = yield* behaviour
-      .checkDescriptor("probe.hang-pane", {})
+      .checkDescriptor("probe.hang-pane", "{}")
       .pipe(
         Effect.timeout(Duration.millis(PLUGIN_DESCRIPTOR_CHECK_TIMEOUT_MS)),
         Effect.exit,
@@ -548,7 +548,7 @@ testEffect("bindPluginBehaviour fixes client and revision across slot changes", 
     yield* SubscriptionRef.set(slot, Option.some(second));
 
     yield* binding.reduce(runtimeCommand("probe.x", {}), context, reads);
-    yield* binding.runAction({ _tag: "a", payload: null });
+    yield* binding.runAction({ _tag: "a", payload: "null" });
     expect(calls).toEqual([
       { id: "first", revision: 3 },
       { id: "first", revision: 3 },
@@ -576,7 +576,7 @@ testEffect("bindPluginBehaviour on an empty slot fails every method as not ready
         expect(error.message).toBe("plugin host not ready");
       }
     }
-    const action = yield* Effect.exit(binding.runAction({ _tag: "a", payload: null }));
+    const action = yield* Effect.exit(binding.runAction({ _tag: "a", payload: "null" }));
     expect(action._tag).toBe("Failure");
     if (action._tag === "Failure") {
       const error = Cause.squash(action.cause);

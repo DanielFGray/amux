@@ -39,7 +39,7 @@ test("a multi-column niri scroll root round-trips through encode and decode", ()
     algorithmVersion: 1,
   });
   expect(original.root?.type).toBe("container");
-  const decoded = run(decodeLayout(encodeLayout(original)));
+  const decoded = run(decodeLayout(run(encodeLayout(original))));
   expect(decoded).toEqual(original);
   expect(decoded.algorithmId).toBe("niri");
 });

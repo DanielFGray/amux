@@ -2,7 +2,7 @@ import { Cause, Context, Effect, Exit, JsonSchema, Option, Schema as S, SchemaIs
 
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
-import { LAYOUT_PRESETS, DescriptorSchema } from "./layout.ts";
+import { LAYOUT_PRESETS, DescriptorSchema, OwnerJsonText } from "./layout.ts";
 import { creationResultSchema } from "./creation-result.ts";
 import {
   PaneCurrentResultSchema,
@@ -798,7 +798,7 @@ const SessionKill = define(
  * orders and routes it; interpreting it is the component's responsibility. */
 const SessionMessage = define(
   "session.message",
-  { target: S.String, message: JsonValueSchema },
+  { target: S.String, message: OwnerJsonText },
   {
     desc: "send a control message to a component session",
     group: "sessions",

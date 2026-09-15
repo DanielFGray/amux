@@ -15,6 +15,7 @@ import { AgentSessionRefSchema } from "../agent-session.ts";
 import { CommandError, RuntimeCommandSchema } from "../commands.ts";
 import { PluginHostLoadInputSchema } from "../config.ts";
 import { JsonValueSchema } from "../effect/AttachProtocol.ts";
+import { OwnerJsonText } from "../layout.ts";
 import { ForeignHarnessPlanResumeError } from "../foreign-harness.ts";
 import { MAX_RPC_BYTES } from "../limits.ts";
 import {
@@ -135,9 +136,9 @@ export class PluginHostRpcs extends RpcGroup.make(
     payload: {
       revision: PluginPublicationRevisionSchema,
       type: S.String,
-      descriptor: JsonValueSchema,
+      descriptor: OwnerJsonText,
     },
-    success: JsonValueSchema,
+    success: OwnerJsonText,
     error: S.Union([PluginReducerError, PluginPublicationChanged]),
   }),
   Rpc.make("RunAction", {

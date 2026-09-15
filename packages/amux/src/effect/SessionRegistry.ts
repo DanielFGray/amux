@@ -18,12 +18,13 @@ import { isTerminalSize, MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import {
   AttachFrameAccumulator,
   decodeAttachFrames,
+  encodeAttachFrame,
   type AgentEventPayload,
   AgentDelta,
   type AttachFrame,
-  type JsonValue,
   type PermissionAnswer,
 } from "./AttachProtocol.ts";
+import { OwnerJsonText } from "../layout.ts";
 import { captureRootRuntime, type RootRuntimeContext } from "../env.ts";
 import { formatStderrTail, makeStderrTail } from "../stderr-tail.ts";
 
@@ -88,7 +89,7 @@ export interface ManagedSession {
   readonly prompt: (text: string, options?: PromptOptions) => Effect.Effect<void, PtyError>;
   readonly decide: (answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly interrupt: (reason?: string) => Effect.Effect<void, PtyError>;
-  readonly message: (message: JsonValue) => Effect.Effect<void, PtyError>;
+  readonly message: (message: OwnerJsonText) => Effect.Effect<void, PtyError>;
   readonly resize: (cols: number, rows: number) => Effect.Effect<void, PtyError>;
   readonly kill: Effect.Effect<void, PtyError>;
   /** What is in the foreground of this session's tty right now. Only the
@@ -139,7 +140,7 @@ interface Backend {
   /** Resolves once the backend has fully terminated, with its exit code. */
   readonly wait: Promise<number | null>;
   write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>;
-  message(message: JsonValue): Promise<void>;
+  message(message: OwnerJsonText): Promise<void>;
   resize(cols: number, rows: number): void;
   kill(): Promise<void>;
   close(): void;
@@ -346,7 +347,7 @@ function componentBackend(spec: SessionSpec, runtime: RootRuntimeContext): Backe
   const send = (frame: AttachFrame) =>
     closed
       ? Promise.resolve()
-      : Promise.resolve(child.stdin.write(`${JSON.stringify(frame)}\n`)).then(() => undefined);
+      : Promise.resolve(child.stdin.write(encodeAttachFrame(frame))).then(() => undefined);
   const wait = child.exited.then((code) => {
     closed = true;
     return killed ? null : code;
@@ -530,24 +531,39 @@ export class SessionRegistry extends Context.Service<SessionRegistry>()("Session
               ),
             ),
           prompt: (text, options) =>
-            Effect.tryPromise({
-              try: () => backend.message({ _tag: "agent.prompt", text, ...options }),
-              catch: (error) => asPtyError("prompt", String(error)),
+            Effect.gen(function* () {
+              const message = yield* S.decodeEffect(OwnerJsonText)({
+                _tag: "agent.prompt",
+                text,
+                ...options,
+              }).pipe(Effect.mapError((error) => asPtyError("prompt", String(error))));
+              yield* Effect.tryPromise({
+                try: () => backend.message(message),
+                catch: (error) => asPtyError("prompt", String(error)),
+              });
             }),
           decide: (answer) =>
-            Effect.tryPromise({
-              try: () => backend.message({ _tag: "agent.permission", ...answer }),
-              catch: (error) => asPtyError("decide", String(error)),
+            Effect.gen(function* () {
+              const message = yield* S.decodeEffect(OwnerJsonText)({
+                _tag: "agent.permission",
+                ...answer,
+              }).pipe(Effect.mapError((error) => asPtyError("decide", String(error))));
+              yield* Effect.tryPromise({
+                try: () => backend.message(message),
+                catch: (error) => asPtyError("decide", String(error)),
+              });
             }),
           interrupt: (reason) =>
-            Effect.tryPromise({
-              try: () =>
-                backend.message(
-                  reason === undefined
-                    ? { _tag: "agent.interrupt" }
-                    : { _tag: "agent.interrupt", reason },
-                ),
-              catch: (error) => asPtyError("interrupt", String(error)),
+            Effect.gen(function* () {
+              const message = yield* S.decodeEffect(OwnerJsonText)(
+                reason === undefined
+                  ? { _tag: "agent.interrupt" }
+                  : { _tag: "agent.interrupt", reason },
+              ).pipe(Effect.mapError((error) => asPtyError("interrupt", String(error))));
+              yield* Effect.tryPromise({
+                try: () => backend.message(message),
+                catch: (error) => asPtyError("interrupt", String(error)),
+              });
             }),
           message: (message) =>
             Effect.tryPromise({

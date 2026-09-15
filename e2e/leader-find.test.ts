@@ -10,9 +10,11 @@
  */
 import { test, expect, afterAll } from "bun:test";
 import { join } from "node:path";
-import { launch, E2E_TIMEOUT, defaultE2ePlugins, type App } from "./app.ts";
+import { launch, E2E_TIMEOUT, LEADER, defaultE2ePlugins, type App } from "./app.ts";
 
 const REPO = join(import.meta.dir, "..");
+/** Editor mapleader (space). Distinct from e2e `LEADER`, which is the mux prefix. */
+const MAPLEADER = " ";
 
 let app: App | undefined;
 afterAll(async () => {
@@ -37,14 +39,14 @@ test(
     await app.press("bun packages/amux/src/cli.ts editor.open\r");
     await app.until(() => app!.screen().includes("[No Name]"), "editor open", 8000);
     await app.press("\x1b");
-    await Bun.sleep(100);
-    await app.press(" ");
-    await Bun.sleep(200);
-    expect(app.screen().includes("find file in project")).toBe(true);
+    await app.press(MAPLEADER);
+    await app.until(
+      () => app!.screen().includes("find file in project"),
+      "find-files which-key after leader",
+    );
     await app.press("/");
-    await Bun.sleep(800);
+    await app.until(() => app!.screen().includes("find files"), "find-files picker");
     let screen = app.screen();
-    expect(screen.includes("find files")).toBe(true);
     expect(screen.includes("↑↓ select")).toBe(true);
     // Empty query must list frecency hits — not a stuck "No matches" paint.
     // Stale ModalPicker `view` props used to keep the empty first paint while
@@ -52,9 +54,11 @@ test(
     expect(screen.includes("No matches.")).toBe(false);
     // Filter input must own typing — not the editor under the overlay.
     await app.press("readme");
-    await Bun.sleep(800);
+    await app.until(
+      () => app!.screen().toLowerCase().includes("readme"),
+      "find-files filter results",
+    );
     screen = app.screen();
-    expect(screen.toLowerCase().includes("readme")).toBe(true);
     expect(screen.includes("No matches.")).toBe(false);
     // Editor should not have entered insert / typed into the buffer.
     expect(screen.includes("-- INSERT --") || screen.includes("readme\n")).toBe(false);
@@ -79,15 +83,33 @@ test(
     await app.press("bun packages/amux/src/cli.ts editor.open\r");
     await app.until(() => app!.screen().includes("[No Name]"), "editor open", 8000);
     await app.press("\x1b");
-    await Bun.sleep(100);
-    await app.press(" ");
-    await Bun.sleep(200);
-    expect(app.screen().includes("find sibling file")).toBe(true);
+    await app.press(MAPLEADER);
+    await app.until(
+      () => app!.screen().includes("find sibling file"),
+      "sibling which-key after leader",
+    );
     await app.press(".");
-    await Bun.sleep(500);
-    const screen = app.screen();
-    // Untitled buffer has no path — soft error, not a silent no-op.
-    expect(screen.toLowerCase().includes("no file") || screen.includes("sibling")).toBe(true);
+    // Untitled buffer has no path — soft error to the console, not a silent no-op.
+    await app.until(() => /\d+ err/.test(app!.screen()), "the error marker after sibling find");
+    // Console is mux `<prefix>\`` (e2e LEADER is ctrl+s), not editor mapleader.
+    await app.press(`${LEADER}\``);
+    await app.until(
+      () => {
+        const screen = app!.screen().toLowerCase();
+        // OpenTUI console can split the message on the pane border
+        // (`'no file —│open a buffer first'`), so match either half.
+        return screen.includes("no file") || screen.includes("open a buffer");
+      },
+      "sibling find error in the console",
+    );
+    await app.press(`${LEADER}\``);
+    await app.until(
+      () => {
+        const screen = app!.screen().toLowerCase();
+        return !screen.includes("no file") && !screen.includes("open a buffer");
+      },
+      "the console to close",
+    );
   },
   E2E_TIMEOUT,
 );

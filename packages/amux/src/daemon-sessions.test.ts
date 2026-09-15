@@ -5,12 +5,13 @@ import { DaemonSessions, type DaemonSessionsService } from "./daemon-sessions.ts
 import { defineDaemonCommand, definePluginAction } from "./api.ts";
 import { CommandError } from "./commands.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
+import type { OwnerJsonText } from "./layout.ts";
+import { encodeOwner } from "./workspace-change-builders.ts";
 
 type Tracked = {
   readonly prompted: readonly { readonly target: string; readonly text: string }[];
   readonly captured: readonly string[];
-  readonly messages: readonly { readonly id: string; readonly message: JsonValue }[];
+  readonly messages: readonly { readonly id: string; readonly message: OwnerJsonText }[];
 };
 
 const emptySnapshot: WorkspaceSnapshot = {
@@ -68,13 +69,15 @@ const ProbeMessage = S.TaggedStruct("probe.message", {
   body: S.String,
 });
 
+const encodeProbeMessage = encodeOwner(ProbeMessage, "probe.message");
+
 const probeMessageAction = definePluginAction({
   tag: "probe.message",
   payload: ProbeMessage,
   execute: (action) =>
     Effect.gen(function* () {
       const sessions = yield* DaemonSessions;
-      yield* sessions.message(action.agent, { body: action.body });
+      yield* sessions.message(action.agent, yield* encodeProbeMessage(action));
     }),
 });
 
@@ -105,13 +108,18 @@ testEffect("plugin action reaches message through DaemonSessions", () =>
       captured: [],
       messages: [],
     });
+    const payload = yield* encodeProbeMessage({
+      _tag: "probe.message",
+      agent: "a1",
+      body: "hi",
+    });
     yield* probeMessageAction
       .run({
         _tag: "probe.message",
-        payload: { _tag: "probe.message", agent: "a1", body: "hi" },
+        payload,
       })
       .pipe(Effect.provide(trackingLayer(state)));
     const tracked = yield* Ref.get(state);
-    expect(tracked.messages).toEqual([{ id: "a1", message: { body: "hi" } }]);
+    expect(tracked.messages).toEqual([{ id: "a1", message: payload }]);
   }),
 );

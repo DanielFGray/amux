@@ -7,7 +7,7 @@
  */
 import { Effect, Schema as S } from "effect";
 import { errorMessage } from "./error-message.ts";
-import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
+import { type OwnerJsonText } from "./layout.ts";
 import {
   PluginReducerError,
   type WorkspaceChange,
@@ -18,14 +18,13 @@ import {
 import { makePaneId, type NewPaneId, type PaneId, type SessionId } from "./workspace-ids.ts";
 
 /**
- * Encode a typed value through its Schema to wire JsonValue. Encode failure
+ * Encode a typed value through its Schema to owner JSON text. Encode failure
  * fails the reducer Effect — never decode-then-encode over unknown input.
  */
 export const encodeOwner =
   <A>(schema: S.Codec<A>, label: string) =>
-  (value: A): Effect.Effect<JsonValue, PluginReducerError> =>
-    S.encodeEffect(schema)(value).pipe(
-      Effect.flatMap((encoded) => S.decodeUnknownEffect(JsonValueSchema)(encoded)),
+  (value: A): Effect.Effect<OwnerJsonText, PluginReducerError> =>
+    S.encodeEffect(S.fromJsonString(schema))(value).pipe(
       Effect.mapError(
         (error) =>
           new PluginReducerError({
@@ -36,19 +35,19 @@ export const encodeOwner =
 
 /**
  * firstMessage wire payload produced only by a session-provider handle.
- * A hand-built JsonValue is not assignable.
+ * A hand-built string is not assignable.
  */
 export class EncodedFirstMessage {
   readonly _tag = "EncodedFirstMessage" as const;
-  constructor(readonly wire: JsonValue) {}
+  constructor(readonly wire: OwnerJsonText) {}
 }
 
-export const encodedFirstMessage = (wire: JsonValue): EncodedFirstMessage =>
+export const encodedFirstMessage = (wire: OwnerJsonText): EncodedFirstMessage =>
   new EncodedFirstMessage(wire);
 
 export type WorkspaceChangeBuildOptions<ResultType = unknown> = {
   readonly reads: WorkspaceReadPackage;
-  readonly encodeResult?: (value: ResultType) => Effect.Effect<JsonValue, PluginReducerError>;
+  readonly encodeResult?: (value: ResultType) => Effect.Effect<OwnerJsonText, PluginReducerError>;
 };
 
 /**

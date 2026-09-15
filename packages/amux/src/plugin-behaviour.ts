@@ -15,6 +15,7 @@ import type { DaemonSessionsService } from "./daemon-sessions.ts";
 import { DaemonSessions } from "./daemon-sessions.ts";
 import { errorMessage } from "./error-message.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
+import { OwnerJsonText } from "./layout.ts";
 import {
   ForeignHarnessPlanResumeError,
   type ForeignHarnessAdapterLookup,
@@ -30,7 +31,6 @@ import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import { TilingAnswerSchema, type TilingAnswer, type TilingOperation } from "./tiling-operation.ts";
 import {
   PluginReducerError,
-  WorkspaceReducerAnswerSchema,
   type QueuedPluginAction,
   type WorkspaceReadPackage,
   type WorkspaceReducerAnswer,
@@ -59,7 +59,7 @@ export class PluginPublicationChanged extends S.TaggedError<PluginPublicationCha
 
 export const QueuedPluginActionSchema = S.Struct({
   _tag: S.String,
-  payload: JsonValueSchema,
+  payload: OwnerJsonText,
 });
 
 export const PluginCommandMetaSchema = S.Struct({
@@ -141,8 +141,8 @@ export interface PluginBehaviourService {
 
   readonly checkDescriptor: (
     type: string,
-    descriptor: JsonValue,
-  ) => Effect.Effect<JsonValue, PluginReducerError | PluginPublicationChanged>;
+    descriptor: OwnerJsonText,
+  ) => Effect.Effect<OwnerJsonText, PluginReducerError | PluginPublicationChanged>;
 
   readonly runAction: (
     action: QueuedPluginAction,
@@ -267,14 +267,7 @@ export const buildPluginBehaviour = (
                 : new PluginReducerError({ message: errorMessage(error) }),
             ),
           );
-        return yield* S.decodeEffect(WorkspaceReducerAnswerSchema)(answer).pipe(
-          Effect.mapError(
-            (error) =>
-              new PluginReducerError({
-                message: `reducer for '${command._tag}' returned undecodable data: ${errorMessage(error)}`,
-              }),
-          ),
-        );
+        return answer;
       }),
 
     checkDescriptor: (type, descriptor) =>

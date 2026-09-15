@@ -10,14 +10,17 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Effect, Option, Stream } from "effect";
+import { Effect, Option, Stream, Schema as S } from "effect";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { connectControl } from "./control-client.ts";
 import { command } from "./commands.ts";
+import { OwnerJsonText } from "./layout.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { waitFor } from "./test-wait.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
 import { testEffect } from "./test-effect.ts";
+
+const descriptorText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 import { ctl, run } from "./test-daemon.ts";
 
 registerCleanup();
@@ -338,7 +341,12 @@ test("pane.capture of a sessionless plugin pane needs an attached client", async
 
   const { outputs } = await ctl(daemon.id, env, (c) =>
     c.Batch({
-      values: [command("pane.open-plugin", { type: "amux.editor", descriptor: { file: "/x" } })],
+      values: [
+        command("pane.open-plugin", {
+          type: "amux.editor",
+          descriptor: descriptorText({ file: "/x" }),
+        }),
+      ],
       context,
     }),
   );

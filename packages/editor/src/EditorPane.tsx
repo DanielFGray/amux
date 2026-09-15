@@ -48,6 +48,7 @@ import { fileUriFromPath } from "@danielfgray/amux/document-uri.ts";
 import type { KeyEvent, MouseEvent } from "@opentui/core";
 import type { TextChunk } from "@opentui/core";
 import {
+  EditorDescriptor,
   EditorDescriptorOrNull,
   EditorIo,
   type EditorIoService,
@@ -891,7 +892,7 @@ function createEditorBuffer(props: EditorViewProps) {
 
       // The descriptor's file is opened on mount. Validation is at the
       // boundary, not behind a chain of `typeof` guards.
-      const descriptor = S.decodeUnknownOption(EditorDescriptorOrNull)(props.descriptor);
+      const descriptor = S.decodeOption(S.fromJsonString(EditorDescriptorOrNull))(props.descriptor);
       if (descriptor._tag === "Some" && descriptor.value !== null) {
         yield* dispatchOpen(shellOf(phaseRef), descriptor.value.file, false);
       }
@@ -1697,8 +1698,14 @@ const dispatchOpen = (
         });
       });
       if (recordDescriptor) {
+        const descriptor = yield* S.encodeEffect(S.fromJsonString(EditorDescriptor))({
+          file: result.file,
+        });
         props.run(
-          command("pane.set-descriptor", { pane: props.paneId, descriptor: { file: result.file } }),
+          command("pane.set-descriptor", {
+            pane: props.paneId,
+            descriptor,
+          }),
         );
       }
     } else {

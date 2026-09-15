@@ -10,13 +10,13 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import { Layer, Schema as S } from "effect";
 import { DaemonSessionsError } from "../daemon-sessions.ts";
-import { JsonValueSchema } from "../effect/AttachProtocol.ts";
+import { OwnerJsonText } from "../layout.ts";
 import { PromptOptionsSchema } from "../effect/SessionRegistry.ts";
 import { MAX_RPC_BYTES } from "../limits.ts";
 
 export class DaemonSessionsRpcs extends RpcGroup.make(
   Rpc.make("Message", {
-    payload: { id: S.String, message: JsonValueSchema },
+    payload: { id: S.String, message: OwnerJsonText },
     success: S.Void,
     error: DaemonSessionsError,
   }),

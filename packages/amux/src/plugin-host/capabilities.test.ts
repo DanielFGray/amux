@@ -18,9 +18,11 @@ import { registerCleanup, tempDir } from "../test-tmp.ts";
 import { waitFor } from "../test-wait.ts";
 import { serveDaemonSessions } from "./capabilities-server.ts";
 import { daemonSessionsFromCapabilitiesSocket } from "./daemon-sessions-layer.ts";
+import { OwnerJsonText } from "../layout.ts";
 
 registerCleanup();
 
+const messageText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 const captureFixture = fileURLToPath(new URL("./capture-fixture.ts", import.meta.url));
 
 const provideEnv = <A, E, R>(
@@ -106,14 +108,17 @@ test("capability client round-trips message, prompt, capture, and typed errors",
 
         yield* Effect.gen(function* () {
           const sessions = yield* DaemonSessions;
-          yield* sessions.message("s1", { kind: "ping", n: 1 });
+          const ping = messageText({ kind: "ping", n: 1 });
+          yield* sessions.message("s1", ping);
           yield* sessions.prompt("s1", "hello", { delivery: "steer" });
           const captured = yield* sessions.capture("s1");
           expect(captured).toBe("captured:s1");
         }).pipe(Effect.provide(sessionsLayer));
 
         const tracked = yield* Ref.get(state);
-        expect(tracked.messages).toEqual([{ id: "s1", message: { kind: "ping", n: 1 } }]);
+        expect(tracked.messages).toEqual([
+          { id: "s1", message: messageText({ kind: "ping", n: 1 }) },
+        ]);
         expect(tracked.prompted).toEqual([
           { target: "s1", text: "hello", options: { delivery: "steer" } },
         ]);

@@ -65,7 +65,7 @@ function contentFor(session: SessionHandle): PaneContent {
     ? {
         kind: "plugin",
         type: componentViewType(session),
-        descriptor: {},
+        descriptor: "{}",
         session: session.id,
       }
     : { kind: "pty", session: session.id };

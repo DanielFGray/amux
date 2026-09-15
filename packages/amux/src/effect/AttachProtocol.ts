@@ -1,6 +1,7 @@
 import { Result, Schema as S, SchemaAST as AST } from "effect";
 import { PermissionDecisionSchema } from "../permission.ts";
 import { errorMessage } from "../error-message.ts";
+import { OwnerJsonText } from "../layout.ts";
 import { WorkspaceCommandContextSchema } from "../workspace-command-context.ts";
 
 export const SESSION_STATE_TOPIC = "session.state";
@@ -215,7 +216,7 @@ export type PermissionAnswer = {
  * assigns no meaning to its payload; that protocol belongs to the harness. */
 const SessionMessage = S.TaggedStruct("session.message", {
   session: S.String,
-  message: JsonValueSchema,
+  message: OwnerJsonText,
 });
 
 const ErrorFrame = S.TaggedStruct("error", {
@@ -265,10 +266,14 @@ const CommandResponse = S.TaggedStruct("command.response", {
  * invocation record only. This pair carries expectedRevision and the full
  * caller context, and the reply may include a workspace snapshot — fields the
  * daemon→client direction does not use.
+ *
+ * `command` is WireCommand as {@link OwnerJsonText}: the client encodes with
+ * `S.fromJsonString(WireCommand)`, the daemon decodes once the same way.
+ * AttachProtocol only needs OwnerJsonText — no cycle with commands.ts.
  */
 const RunRequest = S.TaggedStruct("run.request", {
   id: S.String,
-  command: JsonValueSchema,
+  command: OwnerJsonText,
   expectedRevision: S.optional(S.Int),
   context: S.optional(WorkspaceCommandContextSchema),
 });

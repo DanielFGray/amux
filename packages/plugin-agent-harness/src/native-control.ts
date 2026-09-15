@@ -27,4 +27,5 @@ export const NativeControl = S.Union([
   }),
 ]);
 export type NativeControl = typeof NativeControl.Type;
-export const decodeNativeControl = S.decodeUnknownOption(NativeControl);
+/** Core carries the payload as {@link OwnerJsonText} (JSON text); decode once. */
+export const decodeNativeControl = S.decodeUnknownOption(S.fromJsonString(NativeControl));

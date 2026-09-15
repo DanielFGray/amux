@@ -11,6 +11,7 @@ import type { AgentSessionRef } from "../agent-session.ts";
 import type { CommandError, RuntimeCommand } from "../commands.ts";
 import type { PluginHostLoadInput } from "../config.ts";
 import type { JsonValue } from "../effect/AttachProtocol.ts";
+import type { OwnerJsonText } from "../layout.ts";
 import type { ForeignHarnessPlanResumeError } from "../foreign-harness.ts";
 import type {
   PluginBehaviourError,
@@ -60,8 +61,11 @@ export type PluginHostBehaviourCalls = {
   readonly CheckDescriptor: (payload: {
     readonly revision: PluginPublicationRevision;
     readonly type: string;
-    readonly descriptor: JsonValue;
-  }) => Effect.Effect<JsonValue, PluginReducerError | PluginPublicationChanged | RpcClientError>;
+    readonly descriptor: OwnerJsonText;
+  }) => Effect.Effect<
+    OwnerJsonText,
+    PluginReducerError | PluginPublicationChanged | RpcClientError
+  >;
   readonly RunAction: (payload: {
     readonly revision: PluginPublicationRevision;
     readonly action: QueuedPluginAction;

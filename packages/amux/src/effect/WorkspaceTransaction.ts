@@ -41,6 +41,7 @@ import {
 } from "../workspace-changes.ts";
 import { encodeOwner } from "../workspace-change-builders.ts";
 import { type JsonValue } from "./AttachProtocol.ts";
+import { type OwnerJsonText } from "../layout.ts";
 import { nodePath } from "./node-path.ts";
 import { COMMAND_META, isCoreCommand, type Command, type RuntimeCommand } from "../commands.ts";
 import type { PaneEntry } from "../read-model.ts";
@@ -184,7 +185,7 @@ export const definePluginAction = <A, E>(reg: {
       }),
     run: (queued) =>
       Effect.gen(function* () {
-        const decoded = yield* S.decodeUnknownEffect(reg.payload)(queued.payload).pipe(
+        const decoded = yield* S.decodeEffect(S.fromJsonString(reg.payload))(queued.payload).pipe(
           Effect.mapError(
             (error) =>
               new WorkspaceTransactionError({
@@ -232,8 +233,8 @@ export const reducePluginCommand = (
  */
 export const checkOpenPluginDescriptor = (
   type: string,
-  descriptor: JsonValue,
-): Effect.Effect<JsonValue, WorkspaceTransactionError, PluginBehaviour> =>
+  descriptor: OwnerJsonText,
+): Effect.Effect<OwnerJsonText, WorkspaceTransactionError, PluginBehaviour> =>
   Effect.gen(function* () {
     const behaviour = yield* PluginBehaviour;
     return yield* behaviour.checkDescriptor(type, descriptor).pipe(
@@ -433,7 +434,11 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
             if (cur2.closing) return;
             const next = markSessionExited(cur2.workspace, sid, code);
             if (next === cur2.workspace) return;
-            const newState = yield* workspaceSession(next, cur2.state);
+            const newState = yield* workspaceSession(next, cur2.state).pipe(
+              Effect.mapError(
+                (error) => new WorkspaceTransactionError({ message: error.message }),
+              ),
+            );
             yield* persistence.persistUntilSuccess(newState, `natural exit for '${sid}'`);
             yield* model.commitWorkspace(next, newState);
             yield* events.publishWorkspaceFrame(next);
@@ -525,7 +530,11 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                     }),
                 ),
               );
-              const candidate = yield* workspaceSession(mutation.snapshot, cur.state);
+              const candidate = yield* workspaceSession(mutation.snapshot, cur.state).pipe(
+                Effect.mapError(
+                  (error) => new WorkspaceTransactionError({ message: error.message }),
+                ),
+              );
               const worktrees = gitWorktreesFor(value, mutation.snapshot, cur.workspace);
               const prepared: PreparedSession[] = [];
               const exitsSettled = yield* Deferred.make<boolean>();

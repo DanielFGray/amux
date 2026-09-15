@@ -41,7 +41,6 @@ import type { QueuedPluginAction, WorkspaceReducerAnswer } from "../workspace-ch
 import type { ManagedSession, SessionSpec } from "./SessionRegistry.ts";
 import { defaultTilingAlgorithm, defaultTilingMethods } from "../tiling-algorithm-default.ts";
 import { tilingAlgorithmFromMethods, TilingAlgorithmError } from "../tiling-algorithm.ts";
-import { JsonValueSchema } from "./AttachProtocol.ts";
 import { PluginBehaviour, type PluginBehaviourService } from "../plugin-behaviour.ts";
 import {
   emptyPluginBehaviour,
@@ -609,7 +608,7 @@ testEffect("a maxCols layout rule elects different algorithms for narrow and wid
     const configHome = yield* fs.makeTempDirectory({ prefix: "amux-layout-rules-" });
     const amuxDir = pathSvc.join(configHome, "amux");
     yield* fs.makeDirectory(amuxDir, { recursive: true });
-    const configText = yield* S.encodeEffect(S.fromJsonString(JsonValueSchema))({
+    const configText = yield* S.encodeEffect(S.fromJsonString(S.Unknown))({
       layoutRules: [{ algorithm: "narrow", when: { maxCols: 80 } }],
       options: { "behaviour.tilingAlgorithm": "wide" },
     });
@@ -687,7 +686,7 @@ testEffect("reduce and runAction both run on the PluginBehaviour passed to run",
   const { layer } = testLayer(initial);
   const calls: string[] = [];
   const answer: WorkspaceReducerAnswer = {
-    changes: [{ _tag: "action.push", action: { _tag: "bind.act", n: 1 } }],
+    changes: [{ _tag: "action.push", action: '{"_tag":"bind.act","n":1}' }],
   };
   const binding: PluginBehaviourService = {
     declarations: Effect.succeed({
@@ -741,8 +740,8 @@ testEffect(
     const ran: QueuedPluginAction[] = [];
     const answer: WorkspaceReducerAnswer = {
       changes: [
-        { _tag: "result.set", result: { ok: true } },
-        { _tag: "action.push", action: { _tag: "fake.act", n: 1 } },
+        { _tag: "result.set", result: '{"ok":true}' },
+        { _tag: "action.push", action: '{"_tag":"fake.act","n":1}' },
       ],
     };
     const fake: PluginBehaviourService = {
@@ -786,8 +785,8 @@ testEffect(
         context,
         fake,
       );
-      expect(result.result).toEqual({ ok: true });
-      expect(ran).toEqual([{ _tag: "fake.act", payload: { _tag: "fake.act", n: 1 } }]);
+      expect(result.result).toEqual('{"ok":true}');
+      expect(ran).toEqual([{ _tag: "fake.act", payload: '{"_tag":"fake.act","n":1}' }]);
     }).pipe(Effect.provide(layer));
   },
 );
@@ -801,7 +800,7 @@ testEffect(
       const configHome = yield* fs.makeTempDirectory({ prefix: "amux-tiling-fallback-" });
       const amuxDir = pathSvc.join(configHome, "amux");
       yield* fs.makeDirectory(amuxDir, { recursive: true });
-      const configText = yield* S.encodeEffect(S.fromJsonString(JsonValueSchema))({
+      const configText = yield* S.encodeEffect(S.fromJsonString(S.Unknown))({
         options: { "behaviour.tilingAlgorithm": "boom" },
       });
       yield* fs.writeFileString(pathSvc.join(amuxDir, "config.json"), configText);

@@ -8,6 +8,9 @@ import {
   encodeAttachFrameBytes,
   type AttachFrame,
 } from "./AttachProtocol.ts";
+import { OwnerJsonText } from "../layout.ts";
+
+const controlText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 
 test("attach framing splits at newline bytes before decoding UTF-8", () => {
   const accumulator = new AttachFrameAccumulator();
@@ -118,7 +121,7 @@ test("run.request and run.response round-trip with workspace output", () => {
   const requestAbsentInput: AttachFrame = {
     _tag: "run.request",
     id: "run-1",
-    command: { _tag: "pane.zoom" },
+    command: controlText({ _tag: "pane.zoom" }),
     expectedRevision: 3,
     context: {
       size: { cols: 80, rows: 24 },
@@ -131,7 +134,7 @@ test("run.request and run.response round-trip with workspace output", () => {
   const requestWithInput: AttachFrame = {
     _tag: "run.request",
     id: "run-2",
-    command: { _tag: "pane.zoom" },
+    command: controlText({ _tag: "pane.zoom" }),
     expectedRevision: 3,
     context: {
       size: { cols: 80, rows: 24 },
@@ -217,12 +220,12 @@ test("native agent control frames round-trip without provider or transport detai
     {
       _tag: "session.message",
       session: "agent-1",
-      message: { _tag: "agent.prompt", text: "Stop after the current command." },
+      message: controlText({ _tag: "agent.prompt", text: "Stop after the current command." }),
     },
     {
       _tag: "session.message",
       session: "agent-1",
-      message: { _tag: "agent.interrupt", reason: "Human requested a pause" },
+      message: controlText({ _tag: "agent.interrupt", reason: "Human requested a pause" }),
     },
   ];
 
@@ -262,7 +265,7 @@ test("a component control message is an opaque JSON payload", () => {
   const frame: AttachFrame = {
     _tag: "session.message",
     session: "component-1",
-    message: { _tag: "example.refresh", force: true },
+    message: controlText({ _tag: "example.refresh", force: true }),
   };
 
   const decoded = decodeAttachFrames(encodeAttachFrame(frame));

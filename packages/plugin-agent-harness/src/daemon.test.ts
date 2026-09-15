@@ -1,9 +1,12 @@
 import { expect } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { agentHarnessDaemonCommands } from "./daemon.ts";
 import type { WorkspaceCommandContext, WorkspaceReadPackage } from "@danielfgray/amux";
 import { runtimeCommand } from "@danielfgray/amux";
 import { testEffect } from "@danielfgray/amux/testing";
+import { OpaqueJsonText, decodeOpaqueJsonText } from "./protocol.ts";
+
+const jt = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 
 const agentNew = agentHarnessDaemonCommands.find((entry) => entry.tag === "agent.new")!;
 const agentInterrupt = agentHarnessDaemonCommands.find((entry) => entry.tag === "agent.interrupt")!;
@@ -37,7 +40,7 @@ testEffect("agent.new emits session.add with firstMessage when a prompt is given
     expect(answer.changes[0]).toMatchObject({
       _tag: "session.add",
       provider: "native",
-      firstMessage: { _tag: "agent.prompt", text: "hello" },
+      firstMessage: jt({ _tag: "agent.prompt", text: "hello" }),
     });
     expect(answer.changes.some((change) => change._tag === "result.set")).toBe(true);
   }),
@@ -67,9 +70,12 @@ testEffect("agent.new from a calling pane replaces; --split forces a sibling", (
       mode: "replace",
     });
     expect(replace.changes.find((c) => c._tag === "session.place")).not.toHaveProperty("pane");
-    expect(replace.changes.find((c) => c._tag === "result.set")).toMatchObject({
-      result: { pane: "pane-a" },
-    });
+    expect(replace.changes.find((c) => c._tag === "result.set")).toEqual(
+      expect.objectContaining({
+        _tag: "result.set",
+        result: expect.stringContaining('"pane":"pane-a"'),
+      }),
+    );
     const split = yield* agentNew.reduce!({
       command: runtimeCommand("agent.new", { split: true }),
       context: context("pane-a"),
@@ -89,7 +95,7 @@ testEffect("agent.interrupt pushes a typed action", () =>
     expect(answer.changes).toEqual([
       {
         _tag: "action.push",
-        action: { _tag: "agent.interrupt", agent: "agent-a", reason: "stop" },
+        action: jt({ _tag: "agent.interrupt", agent: "agent-a", reason: "stop" }),
       },
     ]);
   }),
@@ -114,7 +120,7 @@ testEffect("agent.list sets the agents read package as the result", () =>
       context: context(),
       reads: { ...emptyReads(null), agents },
     });
-    expect(answer.changes).toEqual([{ _tag: "result.set", result: agents }]);
+    expect(answer.changes).toEqual([{ _tag: "result.set", result: jt(agents) }]);
   }),
 );
 

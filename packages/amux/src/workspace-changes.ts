@@ -2,14 +2,14 @@
  * Plugin workspace reducer contract: reads and changes as plain Schema data.
  * Core applies the decoded answer synchronously; the reducer never holds a draft.
  *
- * Open fields on the change Schema are {@link JsonValueSchema} — the Encoded
- * side of an owner Schema on the wire. Plugins encode through typed handles
- * before answering; apply keeps only data checks (ids, declared tags, size).
+ * Open fields on the change Schema are {@link OwnerJsonText} — JSON text owned
+ * by a registration. Plugins encode through typed handles before answering;
+ * apply keeps only data checks (ids, declared tags, size).
  */
 import { Schema as S } from "effect";
 import { PersistedSessionSchema } from "./session.ts";
 import { AgentEntrySchema } from "./read-model.ts";
-import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
+import { OwnerJsonText } from "./layout.ts";
 import { NewPaneIdSchema, SessionIdSchema } from "./workspace-ids.ts";
 import { PositiveInt } from "./schema-primitives.ts";
 
@@ -59,7 +59,7 @@ export const SessionAddChangeSchema = S.TaggedStruct("session.add", {
   target: WindowRefSchema,
   dir: S.String,
   provider: S.optionalKey(S.String),
-  firstMessage: S.optionalKey(JsonValueSchema),
+  firstMessage: S.optionalKey(OwnerJsonText),
 });
 
 export const SessionPlaceSplitSchema = S.TaggedStruct("session.place", {
@@ -84,23 +84,23 @@ export const PluginPlaceSplitSchema = S.TaggedStruct("plugin.place", {
   mode: S.Literal("split"),
   pane: NewPaneIdSchema,
   type: S.String,
-  descriptor: JsonValueSchema,
+  descriptor: OwnerJsonText,
 });
 
 export const PluginPlaceReplaceSchema = S.TaggedStruct("plugin.place", {
   mode: S.Literal("replace"),
   type: S.String,
-  descriptor: JsonValueSchema,
+  descriptor: OwnerJsonText,
 });
 
 export const PluginPlaceChangeSchema = S.Union([PluginPlaceSplitSchema, PluginPlaceReplaceSchema]);
 
 export const ActionPushChangeSchema = S.TaggedStruct("action.push", {
-  action: JsonValueSchema,
+  action: OwnerJsonText,
 });
 
 export const ResultSetChangeSchema = S.TaggedStruct("result.set", {
-  result: JsonValueSchema,
+  result: OwnerJsonText,
 });
 
 export const WorkspaceChangeSchema = S.Union([
@@ -118,12 +118,12 @@ export const WorkspaceReducerAnswerSchema = S.Struct({
 export type WorkspaceReducerAnswer = typeof WorkspaceReducerAnswerSchema.Type;
 
 /**
- * Queued plugin action: tag for routing, payload is the Encoded form of the
+ * Queued plugin action: tag for routing, payload is JSON text of the
  * registration's Schema (validated by the plugin builder; decoded once at run).
  */
 export type QueuedPluginAction = {
   readonly _tag: string;
-  readonly payload: JsonValue;
+  readonly payload: OwnerJsonText;
 };
 
 /**
@@ -142,5 +142,5 @@ export interface PluginCommandApply {
   readonly providers: ReadonlySet<string>;
 }
 
-/** Read `_tag` from an action.push value without a cast. */
-export const ActionTagSchema = S.Struct({ _tag: S.String });
+/** Read `_tag` from an action.push JSON text without a cast. */
+export const ActionTagSchema = S.fromJsonString(S.Struct({ _tag: S.String }));

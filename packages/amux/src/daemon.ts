@@ -1958,7 +1958,7 @@ export const makeDaemonService = Effect.fnUntraced(
 
     handleAttachCommand = (client, connection, request) =>
       Effect.gen(function* () {
-        const decoded = yield* S.decodeUnknownEffect(WireCommand)(request.command).pipe(
+        const decoded = yield* S.decodeEffect(S.fromJsonString(WireCommand))(request.command).pipe(
           Effect.mapError((error) => `invalid command: ${errorMessage(error)}`),
         );
         const cur = yield* model.get;

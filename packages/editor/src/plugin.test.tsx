@@ -17,12 +17,17 @@ import {
   resolveOptions,
   SettingsTag,
 } from "@danielfgray/amux";
-import type { Command, JsonValue, PaneViewProps } from "@danielfgray/amux";
+import type { Command, PaneViewProps } from "@danielfgray/amux";
+import { Schema as S } from "effect";
 import { theme } from "@danielfgray/amux";
 import { createPluginHost, type PluginHost } from "@danielfgray/amux/plugin/host.ts";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { editorPlugin, Editor, handleCommandPickerKey } from "./plugin.tsx";
+import { EditorDescriptor } from "./io.ts";
+
+const descriptorText = (value: EditorDescriptor) =>
+  S.encodeSync(S.fromJsonString(EditorDescriptor))(value);
 import { createEditor } from "./api.ts";
 import { EditorPane, type EditorController } from "./EditorPane.tsx";
 import {
@@ -147,7 +152,7 @@ const activate = (sent: SentCommand[], seenBindings: string[] = [], lineNumbers 
 const mount = (
   t: Renderer,
   ioState: TestEditorIoState,
-  descriptor: JsonValue,
+  descriptor: string,
   sent: SentCommand[],
   lineNumbers = true,
   highlight?: HighlightProviderService,
@@ -312,7 +317,7 @@ testEffect(
         seen.push(arg);
       },
     });
-    const pane = yield* mount(t, ioState, null, sent, true, undefined, editor);
+    const pane = yield* mount(t, ioState, "{}", sent, true, undefined, editor);
     for (const name of [":", "E", "c", "h", "o", " ", "h", "i", "return"]) {
       pane.press(keystroke(name));
     }
@@ -327,7 +332,7 @@ testEffect(
     const ioState = makeIo("/workspace", { "note.txt": ["contents"] });
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    yield* mount(t, ioState, { file: "note.txt" }, sent, false);
+    yield* mount(t, ioState, descriptorText({ file: "note.txt" }), sent, false);
     yield* waitForFrame(
       t,
       () => t.captureCharFrame().includes("contents"),
@@ -356,7 +361,7 @@ testEffect(
       sessionId: "",
       paneId: "pane-cua",
       paneType: "amux.editor",
-      descriptor: { file: "note.txt" },
+      descriptor: descriptorText({ file: "note.txt" }),
       width: () => WIDTH - 2,
       height: () => HEIGHT - 2,
       active: () => true,
@@ -395,7 +400,7 @@ testEffect(
   Effect.gen(function* () {
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press } = yield* mount(t, makeIo("/workspace"), {}, sent);
+    const { press } = yield* mount(t, makeIo("/workspace"), "{}", sent);
     press(keystroke(":"));
     yield* waitForFrame(t, () => t.captureCharFrame().includes(":edit"), "command picker");
     const frame = t.captureCharFrame();
@@ -413,7 +418,7 @@ testEffect(
 
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press } = yield* mount(t, ioState, {}, sent);
+    const { press } = yield* mount(t, ioState, "{}", sent);
     yield* Effect.promise(() => t.renderOnce());
     const handler = press;
 
@@ -429,7 +434,7 @@ testEffect(
     expect(descriptorWrite).toEqual({
       _tag: "pane.set-descriptor",
       pane: "pane-1",
-      descriptor: { file },
+      descriptor: descriptorText({ file }),
     });
     // Exactly one descriptor write: later keystrokes must not resend it.
     handler!(keystroke("j"));
@@ -449,7 +454,7 @@ testEffect(
 
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    yield* mount(t, ioState, { file: "note.txt" }, sent);
+    yield* mount(t, ioState, descriptorText({ file: "note.txt" }), sent);
     yield* waitForFrame(
       t,
       () => t.captureCharFrame().includes("remounted"),
@@ -466,7 +471,7 @@ testEffect(
   Effect.gen(function* () {
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press, controller } = yield* mount(t, makeIo("/workspace"), {}, sent);
+    const { press, controller } = yield* mount(t, makeIo("/workspace"), "{}", sent);
     yield* Effect.promise(() => t.renderOnce());
     const handler = press;
 
@@ -550,7 +555,7 @@ testEffect(
 
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press } = yield* mount(t, ioState, { file: "note.txt" }, sent);
+    const { press } = yield* mount(t, ioState, descriptorText({ file: "note.txt" }), sent);
     yield* waitForFrame(t, () => t.captureCharFrame().includes("before"), "buffer loads the file");
     const handler = press;
 
@@ -575,7 +580,7 @@ testEffect(
   Effect.gen(function* () {
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press } = yield* mount(t, makeIo("/workspace"), {}, sent);
+    const { press } = yield* mount(t, makeIo("/workspace"), "{}", sent);
     yield* Effect.promise(() => t.renderOnce());
     const handler = press;
     for (const name of ["i", ..."keep me", "escape", ":", ..."e missing.txt", "return"]) {
@@ -597,7 +602,7 @@ testEffect(
     const ioState = makeIo("/workspace", { "note.txt": ["original"] });
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press } = yield* mount(t, ioState, {}, sent);
+    const { press } = yield* mount(t, ioState, "{}", sent);
     yield* Effect.promise(() => t.renderOnce());
     const handler = press;
     for (const name of [":", ..."e note.txt", "return", "i", ..."new ", "escape"]) {
@@ -619,7 +624,7 @@ testEffect(
     const ioState = makeIo(dir, { "note.txt": ["original"] });
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press } = yield* mount(t, ioState, { file: "note.txt" }, sent);
+    const { press } = yield* mount(t, ioState, descriptorText({ file: "note.txt" }), sent);
     yield* waitForFrame(t, () => t.captureCharFrame().includes("original"), "initial load");
     const handler = press;
     for (const name of [":", "w", "return", "i", "x", "escape"]) handler(keystroke(name));
@@ -643,7 +648,7 @@ testEffect(
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
     const highlight = yield* makeHighlightProvider();
-    const { press } = yield* mount(t, ioState, { file: "main.ts" }, sent, true, highlight);
+    const { press } = yield* mount(t, ioState, descriptorText({ file: "main.ts" }), sent, true, highlight);
 
     // The worker parses off-fiber, so wait for the mauve keyword span rather
     // than the frame the open triggered. `from` is asserted instead of the
@@ -695,7 +700,7 @@ testEffect(
     });
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press, controller } = yield* mount(t, ioState, {}, sent);
+    const { press, controller } = yield* mount(t, ioState, "{}", sent);
     yield* Effect.promise(() => t.renderOnce());
     for (const name of [":", ..."e Widget.tsx", "return"]) {
       press(keystroke(name));

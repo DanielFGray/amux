@@ -5,7 +5,7 @@ import { daemonBackend, type DaemonSession, type SessionBackendFactory } from ".
 import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
-import type { Command, RuntimeCommand } from "./commands.ts";
+import { WireCommand, type Command, type RuntimeCommand } from "./commands.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 import {
   parseWorkspaceJson,
@@ -239,7 +239,10 @@ const make = (
       readonly context: WorkspaceCommandContext;
     }) =>
       Effect.gen(function* () {
-        const output = yield* attach.runCommand(request.command as JsonValue, {
+        const encoded = yield* S.encodeEffect(S.fromJsonString(WireCommand))(request.command).pipe(
+          Effect.mapError((error) => new SessionClientError({ message: errorMessage(error) })),
+        );
+        const output = yield* attach.runCommand(encoded, {
           expectedRevision: workspace.revision,
           context: request.context,
         });
@@ -313,8 +316,11 @@ const make = (
       // both on commandQueue deadlocks. Workspace mutations stay on runWorkspace.
       run: (command, context) =>
         Effect.gen(function* () {
+          const encoded = yield* S.encodeEffect(S.fromJsonString(WireCommand))(command).pipe(
+            Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
+          );
           const output = yield* Effect.raceFirst(
-            attach.runCommand(command as JsonValue, { context }),
+            attach.runCommand(encoded, { context }),
             Deferred.await(closed).pipe(Effect.flatMap(() => Effect.fail(closingError()))),
           );
           if (output.workspace !== undefined) {

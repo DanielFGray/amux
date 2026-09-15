@@ -61,8 +61,9 @@ import {
   swapLayout,
   windowState,
   LayoutFormatError,
-  DescriptorSchema,
+  DescriptorTextSchema,
   type Layout,
+  type OwnerJsonText,
   type PaneContent,
   type PaneRef,
   type WindowState,
@@ -202,7 +203,7 @@ export function parseWorkspaceJson(
           message: `workspace JSON is invalid: ${String(error)}`,
         }),
     ),
-    Effect.flatMap(parseWorkspace),
+    Effect.flatMap(finalizeParsedWorkspace),
   );
 }
 
@@ -223,7 +224,7 @@ export const isCoreWorkspaceAction = (action: WorkspaceAction): action is CoreWo
   CORE_ACTION_TAGS.has(action._tag);
 
 /** A plugin-contributed action queued between apply and run. `_tag` routes to
- *  the registration; `payload` is that Schema's Encoded form (JsonValue). */
+ *  the registration; `payload` is that Schema's JSON text. */
 export type PluginWorkspaceAction = QueuedPluginAction;
 
 export type WorkspaceAction = CoreWorkspaceAction | PluginWorkspaceAction;
@@ -414,13 +415,19 @@ export const workspaceSession = Effect.fnUntraced(function* (
   workspace: WorkspaceSnapshot,
   base: SessionState,
 ) {
-  return {
-    ...base,
-    version: SESSION_VERSION,
-    updatedAt: yield* Clock.currentTimeMillis,
-    activeSpace: workspace.state.activeSpace,
-    nextSpace: workspace.state.nextSpace,
-    spaces: workspace.spaces.map((space) => ({
+  const spaces: SessionState["spaces"] = [];
+  for (const space of workspace.spaces) {
+    const windows: SessionState["spaces"][number]["windows"] = [];
+    for (const window of space.windows) {
+      const layout = yield* encodeLayout(window.layout);
+      windows.push({
+        number: window.number,
+        name: window.name,
+        sessions: structuredClone(window.sessions),
+        layout,
+      });
+    }
+    spaces.push({
       id: space.id,
       name: space.name,
       dir: space.dir,
@@ -428,29 +435,44 @@ export const workspaceSession = Effect.fnUntraced(function* (
       nextWindow: space.state.nextWindow,
       nextPane: space.state.nextPane,
       worktree: space.worktree,
-      windows: space.windows.map((window) => ({
-        number: window.number,
-        name: window.name,
-        sessions: structuredClone(window.sessions),
-        layout: encodeLayout(window.layout),
-      })),
-    })),
+      windows,
+    });
+  }
+  return {
+    ...base,
+    version: SESSION_VERSION,
+    updatedAt: yield* Clock.currentTimeMillis,
+    activeSpace: workspace.state.activeSpace,
+    nextSpace: workspace.state.nextSpace,
+    spaces,
   } satisfies SessionState;
 });
 
-/** Parse a subscribed model before a client projects it. */
+/** Parse a subscribed model before a client projects it.
+ *
+ * Callers pass Type-side snapshots (descriptor JSON text). Validate the Type
+ * once; do not encode→decode through Encoded (that would treat text as nested
+ * JSON and stringify again).
+ */
 export function parseWorkspace(
-  value: unknown,
+  value: WorkspaceSnapshot,
+): Effect.Effect<WorkspaceSnapshot, WorkspaceParseError | SessionStateError> {
+  return S.decodeUnknownEffect(S.toType(WorkspaceSnapshotSchema))(value).pipe(
+    Effect.mapError(
+      (error) =>
+        new WorkspaceParseError({
+          message: `workspace does not match schema: ${error.message}`,
+        }),
+    ),
+    Effect.flatMap(finalizeParsedWorkspace),
+  );
+}
+
+/** Invariant checks and layout normalize after the snapshot Schema has decoded. */
+function finalizeParsedWorkspace(
+  decoded: typeof WorkspaceSnapshotSchema.Type,
 ): Effect.Effect<WorkspaceSnapshot, WorkspaceParseError | SessionStateError> {
   return Effect.gen(function* () {
-    const decoded = yield* S.decodeUnknownEffect(WorkspaceSnapshotSchema)(value).pipe(
-      Effect.mapError(
-        (error) =>
-          new WorkspaceParseError({
-            message: `workspace does not match schema: ${error.message}`,
-          }),
-      ),
-    );
     const raw = structuredClone(decoded) as WorkspaceSnapshot;
     yield* parseSessionState(
       yield* workspaceSession(raw, {
@@ -460,7 +482,14 @@ export function parseWorkspace(
         updatedAt: 0,
         attached: false,
         spaces: [],
-      }),
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new WorkspaceParseError({
+              message: `workspace has an invalid layout: ${error.message}`,
+            }),
+        ),
+      ),
     );
     const spaceIds = new Set(raw.spaces.map((space) => space.id));
     if (raw.state.activeSpace !== null && !spaceIds.has(raw.state.activeSpace)) {
@@ -486,7 +515,8 @@ export function parseWorkspace(
         });
       }
       for (const window of space.windows) {
-        window.layout = yield* decodeLayout(encodeLayout(window.layout)).pipe(
+        window.layout = yield* encodeLayout(window.layout).pipe(
+          Effect.flatMap(decodeLayout),
           Effect.mapError(
             (error) =>
               new WorkspaceParseError({
@@ -517,7 +547,8 @@ export function parseWorkspace(
               message: "workspace zoom names an invalid pane",
             });
           }
-          const from = yield* decodeLayout(encodeLayout(window.state.zoom.from as Layout)).pipe(
+          const from = yield* encodeLayout(window.state.zoom.from as Layout).pipe(
+            Effect.flatMap(decodeLayout),
             Effect.mapError(
               (error) =>
                 new WorkspaceParseError({
@@ -918,7 +949,7 @@ const applyWorkspaceCommandOnce = (
         readonly name?: string;
         readonly transient?: boolean;
         readonly id?: string;
-        readonly firstMessage?: JsonValue;
+        readonly firstMessage?: OwnerJsonText;
       },
     ): Effect.Effect<PersistedSession, WorkspaceChangeError> =>
       Effect.gen(function* () {
@@ -1014,7 +1045,7 @@ const applyWorkspaceCommandOnce = (
     });
     const placePluginPane = Effect.fnUntraced(function* (
       type: string,
-      descriptor: JsonValue,
+      descriptor: OwnerJsonText,
       paneId: string | undefined,
       opts?: { readonly mode?: "split" | "replace" },
     ) {
@@ -1202,7 +1233,7 @@ const applyWorkspaceCommandOnce = (
                   message: `unknown pane type '${c.type}'`,
                 });
               }
-              const sized = yield* S.decodeEffect(DescriptorSchema)(c.descriptor).pipe(
+              const sized = yield* S.decodeEffect(DescriptorTextSchema)(c.descriptor).pipe(
                 Effect.mapError(
                   (error) =>
                     new WorkspaceChangeError({
@@ -1237,7 +1268,7 @@ const applyWorkspaceCommandOnce = (
             }),
           "action.push": (c) =>
             Effect.gen(function* () {
-              const tagged = S.decodeUnknownResult(ActionTagSchema)(c.action);
+              const tagged = S.decodeResult(ActionTagSchema)(c.action);
               if (Result.isFailure(tagged)) {
                 return yield* new WorkspaceChangeError({
                   message: "action.push payload must be an object with _tag",
@@ -2361,7 +2392,7 @@ function paneContentFor(session: PersistedSession): PaneContent {
     ? {
         kind: "plugin",
         type: componentViewType(session),
-        descriptor: {},
+        descriptor: "{}",
         session: session.id,
       }
     : { kind: "pty", session: session.id };

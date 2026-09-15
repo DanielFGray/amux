@@ -1,11 +1,12 @@
 import { expect } from "bun:test";
-import { Effect } from "effect";
-import { editorDaemonCommands } from "./daemon.ts";
+import { Effect, Schema as S } from "effect";
+import { EditorDescriptorSchema, editorDaemonCommands } from "./daemon.ts";
 import type { WorkspaceCommandContext, WorkspaceReadPackage } from "@danielfgray/amux";
-import { runtimeCommand } from "@danielfgray/amux";
+import { creationResultSchema, runtimeCommand } from "@danielfgray/amux";
 import { testEffect } from "@danielfgray/amux/testing";
 
 const editorOpen = editorDaemonCommands.find((entry) => entry.tag === "editor.open")!;
+const CreationResult = creationResultSchema("pane.open-plugin");
 
 const emptyReads = (activeWindow: WorkspaceReadPackage["activeWindow"]): WorkspaceReadPackage => ({
   activeWindow,
@@ -32,16 +33,26 @@ testEffect("editor.open splits when there is no calling pane", () =>
       context: context(),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp/project" }),
     });
-    expect(answer.changes[0]).toMatchObject({
+    const place = answer.changes[0] as {
+      _tag: "plugin.place";
+      pane: string;
+      type: string;
+      mode: string;
+      descriptor: string;
+    };
+    expect(place).toMatchObject({
       _tag: "plugin.place",
       pane: "space-a:p1",
       type: "amux.editor",
-      descriptor: {},
       mode: "split",
     });
-    expect(answer.changes[1]).toMatchObject({
-      _tag: "result.set",
-      result: { pane: "space-a:p1" },
+    expect(yield* S.decodeEffect(S.fromJsonString(EditorDescriptorSchema))(place.descriptor)).toEqual(
+      {},
+    );
+    const result = answer.changes[1] as { _tag: "result.set"; result: string };
+    expect(result._tag).toBe("result.set");
+    expect(yield* S.decodeEffect(S.fromJsonString(CreationResult))(result.result)).toEqual({
+      pane: "space-a:p1",
     });
   }),
 );
@@ -55,9 +66,10 @@ testEffect("editor.open replaces when invoked from a pane", () =>
     });
     expect(answer.changes[0]).toMatchObject({ _tag: "plugin.place", mode: "replace" });
     expect(answer.changes[0]).not.toHaveProperty("pane");
-    expect(answer.changes[1]).toMatchObject({
-      _tag: "result.set",
-      result: { pane: "pane-a" },
+    const result = answer.changes[1] as { _tag: "result.set"; result: string };
+    expect(result._tag).toBe("result.set");
+    expect(yield* S.decodeEffect(S.fromJsonString(CreationResult))(result.result)).toEqual({
+      pane: "pane-a",
     });
   }),
 );
@@ -80,9 +92,10 @@ testEffect("editor.open resolves a relative file against the calling cwd", () =>
       context: context(),
       reads: emptyReads({ space: "space-a", window: 1, dir: "/tmp/project" }),
     });
-    expect(answer.changes[0]).toMatchObject({
-      _tag: "plugin.place",
-      descriptor: { file: "/tmp/project/src/foo.ts" },
+    const place = answer.changes[0] as { _tag: "plugin.place"; descriptor: string };
+    expect(place._tag).toBe("plugin.place");
+    expect(yield* S.decodeEffect(S.fromJsonString(EditorDescriptorSchema))(place.descriptor)).toEqual({
+      file: "/tmp/project/src/foo.ts",
     });
   }),
 );

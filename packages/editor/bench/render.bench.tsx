@@ -92,7 +92,7 @@ async function measure(file: string, lines: number, io: EditorIoService): Promis
       sessionId: "",
       paneId: "benchmark-pane",
       paneType: "amux.editor",
-      descriptor: { file },
+      descriptor: `{"file":${JSON.stringify(file)}}`,
       width: () => WIDTH,
       height: () => HEIGHT,
       active: () => true,

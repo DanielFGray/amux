@@ -82,7 +82,7 @@ test("a layout round-trips through encode and decode", () => {
     split("row", [pane("a", 2), split("column", [pane("b"), pane("c", 3)], 5)]),
     "c",
   );
-  expect(run(parseLayout(JSON.parse(encodeLayout(original))))).toEqual(original);
+  expect(run(parseLayout(JSON.parse(run(encodeLayout(original)))))).toEqual(original);
 });
 
 test("agentSession on a pane round-trips and a bogus snapshot entry is stripped", () => {
@@ -92,9 +92,9 @@ test("agentSession on a pane round-trips and a bogus snapshot entry is stripped"
     kind: "id",
     value: "conv-1",
   });
-  expect(run(parseLayout(JSON.parse(encodeLayout(trusted))))).toEqual(trusted);
+  expect(run(parseLayout(JSON.parse(run(encodeLayout(trusted)))))).toEqual(trusted);
 
-  const raw = JSON.parse(encodeLayout(layout(pane("a")))) as {
+  const raw = JSON.parse(run(encodeLayout(layout(pane("a"))))) as {
     root: { type: "pane"; id: string; content: unknown; weight: number; agentSession?: unknown };
   };
   raw.root.agentSession = {
@@ -122,7 +122,7 @@ test("the elected algorithm's id and version round-trip through encode and decod
     algorithmId: "niri",
     algorithmVersion: 1,
   };
-  const decoded = run(parseLayout(JSON.parse(encodeLayout(original))));
+  const decoded = run(parseLayout(JSON.parse(run(encodeLayout(original)))));
   expect(decoded.algorithmId).toBe("niri");
   expect(decoded.algorithmVersion).toBe(1);
 });
@@ -130,7 +130,7 @@ test("the elected algorithm's id and version round-trip through encode and decod
 test("encoding is stable, so equal layouts produce equal strings", () => {
   const a = layout(split("row", [pane("x"), pane("y")]));
   const b = layout(split("row", [pane("x"), pane("y")]));
-  expect(encodeLayout(a)).toBe(encodeLayout(b));
+  expect(run(encodeLayout(a))).toBe(run(encodeLayout(b)));
 });
 
 // The live tree collapses a one-child split away, so a decoded layout that kept
@@ -196,7 +196,7 @@ test("layoutSessions includes a replace-host's displaced session", () => {
     content: {
       kind: "plugin",
       type: "amux.editor",
-      descriptor: {},
+      descriptor: "{}",
       displaced: "shell",
     },
   });
@@ -211,7 +211,7 @@ test("pruning clears a dead displaced keepalive without dropping the plugin pane
     content: {
       kind: "plugin",
       type: "amux.editor",
-      descriptor: {},
+      descriptor: "{}",
       displaced: "shell",
     },
   });
@@ -220,7 +220,7 @@ test("pruning clears a dead displaced keepalive without dropping the plugin pane
   expect(layoutPanes(pruned.root)[0]!.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: {},
+    descriptor: "{}",
   });
   expect(layoutSessions(pruned)).toEqual([]);
 });
@@ -258,7 +258,7 @@ test("a focus not present in the tree is dropped on parse", () => {
 });
 
 test("an empty layout round-trips", () => {
-  expect(run(decodeLayout(encodeLayout(layout(null))))).toEqual(layout(null));
+  expect(run(decodeLayout(run(encodeLayout(layout(null)))))).toEqual(layout(null));
 });
 
 test("a saved layout with only a version decodes as empty", () => {
@@ -754,7 +754,7 @@ test("a layout with floats round-trips through encode and decode", () => {
   const original = layout(split("row", [pane("a"), pane("b")]), "f", [
     { id: "f", content: { kind: "pty", session: "c" }, x: 0.25, y: 0.1, width: 0.5, height: 0.75 },
   ]);
-  expect(run(parseLayout(JSON.parse(encodeLayout(original))))).toEqual(original);
+  expect(run(parseLayout(JSON.parse(run(encodeLayout(original)))))).toEqual(original);
 });
 
 // Every layout written before floats existed says nothing about them, and

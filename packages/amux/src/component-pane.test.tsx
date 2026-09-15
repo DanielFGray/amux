@@ -50,7 +50,7 @@ const ptyContent = (session: string): PaneContent => ({ kind: "pty", session });
 const pluginContent = (session: string): PaneContent => ({
   kind: "plugin",
   type: "native",
-  descriptor: {},
+  descriptor: "{}",
   session,
 });
 
@@ -134,7 +134,7 @@ live("a sessionless plugin pane mounts the registered view from its descriptor",
     const scene = yield* workspace(
       (props) => (
         <text>
-          session:{props.sessionId}|file:{JSON.stringify(props.descriptor)}
+          session:{props.sessionId}|file:{props.descriptor}
         </text>
       ),
       makeLayout({
@@ -144,7 +144,7 @@ live("a sessionless plugin pane mounts the registered view from its descriptor",
           content: {
             kind: "plugin",
             type: "amux.editor",
-            descriptor: { file: "/note.txt" },
+            descriptor: '{"file":"/note.txt"}',
           },
           weight: 1,
         },
@@ -367,7 +367,7 @@ live("replacing a leaf's content kind remounts that pane rather than reclaiming 
             content: {
               kind: "plugin",
               type: "native",
-              descriptor: {},
+              descriptor: "{}",
               displaced: "shell",
             },
             weight: 1,

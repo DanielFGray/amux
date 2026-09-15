@@ -40,7 +40,10 @@ import {
   type AttachFrame,
   AgentFrame,
 } from "./effect/AttachProtocol.ts";
-import { command } from "./commands.ts";
+import { OwnerJsonText } from "./layout.ts";
+import { command, WireCommand } from "./commands.ts";
+
+const descriptorText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 import { controlCall } from "./control-client.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { testEffect } from "./test-effect.ts";
@@ -1250,7 +1253,7 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
           values: [
             command("pane.open-plugin", {
               type: "amux.editor",
-              descriptor: { file: "/note.txt" },
+              descriptor: descriptorText({ file: "/note.txt" }),
             }),
           ],
           context: {
@@ -1330,7 +1333,7 @@ testEffect("key-sourced client command runs on the pressing client, not the firs
       first.runWorkspace(
         command("pane.open-plugin", {
           type: "amux.editor",
-          descriptor: { file: "/note.txt" },
+          descriptor: descriptorText({ file: "/note.txt" }),
         }),
         {
           size: { cols: 80, rows: 24 },
@@ -1406,7 +1409,7 @@ testEffect("key client command whose handler runs a nested session command compl
       client.runWorkspace(
         command("pane.open-plugin", {
           type: "amux.editor",
-          descriptor: { file: "/note.txt" },
+          descriptor: descriptorText({ file: "/note.txt" }),
         }),
         {
           size: { cols: 80, rows: 24 },
@@ -1678,14 +1681,17 @@ testEffect("a view command on the attach run path is refused", () =>
     const client = yield* attach("attach-view-refused", env);
     const error = yield* run(
       Effect.flip(
-        client.attach.runCommand(command("app.command-palette") as never, {
-          context: {
-            size: { cols: 80, rows: 24 },
-            shell: ["sh"],
-            cwd: "/tmp",
-            source: "key",
+        client.attach.runCommand(
+          yield* S.encodeEffect(S.fromJsonString(WireCommand))(command("app.command-palette")),
+          {
+            context: {
+              size: { cols: 80, rows: 24 },
+              shell: ["sh"],
+              cwd: "/tmp",
+              source: "key",
+            },
           },
-        }),
+        ),
       ),
       env,
     );

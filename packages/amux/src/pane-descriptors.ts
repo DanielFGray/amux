@@ -1,19 +1,18 @@
 /**
  * Pane-type handle: typed place builder for reducers, Effect check for
- * pane.open-plugin (the only decode-from-raw-JsonValue path).
+ * pane.open-plugin (the only decode-from-raw-owner-text path).
  */
 import { Effect, Schema as S } from "effect";
-import { DescriptorSchema } from "./layout.ts";
+import { DescriptorTextSchema, type OwnerJsonText } from "./layout.ts";
 import { errorMessage } from "./error-message.ts";
-import { type JsonValue } from "./effect/AttachProtocol.ts";
 import { PluginReducerError, type WorkspaceChange } from "./workspace-changes.ts";
 import { encodeOwner } from "./workspace-change-builders.ts";
 import type { NewPaneId } from "./workspace-ids.ts";
 
 export type PaneTypeHandle<D> = {
   readonly type: string;
-  /** Effect-stage owner check for core pane.open-plugin: decode raw, encode, size-limit. */
-  readonly check: (raw: JsonValue) => Effect.Effect<JsonValue, PluginReducerError>;
+  /** Effect-stage owner check for core pane.open-plugin: decode text, encode, size-limit. */
+  readonly check: (raw: OwnerJsonText) => Effect.Effect<OwnerJsonText, PluginReducerError>;
   readonly place: (
     input:
       | { readonly mode: "split"; readonly pane: NewPaneId; readonly descriptor: D }
@@ -24,15 +23,15 @@ export type PaneTypeHandle<D> = {
 /** Registration entry — type + check for apply; reducer closes over the typed handle. */
 export type PaneTypeRegistration = {
   readonly type: string;
-  readonly check: (raw: JsonValue) => Effect.Effect<JsonValue, PluginReducerError>;
+  readonly check: (raw: OwnerJsonText) => Effect.Effect<OwnerJsonText, PluginReducerError>;
 };
 
 /** Declare a pane type with its descriptor Schema. */
 export function definePaneType<D>(type: string, schema: S.Codec<D>): PaneTypeHandle<D> {
   const encode = encodeOwner(schema, `plugin.place '${type}'`);
-  const check = (raw: JsonValue): Effect.Effect<JsonValue, PluginReducerError> =>
+  const check = (raw: OwnerJsonText): Effect.Effect<OwnerJsonText, PluginReducerError> =>
     Effect.gen(function* () {
-      const decoded = yield* S.decodeUnknownEffect(schema)(raw).pipe(
+      const decoded = yield* S.decodeEffect(S.fromJsonString(schema))(raw).pipe(
         Effect.mapError(
           (error) =>
             new PluginReducerError({
@@ -41,7 +40,7 @@ export function definePaneType<D>(type: string, schema: S.Codec<D>): PaneTypeHan
         ),
       );
       const wire = yield* encode(decoded);
-      return yield* S.decodeEffect(DescriptorSchema)(wire).pipe(
+      return yield* S.decodeEffect(DescriptorTextSchema)(wire).pipe(
         Effect.mapError(
           (error) =>
             new PluginReducerError({
@@ -58,7 +57,7 @@ export function definePaneType<D>(type: string, schema: S.Codec<D>): PaneTypeHan
   ): Effect.Effect<WorkspaceChange, PluginReducerError> =>
     Effect.gen(function* () {
       const wire = yield* encode(input.descriptor);
-      const sized = yield* S.decodeEffect(DescriptorSchema)(wire).pipe(
+      const sized = yield* S.decodeEffect(DescriptorTextSchema)(wire).pipe(
         Effect.mapError(
           (error) =>
             new PluginReducerError({

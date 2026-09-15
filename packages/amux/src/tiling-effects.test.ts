@@ -34,16 +34,18 @@ const context: WorkspaceCommandContext = {
   cwd: "/tmp",
 };
 
-const singlePaneLayout = encodeLayout(
-  makeLayout({
-    root: {
-      type: "pane",
-      id: "pane-a",
-      content: { kind: "pty", session: "agent-a" },
-      weight: 1,
-    },
-    focus: "pane-a",
-  }),
+const singlePaneLayout = run(
+  encodeLayout(
+    makeLayout({
+      root: {
+        type: "pane",
+        id: "pane-a",
+        content: { kind: "pty", session: "agent-a" },
+        weight: 1,
+      },
+      focus: "pane-a",
+    }),
+  ),
 );
 
 const paneBase = (layout = singlePaneLayout): SessionState => ({
@@ -216,7 +218,7 @@ test("default close on a niri scroll layout fails when a column would drop", () 
     ],
     size,
   );
-  const state = paneBase(encodeLayout(scroll));
+  const state = paneBase(run(encodeLayout(scroll)));
   state.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "cat",

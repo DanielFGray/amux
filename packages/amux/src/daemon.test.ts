@@ -3,7 +3,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Effect, Fiber, Stream } from "effect";
+import { Effect, Fiber, Stream, Schema } from "effect";
 import {
   makeDaemonService,
   DaemonError,
@@ -13,12 +13,15 @@ import { SessionStore, sessionPaths } from "./session.ts";
 import { command } from "./commands.ts";
 import { AttachClient } from "./attach.ts";
 import { waitFor } from "./test-wait.ts";
-import type { PaneContent } from "./layout.ts";
+import { OwnerJsonText, type PaneContent } from "./layout.ts";
 import { testEffect } from "./test-effect.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { ctl, open, run } from "./test-daemon.ts";
 
 registerCleanup();
+
+const descriptorText = (value: typeof OwnerJsonText.Encoded) =>
+  Schema.decodeSync(OwnerJsonText)(value);
 
 // A plugin fixture placed alongside this test file rather than under the OS
 // tmpdir (see below) — outside tempDir's reach, so it keeps its own cleanup.
@@ -38,7 +41,7 @@ const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 const componentState = (
   id: string,
   provider: string,
-  opts?: { readonly firstMessage?: { readonly _tag: string; readonly text: string } },
+  opts?: { readonly firstMessage?: typeof OwnerJsonText.Type },
 ) => {
   const session = {
     id: "component-session",
@@ -1065,7 +1068,10 @@ testEffect("component restore is attach-gated and ResumeAgent does not create a 
 testEffect("ResumeAgent delivers session.firstMessage once then clears and persists it", () =>
   Effect.gen(function* () {
     const e = yield* Effect.promise(() => env());
-    const firstMessage = { _tag: "agent.prompt" as const, text: "deliver me" };
+    const firstMessage = Schema.decodeSync(OwnerJsonText)({
+      _tag: "agent.prompt",
+      text: "deliver me",
+    });
     yield* Effect.promise(() =>
       run(
         Effect.flatMap(SessionStore, (store) =>
@@ -1160,7 +1166,7 @@ test("a sessionless plugin pane restores without a backend and without a tombsto
   const editor: PaneContent = {
     kind: "plugin",
     type: "amux.editor",
-    descriptor: { file: "/work/note.txt" },
+    descriptor: descriptorText({ file: "/work/note.txt" }),
   };
   await run(
     Effect.flatMap(SessionStore, (store) =>

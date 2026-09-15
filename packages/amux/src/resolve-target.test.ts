@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Schema as S } from "effect";
 import { command, type RuntimeCommand } from "./commands.ts";
 import { nodePath } from "./effect/node-path.ts";
-import { layoutPanes } from "./layout.ts";
+import { layoutPanes, OwnerJsonText } from "./layout.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
 import type { SessionState } from "./session.ts";
 import {
@@ -17,6 +17,8 @@ import type { DaemonCommandRegistration } from "./plugin/services.ts";
 import { preparePluginCommandApply } from "./effect/WorkspaceTransaction.ts";
 import { PluginBehaviour } from "./plugin-behaviour.ts";
 import { pluginBehaviourFromRegistrations } from "./test-plugin-behaviour.ts";
+
+const emptyDescriptor = S.decodeSync(OwnerJsonText)({});
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const path = run(nodePath);
@@ -191,12 +193,14 @@ test("placement replace uses the same resolveTarget rule", () => {
     { ...context, pane: "pane-b1" },
     editorPlugins,
   );
-  expect(opened.result).toEqual({ pane: "pane-b1" });
+  expect(
+    run(S.decodeEffect(S.fromJsonString(S.Struct({ pane: S.String })))(opened.result as string)),
+  ).toEqual({ pane: "pane-b1" });
   const window = opened.snapshot.spaces.find((space) => space.id === "space-b")!.windows[0]!;
   expect(layoutPanes(window.layout.root).find((pane) => pane.id === "pane-b1")!.content).toEqual({
     kind: "plugin",
     type: "amux.editor",
-    descriptor: {},
+    descriptor: emptyDescriptor,
     displaced: "agent-b1",
   });
 });
