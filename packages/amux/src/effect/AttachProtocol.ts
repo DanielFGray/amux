@@ -6,26 +6,6 @@ import { WorkspaceCommandContextSchema } from "../workspace-command-context.ts";
 
 export const SESSION_STATE_TOPIC = "session.state";
 
-/** JSON values are the only opaque values that may cross a persisted or wire boundary. */
-export const JsonValueSchema: S.Codec<JsonValue> = S.suspend(() =>
-  S.Union([
-    S.Null,
-    S.String,
-    S.Boolean,
-    S.Finite,
-    S.Array(JsonValueSchema),
-    S.Record(S.String, JsonValueSchema),
-  ]),
-) as S.Codec<JsonValue>;
-
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | readonly JsonValue[]
-  | { readonly [key: string]: JsonValue };
-
 /**
  * The framed wire protocol between a client and the attach daemon.
  *

@@ -59,7 +59,7 @@ export interface InspectCatalog {
 
 /**
  * Absent facts are omitted keys, never `undefined` values: an inspect result
- * crosses the client socket as a JsonValue, which has no `undefined`.
+ * crosses the client socket as owner JSON text, which has no `undefined`.
  */
 export const provenanceFor = (
   catalog: InspectCatalog,

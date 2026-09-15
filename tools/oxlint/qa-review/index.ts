@@ -2,6 +2,7 @@ import { definePlugin } from "@oxlint/plugins";
 
 import { noChainedTypeAssertionsRule } from "./rules/no-chained-type-assertions.ts";
 import { noConditionalEmptyObjectSpreadRule } from "./rules/no-conditional-empty-object-spread.ts";
+import { noJsonValueTypeRule } from "./rules/no-json-value-type.ts";
 import { noKnownValueWideningRule } from "./rules/no-known-value-widening.ts";
 import { noObjectParametersRule } from "./rules/no-object-parameters.ts";
 import { noUngovernedEffectRunRule } from "./rules/no-ungoverned-effect-run.ts";
@@ -18,6 +19,7 @@ const antiSlopPlugin = definePlugin({
   rules: {
     "no-chained-type-assertions": noChainedTypeAssertionsRule,
     "no-conditional-empty-object-spread": noConditionalEmptyObjectSpreadRule,
+    "no-json-value-type": noJsonValueTypeRule,
     "no-known-value-widening": noKnownValueWideningRule,
     "no-object-parameters": noObjectParametersRule,
     "no-ungoverned-effect-run": noUngovernedEffectRunRule,

@@ -11,3 +11,9 @@ export function narrowTypedUnion(value: string | number) {
 }
 
 export const omitOptional = (enabled: boolean) => (enabled ? { enabled } : { enabled: false });
+
+/** Owner schema + JSON text — not an open JSON bag. */
+export const OwnerPayload = Schema.Struct({ name: Schema.String });
+export type OwnerPayloadText = string;
+export type ClosedUnion = string | number;
+export const StringMap = Schema.Record(Schema.String, Schema.String);

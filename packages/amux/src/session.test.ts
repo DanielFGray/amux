@@ -11,7 +11,6 @@ import {
   sessionRoot,
 } from "./session.ts";
 import { MAX_SPACES } from "./limits.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
 import { testEffect } from "./test-effect.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 
@@ -35,7 +34,15 @@ function env() {
   return Promise.resolve({ HOME: home, XDG_STATE_HOME: join(home, "state") });
 }
 
-const encodeJson = (value: JsonValue) => S.encodeEffect(S.fromJsonString(S.Unknown))(value);
+/** Fixtures carry lease values SessionLeaseSchema rejects, so they encode as plain JSON text, not through the lease schema. */
+const encodeJson = (value: {
+  version: number;
+  session: string;
+  pid: number;
+  socket: string;
+  startedAt: number;
+  heartbeatAt: number;
+}) => S.encodeEffect(S.fromJsonString(S.Unknown))(value);
 const expectRejected = (promise: Promise<unknown>) =>
   promise.then(
     () => Promise.reject(new Error("expected promise to reject")),

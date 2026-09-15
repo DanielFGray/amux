@@ -15,6 +15,7 @@
     "typescript/no-unnecessary-type-assertion": "error",
     "qa-review/no-chained-type-assertions": "error",
     "qa-review/no-conditional-empty-object-spread": "error",
+    "qa-review/no-json-value-type": "error",
     "qa-review/no-known-value-widening": "error",
     "qa-review/no-object-parameters": "error",
     "qa-review/no-runtime-typeof": "error",

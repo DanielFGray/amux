@@ -123,8 +123,7 @@ export type {
   PluginWorkspaceReducer,
 } from "./workspace.ts";
 export type { WorkspaceCommandContext } from "./workspace-command-context.ts";
-export type { PermissionAnswer, JsonValue } from "./effect/AttachProtocol.ts";
-export { JsonValueSchema } from "./effect/AttachProtocol.ts";
+export type { PermissionAnswer } from "./effect/AttachProtocol.ts";
 export {
   definePluginAction,
   preparePluginCommandApply,
