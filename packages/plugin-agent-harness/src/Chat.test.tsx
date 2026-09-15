@@ -488,9 +488,9 @@ test("the transcript rewraps when the pane it lives in is resized", async () => 
   await t.renderOnce();
   const frame = t.captureCharFrame();
   expect(frame).not.toContain("the quick brown fox jumps");
-  expect(frame).toContain("the quick brown");
-  expect(frame).toContain("fox jumps");
-  expect(frame).toContain("lazy dog");
+  expect(frame).toContain("the quick brown fox");
+  expect(frame).toContain("jumps over the lazy");
+  expect(frame).toContain("dog and keeps going");
   t.renderer.destroy();
 });
 

@@ -119,11 +119,11 @@ test("80-column retained transcript is readable and serializes to a cell grid", 
     [
       "user> Inspect transcript rendering and keep 你好 copy, search, and capture",
       "useful in narrow panes.",
-      "assistant> The transcript stays semantic so every client can reflow",
-      "explanations naturally instead of replaying terminal bytes.",
+      "assistant> The transcript stays semantic so every client can reflow explanations",
+      "naturally instead of replaying terminal bytes.",
       "tool> grep pattern=CopyMode path=src -> 12 matches",
-      "assistant> For the TUI, retained widgets render the events and an on-demand",
-      "grid snapshot supplies display rows to copy mode.",
+      "assistant> For the TUI, retained widgets render the events and an on-demand grid",
+      "snapshot supplies display rows to copy mode.",
     ].join("\n"),
   );
 });
@@ -158,7 +158,7 @@ test("retained widgets reflow words while a VT transcript wraps terminal cells",
   );
 
   const terminalGrid = captureScrollback(vt);
-  expect(retained).toContain("reflow\nexplanations naturally");
+  expect(retained).toContain("reflow explanations\nnaturally");
   expect(terminalGrid).toContain("reflow explanations\n naturally");
 
   vt.resize(52, 24);
