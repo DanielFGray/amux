@@ -45,7 +45,7 @@ import { editorOpenCommand } from "../../editor/src/command-args.ts";
 /** Build descriptor JSON text the way an owner Schema encodes it. */
 const descriptorText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 
-/** Plugin `result.set` / session firstMessage JSON text; nested core results pass through. */
+/** Decode OwnerJsonText command results for assertions against nested values. */
 const asResult = (result: WorkspaceMutation["result"] | string | undefined) =>
   typeof result === "string" ? S.encodeSync(OwnerJsonText)(result) : result;
 import { niriTilingAlgorithm, niriTilingMethods } from "../../plugin-niri/src/niri.ts";
@@ -1996,7 +1996,7 @@ test("space.list reports every space with its active window and count", () => {
   const mutation = applyWorkspaceCommand(adopted, command("space.list"), context);
   expect(mutation.changed).toBe(false);
   expect(mutation.actions).toEqual([]);
-  expect(mutation.result).toEqual([
+  expect(asResult(mutation.result)).toEqual([
     { id: "space-a", name: "one", dir: "/tmp/one", activeWindow: 1, windows: 1 },
     { id: "space-b", name: "two", dir: "/tmp/two", activeWindow: 1, windows: 1 },
   ]);
@@ -2006,7 +2006,7 @@ test("window.list reports every window with its space, pane count and focus", ()
   const adopted = run(workspaceFromSession(wideBase()));
   const mutation = applyWorkspaceCommand(adopted, command("window.list"), context);
   expect(mutation.changed).toBe(false);
-  expect(mutation.result).toEqual([
+  expect(asResult(mutation.result)).toEqual([
     { space: "space-a", number: 1, name: null, panes: 1, active: true, focused: "pane-a" },
     { space: "space-b", number: 1, name: null, panes: 2, active: true, focused: "pane-b2" },
   ]);
@@ -2016,7 +2016,7 @@ test("pane.list reports every pane with its home, session and focus flags", () =
   const adopted = run(workspaceFromSession(wideBase()));
   const mutation = applyWorkspaceCommand(adopted, command("pane.list"), context);
   expect(mutation.changed).toBe(false);
-  expect(mutation.result).toEqual([
+  expect(asResult(mutation.result)).toEqual([
     { id: "pane-a", space: "space-a", window: 1, session: "agent-a", focused: true, zoomed: false },
     {
       id: "pane-b1",
@@ -2073,7 +2073,7 @@ test("agent.list and agent.get report agents with their home and pane", () => {
 test("pane.current with a calling pane resolves the caller, not the focused pane", () => {
   const adopted = run(workspaceFromSession(wideBase()));
   const mutation = applyWorkspaceCommand(adopted, command("pane.current"), wideContext);
-  expect(mutation.result).toEqual({
+  expect(asResult(mutation.result)).toEqual({
     id: "pane-b1",
     space: "space-b",
     window: 1,
@@ -2090,7 +2090,7 @@ test("pane.layout reports the pane's geometry and its window", () => {
     command("pane.layout", { pane: "pane-b2" }),
     context,
   );
-  const layout = mutation.result as {
+  const layout = asResult(mutation.result) as {
     pane: string;
     size: { cols: number; rows: number };
     window: { cols: number; rows: number };
@@ -2173,7 +2173,9 @@ test("pane.move crosses spaces, re-ids the pane, and reports the old id", () => 
     context,
   );
   expect(mutation.changed).toBe(true);
-  const result = mutation.result as { pane: string; previous_pane_id: string } | undefined;
+  const result = asResult(mutation.result) as
+    | { pane: string; previous_pane_id: string }
+    | undefined;
   expect(result).toBeDefined();
   expect(result!.previous_pane_id).toBe("pane-b1");
   expect(result!.pane.startsWith("space-a:p")).toBe(true);
@@ -2188,7 +2190,7 @@ test("pane.move crosses spaces, re-ids the pane, and reports the old id", () => 
 test("a closed pane id is never reissued to the next pane", () => {
   let adopted = run(workspaceFromSession(wideBase()));
   const split = applyWorkspaceCommand(adopted, command("pane.split", { axis: "row" }), context);
-  const created = split.result as { pane: string };
+  const created = asResult(split.result) as { pane: string };
   adopted = split.snapshot;
   const closed = applyWorkspaceCommand(
     adopted,
@@ -2200,7 +2202,7 @@ test("a closed pane id is never reissued to the next pane", () => {
     command("pane.split", { axis: "row" }),
     context,
   );
-  const again = reopened.result as { pane: string };
+  const again = asResult(reopened.result) as { pane: string };
   expect(again.pane).not.toBe(created.pane);
   // The counter only advances: the fresh id is strictly newer.
   const counterOf = (id: string) => Number(id.match(/:p(\d+)$/)![1]);

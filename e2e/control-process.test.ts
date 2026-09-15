@@ -423,7 +423,11 @@ testEffect("agent.prompt --wait returns once the session settles again", () =>
       ]),
     );
     expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
-    expect(JSON.parse(stdout)).toMatchObject({ topic: "session.state", payload: '"idle"' });
+    expect(JSON.parse(stdout)).toMatchObject({
+      _tag: "topic",
+      topic: "session.state",
+      payload: "idle",
+    });
   }),
 );
 

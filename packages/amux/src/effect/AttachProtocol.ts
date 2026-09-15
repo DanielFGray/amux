@@ -261,7 +261,8 @@ const CommandRequest = S.TaggedStruct("command.request", {
 /** The client's answer to a `command.request`, correlated by `id`. */
 const CommandResponse = S.TaggedStruct("command.response", {
   id: S.String,
-  result: S.optional(JsonValueSchema),
+  /** Owner-encoded result text; absent when the command returns void. */
+  result: S.optional(OwnerJsonText),
   error: S.optional(S.String),
 });
 
@@ -287,7 +288,8 @@ const RunRequest = S.TaggedStruct("run.request", {
 /** Daemon → client: answer to a {@link RunRequest}, correlated by `id`. */
 const RunResponse = S.TaggedStruct("run.response", {
   id: S.String,
-  result: S.optional(JsonValueSchema),
+  /** Owner-encoded result text; absent when the command returns void. */
+  result: S.optional(OwnerJsonText),
   /** Encoded workspace snapshot when the command mutated the model. */
   workspace: S.optional(S.String),
   error: S.optional(S.String),

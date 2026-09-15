@@ -10,7 +10,6 @@ import type { AgentResumePlan } from "../agent-resume.ts";
 import type { AgentSessionRef } from "../agent-session.ts";
 import type { CommandError, RegisteredCommand } from "../commands.ts";
 import type { PluginHostLoadInput } from "../config.ts";
-import type { JsonValue } from "../effect/AttachProtocol.ts";
 import type { OwnerJsonText } from "../layout.ts";
 import type { ForeignHarnessPlanResumeError } from "../foreign-harness.ts";
 import type {
@@ -75,7 +74,7 @@ export type PluginHostBehaviourCalls = {
     readonly command: RegisteredCommand;
     readonly context: DaemonSessionCommandContext;
   }) => Effect.Effect<
-    Option.Option<JsonValue>,
+    Option.Option<OwnerJsonText>,
     CommandError | PluginPublicationChanged | RpcClientError
   >;
   readonly RunTiling: (payload: {

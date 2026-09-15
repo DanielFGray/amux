@@ -35,6 +35,7 @@ import { command, WireCommand } from "./commands.ts";
 
 const descriptorText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
 const nestedFromText = (text: OwnerJsonText) => S.encodeSync(OwnerJsonText)(text);
+const resultFrom = (text: OwnerJsonText | undefined) => nestedFromText(text!);
 const commandTag = (text: OwnerJsonText) =>
   S.decodeSync(S.fromJsonString(S.Struct({ _tag: S.String })))(text)._tag;
 import { controlCall } from "./control-client.ts";
@@ -1233,7 +1234,8 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
       Stream.runForEach(client.commandRequests, ({ id, command: raw }) =>
         Effect.sync(() => {
           const tag = commandTag(raw);
-          if (tag === "pane.capture") client.respondCommand(id, "plugin-frame-text");
+          if (tag === "pane.capture")
+            client.respondCommand(id, descriptorText("plugin-frame-text"));
           else client.respondCommand(id, undefined, `unexpected ${tag}`);
         }),
       ),
@@ -1258,7 +1260,7 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
       ),
       env,
     );
-    const pane = (opened.outputs[0]!.result as { pane: string }).pane;
+    const pane = (resultFrom(opened.outputs[0]!.result) as { pane: string }).pane;
 
     const captured = yield* run(
       controlCall(daemon.id, (c) =>
@@ -1274,7 +1276,7 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
       ),
       env,
     );
-    expect(captured.outputs[0]!.result).toBe("plugin-frame-text");
+    expect(resultFrom(captured.outputs[0]!.result)).toBe("plugin-frame-text");
   }),
 );
 
@@ -1297,7 +1299,7 @@ testEffect("key-sourced client command runs on the pressing client, not the firs
           const tag = commandTag(raw);
           if (tag === "pane.capture") {
             firstHits += 1;
-            first.respondCommand(id, "from-first");
+            first.respondCommand(id, descriptorText("from-first"));
           } else first.respondCommand(id, undefined, `unexpected ${tag}`);
         }),
       ),
@@ -1309,7 +1311,7 @@ testEffect("key-sourced client command runs on the pressing client, not the firs
           if (tag === "pane.capture") {
             expect(source).toBe("key");
             secondHits += 1;
-            second.respondCommand(id, "from-second");
+            second.respondCommand(id, descriptorText("from-second"));
           } else second.respondCommand(id, undefined, `unexpected ${tag}`);
         }),
       ),
@@ -1330,7 +1332,7 @@ testEffect("key-sourced client command runs on the pressing client, not the firs
       ),
       env,
     );
-    const pane = (opened.result as { pane: string }).pane;
+    const pane = (resultFrom(opened.result) as { pane: string }).pane;
 
     const captured = yield* run(
       second.run(command("pane.capture", { pane }), {
@@ -1342,7 +1344,7 @@ testEffect("key-sourced client command runs on the pressing client, not the firs
       }),
       env,
     );
-    expect(captured).toBe("from-second");
+    expect(resultFrom(captured)).toBe("from-second");
     expect(secondHits).toBe(1);
     expect(firstHits).toBe(0);
   }),
@@ -1383,7 +1385,7 @@ testEffect("key client command whose handler runs a nested session command compl
           );
           nestedHits += 1;
           expect(renamed.snapshot.spaces[0]!.name).toBe("nested-from-handler");
-          client.respondCommand(id, "captured-after-nested");
+          client.respondCommand(id, descriptorText("captured-after-nested"));
         }),
       ),
     );
@@ -1403,7 +1405,7 @@ testEffect("key client command whose handler runs a nested session command compl
       ),
       env,
     );
-    const pane = (opened.result as { pane: string }).pane;
+    const pane = (resultFrom(opened.result) as { pane: string }).pane;
 
     const captured = yield* run(
       client.run(command("pane.capture", { pane }), {
@@ -1415,7 +1417,7 @@ testEffect("key client command whose handler runs a nested session command compl
       }),
       env,
     );
-    expect(captured).toBe("captured-after-nested");
+    expect(resultFrom(captured)).toBe("captured-after-nested");
     expect(outerHits).toBe(1);
     expect(nestedHits).toBe(1);
   }),
@@ -1496,7 +1498,7 @@ testEffect("unnamed client-routed send-keys pins the calling pane, not focus", (
       ),
       env,
     );
-    const paneB = (split.outputs[0]!.result as { pane: string }).pane;
+    const paneB = (resultFrom(split.outputs[0]!.result) as { pane: string }).pane;
     const afterSplit = yield* daemon.getWorkspace;
     expect(afterSplit.spaces[0]!.windows[0]!.state.focus).toBe(paneB);
 
@@ -1552,19 +1554,17 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
             return;
           }
           if (q.plugin !== undefined) {
-            client.respondCommand(id, {
-              kind: "plugin",
-              name: q.plugin,
-              found: true,
-            });
+            client.respondCommand(
+              id,
+              descriptorText({ kind: "plugin", name: q.plugin, found: true }),
+            );
             return;
           }
           if (q.command !== undefined) {
-            client.respondCommand(id, {
-              kind: "command",
-              name: q.command,
-              found: true,
-            });
+            client.respondCommand(
+              id,
+              descriptorText({ kind: "command", name: q.command, found: true }),
+            );
             return;
           }
           client.respondCommand(
@@ -1592,7 +1592,7 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
       ),
       env,
     );
-    const paneB = (split.outputs[0]!.result as { pane: string }).pane;
+    const paneB = (resultFrom(split.outputs[0]!.result) as { pane: string }).pane;
     expect((yield* daemon.getWorkspace).spaces[0]!.windows[0]!.state.focus).toBe(paneB);
 
     const caller = {
@@ -1612,7 +1612,7 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
       ),
       env,
     );
-    expect(byPlugin.outputs[0]!.result).toMatchObject({
+    expect(resultFrom(byPlugin.outputs[0]!.result)).toMatchObject({
       kind: "plugin",
       name: "amux",
       found: true,
@@ -1627,7 +1627,7 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
       ),
       env,
     );
-    expect(byCommand.outputs[0]!.result).toMatchObject({
+    expect(resultFrom(byCommand.outputs[0]!.result)).toMatchObject({
       kind: "command",
       name: "pane.zoom",
       found: true,

@@ -14,7 +14,6 @@ import { AgentResumePlanSchema } from "../agent-resume.ts";
 import { AgentSessionRefSchema } from "../agent-session.ts";
 import { CommandError, RegisteredCommandSchema } from "../commands.ts";
 import { PluginHostLoadInputSchema } from "../config.ts";
-import { JsonValueSchema } from "../effect/AttachProtocol.ts";
 import { OwnerJsonText } from "../layout.ts";
 import { ForeignHarnessPlanResumeError } from "../foreign-harness.ts";
 import { MAX_RPC_BYTES } from "../limits.ts";
@@ -156,7 +155,7 @@ export class PluginHostRpcs extends RpcGroup.make(
       context: DaemonSessionCommandContextSchema,
     },
     // Option: NDJSON cannot round-trip `undefined` (becomes JSON null).
-    success: S.Option(JsonValueSchema),
+    success: S.Option(OwnerJsonText),
     error: S.Union([CommandError, PluginPublicationChanged]),
   }),
   Rpc.make("RunTiling", {

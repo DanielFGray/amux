@@ -27,7 +27,6 @@ import {
   SESSION_STATE_TOPIC,
   type AttachFrame,
   type PermissionAnswer,
-  type JsonValue,
   type RunRequest,
 } from "./AttachProtocol.ts";
 import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
@@ -168,7 +167,7 @@ export interface AttachHostOptions<
     client: string,
     connection: string,
     request: RunRequest,
-  ) => Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, string>;
+  ) => Effect.Effect<{ readonly result?: OwnerJsonText; readonly workspace?: string }, string>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -233,7 +232,7 @@ export interface AttachHostService {
       readonly pane?: string;
       readonly agent?: string;
     },
-  ) => Effect.Effect<JsonValue | undefined, AttachHostCommandError>;
+  ) => Effect.Effect<OwnerJsonText | undefined, AttachHostCommandError>;
   /**
    * The server's paste buffer stack. Owned here because it belongs to the
    * PTY plane: it dies with the daemon's attach scope, exactly as tmux's
@@ -287,7 +286,7 @@ export const makeAttachHost = <
     const agentSessions = new AgentSessionTable();
     // Keyed by request id rather than by client: nothing else needs to find a
     // pending command by who it was asked of, only by which answer just came back.
-    const pendingCommands = new Map<string, Deferred.Deferred<JsonValue | undefined, string>>();
+    const pendingCommands = new Map<string, Deferred.Deferred<OwnerJsonText | undefined, string>>();
     // Register session teardown before the server resources below. Host scope
     // finalizers run in reverse order, so connections close and clients observe
     // detach before session shutdown can publish process exit frames.
@@ -486,10 +485,10 @@ export const makeAttachHost = <
         readonly pane?: string;
         readonly agent?: string;
       },
-    ): Effect.Effect<JsonValue | undefined, AttachHostCommandError> =>
+    ): Effect.Effect<OwnerJsonText | undefined, AttachHostCommandError> =>
       Effect.gen(function* () {
         const id = randomUUID();
-        const deferred = yield* Deferred.make<JsonValue | undefined, string>();
+        const deferred = yield* Deferred.make<OwnerJsonText | undefined, string>();
         pendingCommands.set(id, deferred);
         const frame =
           invocation.pane !== undefined && invocation.agent !== undefined

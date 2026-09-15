@@ -19,6 +19,7 @@ import { startDaemon, type SessionDaemonService } from "../daemon.ts";
 import { SessionStore } from "../session.ts";
 import { controlCall, connectRpcPath } from "../control-client.ts";
 import { command } from "../commands.ts";
+import { OwnerJsonText } from "../layout.ts";
 import { editorOpenCommand } from "../../../editor/src/command-args.ts";
 import { DEFAULT_CONFIG, type Config } from "../config.ts";
 import { waitFor } from "../test-wait.ts";
@@ -33,6 +34,9 @@ import {
 import type { ControlClient } from "../control-client.ts";
 
 registerCleanup();
+
+const nestedFromText = (text: OwnerJsonText) => S.encodeSync(OwnerJsonText)(text);
+const resultFrom = (text: OwnerJsonText | undefined) => nestedFromText(text!);
 
 const harness = new URL("../../../plugin-agent-harness", import.meta.url).pathname;
 const continuity = new URL("../../../plugin-agent-continuity", import.meta.url).pathname;
@@ -468,7 +472,7 @@ export default definePlugin({ id: "probe", effect: () => Effect.void });
       }),
     );
 
-    expect(reloaded.outputs[0]?.result).toEqual([
+    expect(resultFrom(reloaded.outputs[0]?.result)).toEqual([
       { spec: probePath, reason: expect.stringContaining("broken edit") },
     ]);
 

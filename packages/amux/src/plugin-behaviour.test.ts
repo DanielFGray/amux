@@ -49,7 +49,7 @@ import {
 import { buildWorkspaceReadPackage, workspaceFromSession } from "./workspace.ts";
 import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import type { SessionState } from "./session.ts";
-import { makeLayout } from "./layout.ts";
+import { makeLayout, OwnerJsonText } from "./layout.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { niriTilingAlgorithm } from "../../plugin-niri/src/niri.ts";
@@ -185,6 +185,7 @@ testEffect(
         fields: S.Struct({ target: S.String }),
         meta: { desc: "session", group: "probe", target: "session", exposure: "human" },
         resources: (args) => [args.target],
+        result: S.Struct({ ok: S.Boolean, target: S.String }),
         run: (command) =>
           Effect.sync(() => {
             seen.push(`session:${command.target}`);
@@ -214,7 +215,7 @@ testEffect(
           snapshot: workspace,
         })
         .pipe(Effect.provideService(DaemonSessions, idleSessions));
-      expect(sessionResult).toEqual({ ok: true, target: "agent-1" });
+      expect(S.encodeSync(OwnerJsonText)(sessionResult!)).toEqual({ ok: true, target: "agent-1" });
       expect(seen).toEqual(["reduce:hi", "action:3", "session:agent-1"]);
     }),
 );

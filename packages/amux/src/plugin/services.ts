@@ -45,6 +45,8 @@ export interface CommandRegistration {
   readonly meta: Meta;
   readonly resources: (args: any) => readonly string[];
   readonly handler: (args: any) => Effect.Effect<unknown, CommandError>;
+  /** Owner result Schema; absent ⇒ the handler may return only void. */
+  readonly result?: S.Codec<any>;
 }
 
 export interface RegistryService<A> {
@@ -126,7 +128,7 @@ export interface DaemonCommandSpec {
   readonly meta: Meta;
   readonly resources: (args: any) => readonly string[];
   /** Result Schema — plugin builders encode through it; apply only checks presence. */
-  readonly result?: S.Top;
+  readonly result?: S.Codec<any>;
 }
 
 export interface DaemonCommandRegistration extends DaemonCommandSpec {
@@ -274,15 +276,22 @@ export const scopedRegistry = <A extends object, Value>(
  * would otherwise lose argument inference the moment it registered. This
  * recovers it the same way `commands.ts`'s own `registerCommand` does.
  */
-export const registerCommand = <Fields extends S.Struct.Fields>(
+export const registerCommand = <Fields extends S.Struct.Fields, Result = void>(
   verb: string,
   fields: Fields,
   meta: Meta,
   resources: (args: S.Struct.Type<Fields>) => readonly string[],
-  handler: (args: S.Struct.Type<Fields>) => Effect.Effect<unknown, CommandError>,
+  handler: (args: S.Struct.Type<Fields>) => Effect.Effect<Result, CommandError>,
+  result?: S.Codec<Result>,
 ): Effect.Effect<void, never, CommandsTag | CurrentPlugin | Scope.Scope> =>
   CommandsTag.pipe(
-    Effect.flatMap((commands) => commands.register({ verb, fields, meta, resources, handler })),
+    Effect.flatMap((commands) => {
+      const registration: CommandRegistration =
+        result === undefined
+          ? { verb, fields, meta, resources, handler }
+          : { verb, fields, meta, resources, handler, result };
+      return commands.register(registration);
+    }),
   );
 
 /**

@@ -40,11 +40,10 @@ import {
   type WorkspaceChange,
 } from "../workspace-changes.ts";
 import { encodeOwner } from "../workspace-change-builders.ts";
-import { type JsonValue } from "./AttachProtocol.ts";
 import { type OwnerJsonText } from "../layout.ts";
 import { nodePath } from "./node-path.ts";
 import { COMMAND_META, isCoreCommand, type Command, type RegisteredCommand } from "../commands.ts";
-import type { PaneEntry } from "../read-model.ts";
+import { PaneCurrentResultSchema, PaneListResultSchema, type PaneEntry } from "../read-model.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { PtyError, SessionSpec } from "./SessionRegistry.ts";
@@ -312,24 +311,37 @@ const algorithmForDeclaration = (
 const withPanePid = (entry: PaneEntry, pids: ReadonlyMap<string, number>): PaneEntry =>
   entry.session === undefined ? entry : { ...entry, pid: pids.get(entry.session) };
 
+const mapTxnError = (error: { readonly message: string }): WorkspaceTransactionError =>
+  new WorkspaceTransactionError({ message: error.message });
+
 /** `pane.list`/`pane.current` answer from the pure workspace reducer, which
  *  knows nothing live — pid comes from the daemon's session registry, so it
  *  is stitched on here rather than threaded through `applyWorkspaceCommand`. */
 const withPanePids = (
   tag: string,
-  result: JsonValue,
+  result: OwnerJsonText,
   sessions: WorkspaceTransactionSessionsService,
-): Effect.Effect<JsonValue, WorkspaceTransactionError> => {
+): Effect.Effect<OwnerJsonText, WorkspaceTransactionError> => {
   if (tag !== "pane.list" && tag !== "pane.current") return Effect.succeed(result);
-  return sessions.pids.pipe(
-    Effect.map((pids) =>
-      Array.isArray(result)
-        ? result.map((entry) => withPanePid(entry as PaneEntry, pids))
-        : result === null
-          ? result
-          : withPanePid(result as PaneEntry, pids),
-    ),
-  );
+  return Effect.gen(function* () {
+    const pids = yield* sessions.pids;
+    if (tag === "pane.list") {
+      const entries = yield* S.decodeEffect(S.fromJsonString(PaneListResultSchema))(result).pipe(
+        Effect.mapError(mapTxnError),
+      );
+      return yield* encodeOwner(
+        PaneListResultSchema,
+        "pane.list result",
+      )(entries.map((entry) => withPanePid(entry, pids))).pipe(Effect.mapError(mapTxnError));
+    }
+    const entry = yield* S.decodeEffect(S.fromJsonString(PaneCurrentResultSchema))(result).pipe(
+      Effect.mapError(mapTxnError),
+    );
+    return yield* encodeOwner(
+      PaneCurrentResultSchema,
+      "pane.current result",
+    )(entry === null ? null : withPanePid(entry, pids)).pipe(Effect.mapError(mapTxnError));
+  });
 };
 
 interface WorktreeOps {
@@ -397,7 +409,7 @@ export interface WorkspaceTransactionService {
 
 export interface WorkspaceTransactionResult {
   readonly snapshot: WorkspaceSnapshot;
-  readonly result?: JsonValue;
+  readonly result?: OwnerJsonText;
 }
 
 export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>()(

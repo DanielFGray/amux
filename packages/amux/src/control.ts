@@ -19,6 +19,7 @@ import { TextEdit } from "@danielfgray/amux-text-buffer";
 import { WireCommand } from "./commands.ts";
 import { DaemonEvent } from "./effect/EventBus.ts";
 import { AgentEvent } from "./effect/AttachProtocol.ts";
+import { OwnerJsonText } from "./layout.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { PluginDeclarationsSchema, PluginPublicationRevisionSchema } from "./plugin-behaviour.ts";
 import { PluginPublicationAnnouncementSchema } from "./plugin/ui-announcement.ts";
@@ -110,12 +111,11 @@ export const PluginUiReadyReportSchema = S.Struct({
 export type PluginUiReadyReport = typeof PluginUiReadyReportSchema.Type;
 
 /**
- * A command's result is defined by the command itself (`COMMAND_META[tag].result`),
- * so it cannot be narrowed at the group level; the caller decodes it with the
- * schema its own tag declares.
+ * A command's result is owner-encoded JSON text ({@link OwnerJsonText}). The
+ * caller that needs a typed value decodes with the schema that command declared.
  */
 const BatchOutputSchema = S.Struct({
-  result: S.optional(S.Unknown),
+  result: S.optional(OwnerJsonText),
   workspace: S.optional(WorkspaceJson),
 });
 

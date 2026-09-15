@@ -41,12 +41,27 @@ import {
 } from "effect";
 import { BunRuntime } from "@effect/platform-bun";
 import type { RegisteredCommand } from "./commands.ts";
-import type { AgentEvent } from "./effect/AttachProtocol.ts";
 import type { PluginCommandDeclaration } from "./plugin-behaviour.ts";
 import type { CliArgValue } from "./command-cli.ts";
+import { OwnerJsonText } from "./layout.ts";
 
 const writeOut = (text: string) => process.stdout.write(text + "\n");
 const writeErr = (text: string) => process.stderr.write(text + "\n");
+
+/** Print one Batch result: a JSON string value raw, anything else as 2-space JSON. */
+const printBatchResult = (result: OwnerJsonText): Effect.Effect<void, string> =>
+  Effect.gen(function* () {
+    const nested = yield* Schema.encodeEffect(OwnerJsonText)(result).pipe(
+      Effect.mapError((error) => String(error)),
+    );
+    const text =
+      typeof nested === "string"
+        ? nested
+        : yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))(
+            nested,
+          ).pipe(Effect.mapError((error) => String(error)));
+    process.stdout.write(text + "\n");
+  });
 const readEnv = (name: string): string | undefined =>
   Option.getOrUndefined(
     Effect.runSync(
@@ -344,7 +359,7 @@ function main(): Effect.Effect<number> {
       { controlCall, agentWatch, AgentWaitError },
       commandsMod,
       { parseArgs, fieldNames, parseFields, parsePluginArgs, encodeCliParsedArgs },
-      { SESSION_STATE_TOPIC },
+      { SESSION_STATE_TOPIC, AgentEvent },
       { ProcessStateSchema },
     ] = yield* Effect.promise(() =>
       Promise.all([
@@ -570,16 +585,13 @@ function main(): Effect.Effect<number> {
         });
       }).pipe(
         Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
-        Effect.map(({ outputs }) => {
-          const result = outputs[0]?.result;
-          if (result !== undefined) {
-            const text = Option.getOrElse(Schema.decodeUnknownOption(Schema.String)(result), () =>
-              Schema.encodeSync(Schema.fromJsonString(Schema.Unknown, { space: 2 }))(result),
-            );
-            process.stdout.write(text + "\n");
-          }
-          return 0;
-        }),
+        Effect.flatMap(({ outputs }) =>
+          Effect.gen(function* () {
+            const result = outputs[0]?.result;
+            if (result !== undefined) yield* printBatchResult(result);
+            return 0;
+          }),
+        ),
         Effect.catch((error) =>
           Effect.sync(() => {
             writeErr(`error: ${String(error)}`);
@@ -695,12 +707,23 @@ function main(): Effect.Effect<number> {
           // process loads no plugins, so it has no way to recognise one and no
           // business asserting that a session has them.
           const settled = prompt.until ?? "idle";
-          const publishedState = (event: AgentEvent) => {
+          const publishedState = (event: typeof AgentEvent.Type) => {
             if (event._tag !== "topic" || event.topic !== SESSION_STATE_TOPIC) return undefined;
             return Option.getOrUndefined(
               Schema.decodeOption(Schema.fromJsonString(ProcessStateSchema))(event.payload),
             );
           };
+
+          // Wait rows: the settled AgentEvent, a bare `{ state }`, or a stall marker.
+          const CliWaitResultSchema = Schema.Union([
+            AgentEvent,
+            Schema.Struct({ state: Schema.String }),
+            Schema.Struct({ error: Schema.Literal("agent_prompt_stalled") }),
+          ]);
+          const encodeWaitResult = (value: typeof CliWaitResultSchema.Type) =>
+            Schema.encodeEffect(Schema.fromJsonString(CliWaitResultSchema))(value).pipe(
+              Effect.mapError((error) => new Error(String(error))),
+            );
 
           // Waiting for `settled` alone would return at once when the session
           // is still in it: this waits for the prompt to move it first.
@@ -716,7 +739,12 @@ function main(): Effect.Effect<number> {
             }),
           );
           if (Option.isNone(first))
-            return { outputs: [...outputs, { result: { error: "agent_prompt_stalled" } }] };
+            return {
+              outputs: [
+                ...outputs,
+                { result: yield* encodeWaitResult({ error: "agent_prompt_stalled" }) },
+              ],
+            };
           let result: typeof first.value | undefined;
           const fold = (event: typeof first.value) => {
             if (publishedState(event) !== settled) return false;
@@ -734,22 +762,24 @@ function main(): Effect.Effect<number> {
                 orElse: () => Effect.fail(new AgentWaitError({ reason: "agent_wait_timeout" })),
               }),
             );
-          return { outputs: [...outputs, { result: result ?? { state: settled } }] };
+          return {
+            outputs: [
+              ...outputs,
+              { result: yield* encodeWaitResult(result ?? { state: settled }) },
+            ],
+          };
         });
       }).pipe(Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))));
 
       return yield* runResult.pipe(
-        Effect.map(({ outputs }) => {
-          for (const { result } of outputs) {
-            if (result !== undefined) {
-              const text = Option.getOrElse(Schema.decodeUnknownOption(Schema.String)(result), () =>
-                Schema.encodeSync(Schema.fromJsonString(Schema.Unknown, { space: 2 }))(result),
-              );
-              process.stdout.write(text + "\n");
+        Effect.flatMap(({ outputs }) =>
+          Effect.gen(function* () {
+            for (const { result } of outputs) {
+              if (result !== undefined) yield* printBatchResult(result);
             }
-          }
-          return 0;
-        }),
+            return 0;
+          }),
+        ),
         Effect.catch((error) =>
           Effect.sync(() => {
             writeErr(`error: ${String(error)}`);

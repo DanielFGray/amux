@@ -21,6 +21,8 @@ import { parseWorkspaceJson } from "./workspace.ts";
 import { testEffect } from "./test-effect.ts";
 
 const descriptorText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
+const nestedFromText = (text: OwnerJsonText) => S.encodeSync(OwnerJsonText)(text);
+const resultFrom = (text: OwnerJsonText | undefined) => nestedFromText(text!);
 import { ctl, run } from "./test-daemon.ts";
 
 registerCleanup();
@@ -196,7 +198,7 @@ testEffect(
         before.revision,
         context,
       );
-      const target = (split.result as { session: string }).session;
+      const target = (resultFrom(split.result) as { session: string }).session;
 
       yield* daemon.runWorkspaceCommand(
         command("session.kill", { target }),
@@ -244,7 +246,7 @@ test("the read surface resolves the calling pane from inside one", async () => {
   const current = await ctl(daemon.id, env, (c) =>
     c.Batch({ values: [command("pane.current")], context: caller }),
   );
-  expect(current.outputs[0]!.result).toMatchObject({
+  expect(resultFrom(current.outputs[0]!.result)).toMatchObject({
     id: pane,
     space: space.id,
     window: 1,
@@ -254,7 +256,7 @@ test("the read surface resolves the calling pane from inside one", async () => {
   const layout = await ctl(daemon.id, env, (c) =>
     c.Batch({ values: [command("pane.layout")], context: caller }),
   );
-  expect(layout.outputs[0]!.result).toMatchObject({
+  expect(resultFrom(layout.outputs[0]!.result)).toMatchObject({
     pane,
     size: { cols: 80, rows: 24 },
   });
@@ -262,7 +264,7 @@ test("the read surface resolves the calling pane from inside one", async () => {
   const panes = await ctl(daemon.id, env, (c) =>
     c.Batch({ values: [command("pane.list")], context: caller }),
   );
-  expect(panes.outputs[0]!.result).toEqual(
+  expect(resultFrom(panes.outputs[0]!.result)).toEqual(
     expect.arrayContaining([expect.objectContaining({ id: pane, space: space.id })]),
   );
 
@@ -283,7 +285,7 @@ test("pane.capture without a named pane acts on the calling pane, not focus", as
       context,
     }),
   );
-  const created = split.outputs[0]!.result as { session: string; pane: string };
+  const created = resultFrom(split.outputs[0]!.result) as { session: string; pane: string };
   const afterSplit = Effect.runSync(daemon.getWorkspace);
   expect(afterSplit.spaces[0]!.windows[0]!.state.focus).toBe(created.pane);
 
@@ -350,7 +352,7 @@ test("pane.capture of a sessionless plugin pane needs an attached client", async
       context,
     }),
   );
-  const pane = (outputs[0]!.result as { pane: string }).pane;
+  const pane = (resultFrom(outputs[0]!.result) as { pane: string }).pane;
 
   const error = await ctl(daemon.id, env, (c) =>
     Effect.flip(c.Batch({ values: [command("pane.capture", { pane })] })),

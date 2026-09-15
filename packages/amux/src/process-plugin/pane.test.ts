@@ -11,7 +11,8 @@ import { nodePath } from "../effect/node-path.ts";
 import type { SessionState } from "../session.ts";
 import { KeyInvocation } from "../key-invocation.ts";
 import { NO_REALM, Realm } from "../realm.ts";
-import { placementOf } from "../layout.ts";
+import { OwnerJsonText, placementOf } from "../layout.ts";
+import { Schema as S } from "effect";
 import {
   processPluginActionBindingName,
   processPluginBindingSpecs,
@@ -20,6 +21,9 @@ import {
 import type { LinkedProcessPluginInfo } from "./registry.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
+
+const asResult = (result: WorkspaceMutation["result"] | string | undefined) =>
+  typeof result === "string" ? S.encodeSync(OwnerJsonText)(result) : result;
 const path = run(nodePath);
 const applyWorkspaceCommand = (
   ...args: [
@@ -92,7 +96,7 @@ test("process-plugin.pane.open with resolved fields spawns session", () => {
   expect(spawn?.agent.cmd).toEqual(["htop"]);
   expect(spawn?.agent.name).toBe("Board");
   expect(spawn?.agent.env).toEqual({ AMUX_PLUGIN_ID: "examples.smoke", AMUX_ENV: "1" });
-  const result = mutation.result as { pane: string };
+  const result = asResult(mutation.result) as { pane: string };
   const layout = mutation.snapshot.spaces[0]!.windows[0]!.layout;
   expect(placementOf(layout, result.pane)).toBe("tiled");
 });
@@ -112,7 +116,7 @@ test("process-plugin.pane.open placement=floating uses setPlacement", () => {
     context,
   );
   expect(mutation.changed).toBe(true);
-  const result = mutation.result as { session: string; pane: string };
+  const result = asResult(mutation.result) as { session: string; pane: string };
   const window = mutation.snapshot.spaces[0]!.windows[0]!;
   expect(placementOf(window.layout, result.pane)).toBe("floating");
   expect(window.state.focus).toBe(result.pane);

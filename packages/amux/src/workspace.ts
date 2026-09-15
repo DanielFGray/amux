@@ -1,8 +1,17 @@
-import { isCoreCommand, type Command, type RegisteredCommand } from "./commands.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
-import type { CreationResult } from "./creation-result.ts";
-import type { PaneMoveResult } from "./commands.ts";
 import {
+  isCoreCommand,
+  PaneMoveResult as PaneMoveResultSchema,
+  type Command,
+  type PaneMoveResult,
+  type RegisteredCommand,
+} from "./commands.ts";
+import { creationResultSchema, type CreationResult } from "./creation-result.ts";
+import {
+  PaneCurrentResultSchema,
+  PaneLayoutResultSchema,
+  PaneListResultSchema,
+  SpaceListResultSchema,
+  WindowListResultSchema,
   WorkspaceSpaceSchema,
   type AgentEntry as ReadAgentEntry,
   type PaneEntry as ReadPaneEntry,
@@ -10,6 +19,7 @@ import {
   type SpaceEntry as ReadSpaceEntry,
   type WindowEntry as ReadWindowEntry,
 } from "./read-model.ts";
+import { encodeOwner } from "./workspace-change-builders.ts";
 import {
   ActionTagSchema,
   PluginReducerError,
@@ -233,7 +243,8 @@ export interface WorkspaceMutation {
   readonly snapshot: WorkspaceSnapshot;
   readonly actions: readonly WorkspaceAction[];
   readonly changed: boolean;
-  readonly result?: JsonValue;
+  /** Owner-encoded result text; absent when the command returns void. */
+  readonly result?: OwnerJsonText;
 }
 
 /**
@@ -875,7 +886,19 @@ const applyWorkspaceCommandOnce = (
       return makePaneId(space.id, counter);
     };
     const actions: WorkspaceAction[] = [];
-    let result: JsonValue | undefined;
+    let result: OwnerJsonText | undefined;
+    const setResult =
+      <A>(schema: S.Codec<A>) =>
+      (value: A): Effect.Effect<void, WorkspaceChangeError> =>
+        encodeOwner(
+          schema,
+          "command result",
+        )(value).pipe(
+          Effect.mapError((error) => new WorkspaceChangeError({ message: error.message })),
+          Effect.map((text) => {
+            result = text;
+          }),
+        );
     const before = yield* S.encodeEffect(WorkspaceSnapshotJson)(next).pipe(
       Effect.mapError((error) => new WorkspaceChangeError({ message: error.message })),
     );
@@ -1367,10 +1390,10 @@ const applyWorkspaceCommandOnce = (
           target.window.window,
           resolve(context.cwd, command.cwd?.trim() || "."),
         );
-        result = {
+        yield* setResult(creationResultSchema("pane.split"))({
           session: agent.id,
           pane: yield* splitAtTarget(command.axis, agent, target),
-        } satisfies CreationResult<"pane.split">;
+        } satisfies CreationResult<"pane.split">);
         break;
       }
       case "pane.open-plugin": {
@@ -1392,7 +1415,9 @@ const applyWorkspaceCommandOnce = (
             message: "pane.open-plugin requires a target pane or window",
           });
         }
-        result = { pane } satisfies CreationResult<"pane.open-plugin">;
+        yield* setResult(creationResultSchema("pane.open-plugin"))({
+          pane,
+        } satisfies CreationResult<"pane.open-plugin">);
         break;
       }
       case "process-plugin.pane.open": {
@@ -1425,10 +1450,10 @@ const applyWorkspaceCommandOnce = (
           target.window.window.layout = setDock(target.window.window.layout, paneId, placement);
         }
         target.window.window.state.focus = paneId;
-        result = {
+        yield* setResult(creationResultSchema("process-plugin.pane.open"))({
           session: agent.id,
           pane: paneId,
-        } satisfies CreationResult<"process-plugin.pane.open">;
+        } satisfies CreationResult<"process-plugin.pane.open">);
         break;
       }
       case "pane.next": {
@@ -1778,7 +1803,10 @@ const applyWorkspaceCommandOnce = (
           next.spaces.map((space) => space.id),
           destination.id,
         );
-        result = { pane: moved.id, previous_pane_id: previousPaneId } satisfies PaneMoveResult;
+        yield* setResult(PaneMoveResultSchema)({
+          pane: moved.id,
+          previous_pane_id: previousPaneId,
+        } satisfies PaneMoveResult);
         break;
       }
       case "window.new": {
@@ -1786,11 +1814,11 @@ const applyWorkspaceCommandOnce = (
         if (target) {
           const created = yield* addWindow(target);
           const pane = layoutRefs(created.layout)[0]!;
-          result = {
+          yield* setResult(creationResultSchema("window.new"))({
             window: created.number,
             pane: pane.id,
             session: paneSession(pane.content) ?? "",
-          } satisfies CreationResult<"window.new">;
+          } satisfies CreationResult<"window.new">);
         }
         break;
       }
@@ -1993,12 +2021,12 @@ const applyWorkspaceCommandOnce = (
         );
         const window = yield* addWindow(created);
         const pane = layoutRefs(window.layout)[0]!;
-        result = {
+        yield* setResult(creationResultSchema("space.new"))({
           space: created.id,
           window: window.number,
           pane: pane.id,
           session: paneSession(pane.content) ?? "",
-        } satisfies CreationResult<"space.new">;
+        } satisfies CreationResult<"space.new">);
         break;
       }
       case "space.select": {
@@ -2033,25 +2061,29 @@ const applyWorkspaceCommandOnce = (
       }
       // The read surface: pure projections, no actions, no frame, nothing seen.
       case "space.list": {
-        result = spaceEntries(next);
+        yield* setResult(SpaceListResultSchema)(spaceEntries(next));
         break;
       }
       case "window.list": {
-        result = windowEntries(next);
+        yield* setResult(WindowListResultSchema)(windowEntries(next));
         break;
       }
       case "pane.list": {
-        result = paneEntries(next);
+        yield* setResult(PaneListResultSchema)(paneEntries(next));
         break;
       }
       case "pane.current": {
         const target = targetPane();
-        result = target ? paneEntry(target.window.space, target.window.window, target.pane) : null;
+        yield* setResult(PaneCurrentResultSchema)(
+          target ? paneEntry(target.window.space, target.window.window, target.pane) : null,
+        );
         break;
       }
       case "pane.layout": {
         const target = targetPane();
-        result = target ? paneLayout(next, target.pane.id, context.size) : null;
+        yield* setResult(PaneLayoutResultSchema)(
+          target ? paneLayout(next, target.pane.id, context.size) : null,
+        );
         break;
       }
     }

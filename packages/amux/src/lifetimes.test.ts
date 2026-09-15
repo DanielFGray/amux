@@ -422,7 +422,7 @@ function lifecycleSession(
     backend: () => spawn,
     runWorkspace: () => Effect.succeed({ snapshot: structuredClone(workspace) }),
     resumeAgent: () => Effect.void,
-    run: () => Effect.void,
+    run: () => Effect.succeed(undefined),
     close() {},
     stop: Effect.void,
     setBuffer: () => Effect.succeed("buffer"),

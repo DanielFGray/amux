@@ -6,7 +6,6 @@ import { connectControl, controlCall, toControlError } from "./control-client.ts
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
 import { WireCommand, type Command, type RegisteredCommand } from "./commands.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
 import type { OwnerJsonText } from "./layout.ts";
 import { parseWorkspaceJson, workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
 import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
@@ -43,8 +42,8 @@ export class SessionClientError extends S.TaggedError<SessionClientError>()("Ses
  *  and passes any result on. */
 export const unchangedOutput = (
   workspace: WorkspaceSnapshot,
-  result: JsonValue | undefined,
-): { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue } =>
+  result: OwnerJsonText | undefined,
+): { readonly snapshot: WorkspaceSnapshot; readonly result?: OwnerJsonText } =>
   result === undefined
     ? { snapshot: structuredClone(workspace) }
     : { snapshot: structuredClone(workspace), result };
@@ -77,12 +76,12 @@ export interface SessionClientContract extends DaemonSession {
     never,
     never
   >;
-  readonly respondCommand: (id: string, result?: JsonValue, error?: string) => void;
+  readonly respondCommand: (id: string, result?: OwnerJsonText, error?: string) => void;
   readonly runWorkspace: (
     command: Command | RegisteredCommand,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<
-    { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue },
+    { readonly snapshot: WorkspaceSnapshot; readonly result?: OwnerJsonText },
     ControlError | SessionClientError,
     never
   >;
@@ -90,7 +89,7 @@ export interface SessionClientContract extends DaemonSession {
   readonly run: (
     command: Command | RegisteredCommand,
     context: WorkspaceCommandContext,
-  ) => Effect.Effect<unknown, ControlError>;
+  ) => Effect.Effect<OwnerJsonText | undefined, ControlError>;
   readonly resumeAgent: (input: {
     session: string;
     provider: string;
@@ -210,7 +209,7 @@ const make = (
       readonly command: Command | RegisteredCommand;
       readonly context: WorkspaceCommandContext;
       readonly done: Deferred.Deferred<
-        { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue },
+        { readonly snapshot: WorkspaceSnapshot; readonly result?: OwnerJsonText },
         SessionClientError
       >;
     }>();
@@ -298,7 +297,7 @@ const make = (
       runWorkspace: (command, context) =>
         Effect.gen(function* () {
           const done = yield* Deferred.make<
-            { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue },
+            { readonly snapshot: WorkspaceSnapshot; readonly result?: OwnerJsonText },
             SessionClientError
           >();
           return yield* Effect.raceFirst(

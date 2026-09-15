@@ -327,11 +327,20 @@ const agentGet = defineDaemonCommand({
     }),
 });
 
+const AgentLogsResultSchema = S.Array(
+  S.Struct({
+    role: S.String,
+    text: S.String,
+    timestamp: S.String,
+  }),
+);
+
 const agentLogs = defineDaemonCommand({
   tag: "agent.logs",
   fields: AgentLogsArgs,
   meta: agentPluginMeta("read the harness durable log", "session", "agent"),
   resources: (args) => [args.target],
+  result: AgentLogsResultSchema,
   run: (command, context) => {
     const found = context.snapshot.spaces
       .flatMap((space) => space.windows.map((window) => ({ space, window })))

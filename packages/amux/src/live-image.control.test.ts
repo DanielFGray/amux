@@ -24,6 +24,7 @@ import {
   type RegisteredCommand,
 } from "./commands.ts";
 import { Schema as S } from "effect";
+import { OwnerJsonText } from "./layout.ts";
 import { DEFAULT_CONFIG, loadConfig, type Config } from "./config.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
@@ -120,6 +121,9 @@ const socketContext = {
   source: "socket" as const,
 };
 
+const nestedFromText = (text: OwnerJsonText) => S.encodeSync(OwnerJsonText)(text);
+const resultFrom = (text: OwnerJsonText | undefined) => nestedFromText(text!);
+
 const batch = (id: string, env: NodeJS.ProcessEnv, value: Command | RegisteredCommand) =>
   ctl(id, env, (c) => c.Batch({ values: [value], context: socketContext })).then(
     (result) => result.outputs[0]!,
@@ -192,6 +196,7 @@ const echo = defineDaemonCommand({
   fields: S.Struct({ text: S.optionalKey(S.String) }),
   meta: { desc: "echo token ${token}", group: "demo", target: "session", exposure: "agent" },
   resources: () => [],
+  result: S.Struct({ token: S.String, text: S.String }),
   run: (command) => Effect.succeed({ token: ${JSON.stringify(token)}, text: command.text ?? "" }),
 });
 
@@ -379,7 +384,7 @@ testEffect(
       const evaluated = yield* Effect.promise(() =>
         batch(daemon.id, env, command("plugin.eval", { plugin: pluginId, source })),
       );
-      expect(evaluated.result).toEqual(
+      expect(resultFrom(evaluated.result)).toEqual(
         expect.objectContaining({ plugin: pluginId, path: expect.any(String) }),
       );
       yield* waitForUiPlugin(app, pluginId);
@@ -387,7 +392,7 @@ testEffect(
       const inspected = yield* Effect.promise(() =>
         batch(daemon.id, env, command("plugin.inspect", { plugin: pluginId })),
       );
-      expect(inspected.result).toEqual(
+      expect(resultFrom(inspected.result)).toEqual(
         expect.objectContaining({
           kind: "plugin",
           name: pluginId,
@@ -399,7 +404,7 @@ testEffect(
       const binding = yield* Effect.promise(() =>
         batch(daemon.id, env, command("plugin.inspect", { binding: bindingName })),
       );
-      expect(binding.result).toEqual(
+      expect(resultFrom(binding.result)).toEqual(
         expect.objectContaining({
           kind: "binding",
           name: bindingName,
@@ -412,7 +417,7 @@ testEffect(
       const promoted = yield* Effect.promise(() =>
         batch(daemon.id, env, command("plugin.promote", { plugin: pluginId })),
       );
-      expect(promoted.result).toEqual({
+      expect(resultFrom(promoted.result)).toEqual({
         plugin: pluginId,
         path: managedPluginSpecPath(pluginId),
       });
@@ -437,7 +442,7 @@ testEffect(
       const afterRestart = yield* Effect.promise(() =>
         batch(daemon.id, env, command("plugin.inspect", { plugin: pluginId })),
       );
-      expect(afterRestart.result).toEqual(
+      expect(resultFrom(afterRestart.result)).toEqual(
         expect.objectContaining({
           kind: "plugin",
           name: pluginId,
@@ -480,13 +485,15 @@ testEffect(
       const evaluated = yield* Effect.promise(() =>
         batch(daemon.id, env, command("plugin.eval", { plugin: pluginId, source: v1.ui })),
       );
-      expect(evaluated.result).toEqual(
+      expect(resultFrom(evaluated.result)).toEqual(
         expect.objectContaining({ plugin: pluginId, path: expect.any(String) }),
       );
 
       // 2. Host command runs.
       const echo1 = yield* echoToken(daemon.id, env, pluginId, "step2");
-      expect(echo1.result).toEqual(expect.objectContaining({ token: "v1", text: "step2" }));
+      expect(resultFrom(echo1.result)).toEqual(
+        expect.objectContaining({ token: "v1", text: "step2" }),
+      );
 
       const clientA = yield* attachClient(daemon.id, env, "life-a");
       const clientB = yield* attachClient(daemon.id, env, "life-b");
@@ -538,7 +545,9 @@ testEffect(
       yield* waitForUiPlugin(appA, pluginId);
       yield* waitForUiPlugin(appB, pluginId);
       const echo2 = yield* echoToken(daemon.id, env, pluginId, "step3");
-      expect(echo2.result).toEqual(expect.objectContaining({ token: "v2", text: "step3" }));
+      expect(resultFrom(echo2.result)).toEqual(
+        expect.objectContaining({ token: "v2", text: "step3" }),
+      );
 
       // Explicit reload also advances both clients (same proof the watch-only slice had).
       const rev1 = gotA[0]!.revision;
@@ -573,7 +582,7 @@ testEffect(
       const reloaded = yield* Effect.promise(() =>
         batch(daemon.id, env, command("plugin.reload", {})),
       );
-      expect(reloaded.result).toEqual(
+      expect(resultFrom(reloaded.result)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             spec: expect.stringContaining(scratchStem(pluginId)),
@@ -582,7 +591,9 @@ testEffect(
         ]),
       );
       const echoKept = yield* echoToken(daemon.id, env, pluginId, "step4");
-      expect(echoKept.result).toEqual(expect.objectContaining({ token: "v2", text: "step4" }));
+      expect(resultFrom(echoKept.result)).toEqual(
+        expect.objectContaining({ token: "v2", text: "step4" }),
+      );
       expect(appA.pluginHost.status().some((s) => s.id === pluginId && s.phase === "active")).toBe(
         true,
       );
@@ -596,7 +607,9 @@ testEffect(
       clientB.close();
       clients.splice(0, clients.length);
       const echoDetached = yield* echoToken(daemon.id, env, pluginId, "step5");
-      expect(echoDetached.result).toEqual(expect.objectContaining({ token: "v2", text: "step5" }));
+      expect(resultFrom(echoDetached.result)).toEqual(
+        expect.objectContaining({ token: "v2", text: "step5" }),
+      );
 
       // 6. Reattach two clients; both share the active publication revision / UI readiness.
       const clientC = yield* attachClient(daemon.id, env, "life-c");
@@ -633,19 +646,19 @@ testEffect(
       yield* Effect.promise(() => batch(daemon.id, env, command("plugin.reload", {})));
       yield* waitForUiFailedClient(daemon.id, env, pluginId);
       const echoDuringUiFail = yield* echoToken(daemon.id, env, pluginId, "step7");
-      expect(echoDuringUiFail.result).toEqual(
+      expect(resultFrom(echoDuringUiFail.result)).toEqual(
         expect.objectContaining({ token: "v2", text: "step7" }),
       );
       // Spawn a session-backed pane while UI is failed — daemon owns the PTY.
       const split = yield* Effect.promise(() =>
         batch(daemon.id, env, command("pane.split", { axis: "row" })),
       );
-      expect(split.result).toEqual(
+      expect(resultFrom(split.result)).toEqual(
         expect.objectContaining({ session: expect.any(String), pane: expect.any(String) }),
       );
-      const created = split.result as { session: string; pane: string };
+      const created = resultFrom(split.result) as { session: string; pane: string };
       const panes = yield* Effect.promise(() => batch(daemon.id, env, command("pane.list", {})));
-      expect(panes.result).toEqual(
+      expect(resultFrom(panes.result)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ id: created.pane, session: created.session }),
         ]),
@@ -677,7 +690,9 @@ testEffect(
       daemons.push(restarted);
       yield* waitForHostReady(restarted.id, env);
       const echoRestart = yield* echoToken(restarted.id, env, pluginId, "step8");
-      expect(echoRestart.result).toEqual(expect.objectContaining({ token: "v2", text: "step8" }));
+      expect(resultFrom(echoRestart.result)).toEqual(
+        expect.objectContaining({ token: "v2", text: "step8" }),
+      );
 
       const clientE = yield* attachClient(restarted.id, env, "life-e");
       const clientF = yield* attachClient(restarted.id, env, "life-f");

@@ -21,6 +21,9 @@ import { pluginBehaviourFromRegistrations } from "./test-plugin-behaviour.ts";
 
 const emptyDescriptor = S.decodeSync(OwnerJsonText)({});
 
+const asResult = (result: WorkspaceMutation["result"] | string | undefined) =>
+  typeof result === "string" ? S.encodeSync(OwnerJsonText)(result) : result;
+
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const path = run(nodePath);
 
@@ -175,12 +178,12 @@ test("pane.current and pane.layout use the same resolveTarget rule", () => {
     ...context,
     ...caller,
   });
-  expect((read.result as { id: string }).id).toBe("pane-b1");
+  expect((asResult(read.result) as { id: string }).id).toBe("pane-b1");
   const layout = applyWorkspaceCommand(workspace, command("pane.layout"), {
     ...context,
     ...caller,
   });
-  expect((layout.result as { pane: string }).pane).toBe("pane-b1");
+  expect((asResult(layout.result) as { pane: string }).pane).toBe("pane-b1");
 });
 
 test("placement replace uses the same resolveTarget rule", () => {

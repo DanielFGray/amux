@@ -149,7 +149,6 @@ test("run.request and run.response round-trip with workspace output", () => {
     _tag: "run.response",
     id: "run-1",
     workspace: '{"revision":4}',
-    result: null,
   };
   expect(decodeAttachFrames(encodeAttachFrame(requestAbsentInput)).frames).toEqual([
     requestAbsentInput,

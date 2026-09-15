@@ -59,6 +59,7 @@ import {
   command,
   commandInvocation,
   CurrentInvocation,
+  decodeCoreCommandResult,
   makeCommands,
   isCoreCommand,
   runDetached,
@@ -186,7 +187,6 @@ import { createLayoutKinds, type LayoutKindRenderer } from "./layout-kinds.ts";
 import type { PaneView } from "./component-pane.tsx";
 import { ComponentPane } from "./component-pane.tsx";
 import { errorMessage } from "./error-message.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
 import type { Pane } from "./pane.ts";
 
 /** app.tsx sits on the render/plain-async side of the seam (see harness.ts): it
@@ -613,7 +613,22 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
               );
             }
             const result = yield* app.commands.run(decoded, commandInvocation(source, pane, agent));
-            options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined);
+            if (result === undefined) {
+              options.session.respondCommand(id, undefined);
+              return;
+            }
+            const schema = app.commands.resultSchemaFor(decoded._tag);
+            if (schema === undefined) {
+              return yield* Effect.fail(
+                `command '${decoded._tag}' returned a value but declares no result Schema`,
+              );
+            }
+            const encoded = yield* S.encodeEffect(S.fromJsonString(schema))(result).pipe(
+              Effect.mapError(
+                (error) => `command '${decoded._tag}' result: ${errorMessage(error)}`,
+              ),
+            );
+            options.session.respondCommand(id, encoded);
           }).pipe(
             Effect.catch((error) =>
               Effect.sync(() =>
@@ -888,7 +903,7 @@ function buildApp(
   ): Effect.Effect<CommandResult<T>, CommandError> =>
     Effect.gen(function* () {
       const context = yield* callerWorkspaceContext;
-      return yield* session
+      const output = yield* session
         .runWorkspace(value, {
           ...context,
           input,
@@ -897,8 +912,8 @@ function buildApp(
           Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
           Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
           Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
-          Effect.map(({ result }) => result as CommandResult<T>),
         );
+      return yield* decodeCoreCommandResult(value._tag, output.result);
     });
 
   const runCommand = <T extends CommandTag>(
@@ -911,10 +926,10 @@ function buildApp(
       () =>
         Effect.gen(function* () {
           const context = yield* callerWorkspaceContext;
-          return yield* session.run(value, context).pipe(
-            Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-            Effect.map((result) => result as CommandResult<T>),
-          );
+          const result = yield* session
+            .run(value, context)
+            .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
+          return yield* decodeCoreCommandResult(value._tag, result);
         }),
     );
 
@@ -1781,14 +1796,7 @@ function buildApp(
     "pane.split": runCommand,
     "pane.open-plugin": runCommand,
     "process-plugin.pane.open": runCommand,
-    "process-plugin.action.invoke": (value) =>
-      Effect.gen(function* () {
-        const context = yield* callerWorkspaceContext;
-        yield* session.run(value, context).pipe(
-          Effect.asVoid,
-          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-        );
-      }),
+    "process-plugin.action.invoke": runCommand,
     "pane.next": runCommand,
     "pane.last": runCommand,
     "pane.focus": runCommand,
@@ -2066,6 +2074,7 @@ function buildApp(
       isWorkspaceCommand: rawCommands.isWorkspaceCommand,
       isRemoteCommand: rawCommands.isRemoteCommand,
       resourcesFor: rawCommands.resourcesFor,
+      resultSchemaFor: rawCommands.resultSchemaFor,
     },
     (owner, registration: CommandRegistration) =>
       rawCommands.registerCommand(
@@ -2075,6 +2084,7 @@ function buildApp(
         registration.meta,
         registration.resources,
         registration.handler,
+        registration.result,
       ),
   );
   const commandsProvider = providerRef<CommandsService>(commandsService);

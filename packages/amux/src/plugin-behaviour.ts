@@ -14,7 +14,6 @@ import { CommandError, COMMAND_TARGETS, type Meta, type RegisteredCommand } from
 import type { DaemonSessionsService } from "./daemon-sessions.ts";
 import { DaemonSessions } from "./daemon-sessions.ts";
 import { errorMessage } from "./error-message.ts";
-import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import { OwnerJsonText } from "./layout.ts";
 import {
   ForeignHarnessPlanResumeError,
@@ -151,7 +150,7 @@ export interface PluginBehaviourService {
   readonly runSession: (
     command: RegisteredCommand,
     context: DaemonSessionCommandContext,
-  ) => Effect.Effect<JsonValue | undefined, CommandError | PluginPublicationChanged>;
+  ) => Effect.Effect<OwnerJsonText | undefined, CommandError | PluginPublicationChanged>;
 
   readonly runTiling: (
     algorithmId: string,
@@ -181,7 +180,7 @@ const commandDeclarationFrom = (
   registration: {
     readonly tag: string;
     readonly meta: Meta;
-    readonly result?: S.Top;
+    readonly result?: S.Codec<any>;
     readonly actions?: readonly { readonly tag: string }[];
     readonly paneTypes?: readonly { readonly type: string }[];
     readonly providers?: readonly { readonly provider: string }[];
@@ -329,7 +328,12 @@ export const buildPluginBehaviour = (
           }
           const result = yield* registration.run(command, context);
           if (result === undefined) return undefined;
-          return yield* S.decodeUnknownEffect(JsonValueSchema)(result).pipe(
+          if (registration.result === undefined) {
+            return yield* new CommandError({
+              message: `session command '${command._tag}' returned a value but declares no result Schema`,
+            });
+          }
+          return yield* S.encodeUnknownEffect(S.fromJsonString(registration.result))(result).pipe(
             Effect.mapError(
               (error) =>
                 new CommandError({
@@ -387,7 +391,7 @@ export const buildPluginBehaviour = (
 export const runPluginSessionCommand = (
   command: RegisteredCommand,
   context: DaemonSessionCommandContext,
-): Effect.Effect<JsonValue | undefined, CommandError, PluginBehaviour> =>
+): Effect.Effect<OwnerJsonText | undefined, CommandError, PluginBehaviour> =>
   Effect.gen(function* () {
     const behaviour = yield* PluginBehaviour;
     return yield* behaviour.runSession(command, context).pipe(

@@ -17,7 +17,6 @@ import {
   decodeAttachFrames,
   encodeAttachFrameBytes,
   type AttachFrame,
-  type JsonValue,
 } from "./effect/AttachProtocol.ts";
 import type { OwnerJsonText } from "./layout.ts";
 import { errorMessage } from "./error-message.ts";
@@ -129,7 +128,7 @@ export interface AttachClientContract {
     never,
     never
   >;
-  respondCommand(id: string, result?: JsonValue, error?: string): void;
+  respondCommand(id: string, result?: OwnerJsonText, error?: string): void;
   /** Ask the daemon to run one command on this attach connection. */
   runCommand(
     command: OwnerJsonText,
@@ -137,7 +136,7 @@ export interface AttachClientContract {
       readonly expectedRevision?: number;
       readonly context?: WorkspaceCommandContext;
     },
-  ): Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, AttachError>;
+  ): Effect.Effect<{ readonly result?: OwnerJsonText; readonly workspace?: string }, AttachError>;
   input(session: string, data: string | Uint8Array): void;
   resize(session: string, cols: number, rows: number): void;
   sync(session: string, after?: number): void;
@@ -205,7 +204,7 @@ class AttachClientConnection {
   }>;
   private readonly _pendingRuns = new Map<
     string,
-    Deferred.Deferred<{ readonly result?: JsonValue; readonly workspace?: string }, AttachError>
+    Deferred.Deferred<{ readonly result?: OwnerJsonText; readonly workspace?: string }, AttachError>
   >();
   private _onClose: ((error: Error | null) => void) | undefined;
   private _onError: ((message: string) => void) | undefined;
@@ -305,7 +304,7 @@ class AttachClientConnection {
     return Stream.fromQueue(this._commandQ);
   }
 
-  respondCommand(id: string, result?: JsonValue, error?: string): void {
+  respondCommand(id: string, result?: OwnerJsonText, error?: string): void {
     const base = { _tag: "command.response" as const, id };
     this._send(
       error !== undefined ? { ...base, error } : result !== undefined ? { ...base, result } : base,
@@ -318,12 +317,12 @@ class AttachClientConnection {
       readonly expectedRevision?: number;
       readonly context?: WorkspaceCommandContext;
     },
-  ): Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, AttachError> {
+  ): Effect.Effect<{ readonly result?: OwnerJsonText; readonly workspace?: string }, AttachError> {
     return Effect.gen({ self: this }, function* () {
       if (this._closed) return yield* new AttachError({ message: "attach client is closed" });
       const id = `run-${(yield* Random.next).toString(36).slice(2)}`;
       const done = yield* Deferred.make<
-        { readonly result?: JsonValue; readonly workspace?: string },
+        { readonly result?: OwnerJsonText; readonly workspace?: string },
         AttachError
       >();
       this._pendingRuns.set(id, done);

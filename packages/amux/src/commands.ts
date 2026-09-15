@@ -267,6 +267,7 @@ const ProcessPluginActionInvoke = define(
     exposure: "agent",
   },
   (args) => resourcesOf(args.plugin, args.action),
+  S.Struct({ pid: S.Finite }),
 );
 const PaneNext = define(
   "pane.next",
@@ -454,7 +455,7 @@ const PaneJoin = define(
  * re-anchor deterministically rather than guessing that the pane it knew is
  * gone.
  */
-const PaneMoveResult = S.Struct({
+export const PaneMoveResult = S.Struct({
   pane: S.String,
   previous_pane_id: S.String,
 });
@@ -1107,6 +1108,9 @@ const AppDescribeKey = define(
   },
   (args) => resourcesOf(args.command, args.binding, args.key, args.pane, args.plugin),
 );
+/** Republish failures returned by enable/disable (same shape as plugin.reload). */
+const PluginRepublishFailures = S.Array(S.Struct({ spec: S.String, reason: S.String }));
+
 const PluginEnable = define(
   "plugin.enable",
   { plugin: S.String },
@@ -1117,6 +1121,7 @@ const PluginEnable = define(
     exposure: "human",
   },
   (args) => resourcesOf(args.plugin),
+  PluginRepublishFailures,
 );
 const PluginDisable = define(
   "plugin.disable",
@@ -1128,6 +1133,7 @@ const PluginDisable = define(
     exposure: "human",
   },
   (args) => resourcesOf(args.plugin),
+  PluginRepublishFailures,
 );
 
 // The app itself. These drive overlays and the local terminal.
@@ -1352,6 +1358,43 @@ export type CommandResult<T extends CommandTag> = S.Schema.Type<_DefByTag<T>["re
 
 export type AnyCommandResult = CommandResult<CommandTag>;
 
+/** Encode a core command's typed result through its declared Schema. */
+export const encodeCoreCommandResult = <T extends CommandTag>(
+  tag: T,
+  value: CommandResult<T>,
+): Effect.Effect<OwnerJsonText, CommandError> =>
+  S.encodeUnknownEffect(S.fromJsonString(commandDefinition(tag).result))(value).pipe(
+    Effect.mapError(
+      (error) =>
+        new CommandError({
+          message: `${tag} result: ${formatSchemaIssue(error.issue)}`,
+        }),
+    ),
+  );
+
+/**
+ * Decode a core command result. Text goes through fromJsonString(schema);
+ * absence is decoded with the schema itself so only void commands accept it.
+ */
+export const decodeCoreCommandResult = <T extends CommandTag>(
+  tag: T,
+  text: OwnerJsonText | undefined,
+): Effect.Effect<CommandResult<T>, CommandError> => {
+  const schema = commandDefinition(tag).result as S.Codec<CommandResult<T>>;
+  return (
+    text === undefined
+      ? S.decodeUnknownEffect(schema)(undefined)
+      : S.decodeEffect(S.fromJsonString(schema))(text)
+  ).pipe(
+    Effect.mapError(
+      (error) =>
+        new CommandError({
+          message: `${tag} result: ${formatSchemaIssue(error.issue)}`,
+        }),
+    ),
+  );
+};
+
 /**
  * A command value, written the way a caller thinks of it.
  *
@@ -1495,6 +1538,8 @@ interface CommandEntry {
   readonly schema: S.Codec<any>;
   /** Fields only (no `_tag`) — decode {@link RegisteredCommand.args} with this. */
   readonly arguments: S.Codec<any>;
+  /** Owner result Schema when the command returns a value; absent ⇒ void only. */
+  readonly result?: S.Codec<any>;
   readonly resources: (args: any) => readonly string[];
   readonly handler: (args: any) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>;
 }
@@ -1542,6 +1587,11 @@ export interface Commands {
    */
   readonly resourcesFor: (command: Command | RegisteredCommand) => readonly string[] | undefined;
   /**
+   * Declared result Schema for a tag, when the command returns a value.
+   * Undefined when the tag is unknown or void-only.
+   */
+  readonly resultSchemaFor: (tag: string) => S.Codec<any> | undefined;
+  /**
    * Claim `plugin.<pluginId>.<verb>` for the lifetime of the plugin instance.
    *
    * Args are validated on the way in here (the fields must form a real
@@ -1550,8 +1600,11 @@ export interface Commands {
    * core `Command` value does. Returns the disposer a scope finalizer wants;
    * calling it frees the tag for reuse. A tag already claimed — by core or by
    * another plugin — is refused rather than silently shadowed.
+   *
+   * `result` is optional: absent means the handler may return only void. A
+   * non-void return without a Schema cannot cross respondCommand.
    */
-  readonly registerCommand: <Fields extends S.Struct.Fields>(
+  readonly registerCommand: <Fields extends S.Struct.Fields, Result = void>(
     pluginId: string,
     verb: string,
     fields: Fields,
@@ -1559,7 +1612,8 @@ export interface Commands {
     resources: (args: S.Struct.Type<Fields>) => readonly string[],
     handler: (
       args: S.Struct.Type<Fields>,
-    ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
+    ) => Effect.Effect<Result, CommandError, Realm | CurrentInvocation>,
+    result?: S.Codec<Result>,
   ) => () => void;
   /**
    * Claim a full tag — one core never declared but a daemon-resident plugin
@@ -1568,14 +1622,15 @@ export interface Commands {
    * side exactly, or the forwarder below addresses nothing. A tag core or
    * another plugin already holds is refused, never shadowed.
    */
-  readonly registerFullCommand: <Fields extends S.Struct.Fields>(
+  readonly registerFullCommand: <Fields extends S.Struct.Fields, Result = void>(
     tag: string,
     fields: Fields,
     meta: Meta,
     resources: (args: S.Struct.Type<Fields>) => readonly string[],
     handler: (
       args: S.Struct.Type<Fields>,
-    ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
+    ) => Effect.Effect<Result, CommandError, Realm | CurrentInvocation>,
+    result?: S.Codec<Result>,
   ) => () => void;
 }
 
@@ -1619,6 +1674,7 @@ export const makeCommands = (
         meta: COMMAND_META[def.tag],
         schema: def.schema,
         arguments: def.arguments,
+        result: def.result === S.Void ? undefined : (def.result as S.Codec<any>),
         resources: def.resources as (args: any) => readonly string[],
         handler:
           (handlers as CommandHandlerTable)[def.tag] ??
@@ -1651,13 +1707,14 @@ export const makeCommands = (
     meta: Meta,
     resources: (args: any) => readonly string[],
     handler: (args: any) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
+    result?: S.Codec<any>,
   ): (() => void) => {
     if (metaFor(tag)) throw new Error(`command already registered: ${tag}`);
     const schema = S.TaggedStruct(tag, fields).annotate({
       identifier: tag,
       description: meta.desc,
     });
-    const entry: CommandEntry = {
+    const base = {
       meta: {
         name: tag,
         desc: meta.desc,
@@ -1675,6 +1732,7 @@ export const makeCommands = (
       resources,
       handler,
     };
+    const entry: CommandEntry = result === undefined ? base : { ...base, result };
     entries.set(tag, entry);
     return () => {
       if (entries.get(tag) === entry) entries.delete(tag);
@@ -1688,7 +1746,8 @@ export const makeCommands = (
     meta,
     resources,
     handler,
-  ) => claim(clientPluginCommandTag(pluginId, verb), fields, meta, resources, handler);
+    result,
+  ) => claim(clientPluginCommandTag(pluginId, verb), fields, meta, resources, handler, result);
 
   const registerFullCommand: Commands["registerFullCommand"] = (
     tag,
@@ -1696,7 +1755,8 @@ export const makeCommands = (
     meta,
     resources,
     handler,
-  ) => claim(tag, fields, meta, resources, handler);
+    result,
+  ) => claim(tag, fields, meta, resources, handler, result);
 
   const resourcesFor: Commands["resourcesFor"] = (command) => {
     const entry = entries.get(command._tag);
@@ -1710,6 +1770,8 @@ export const makeCommands = (
     }
     return entry.resources(command);
   };
+
+  const resultSchemaFor: Commands["resultSchemaFor"] = (tag) => entries.get(tag)?.result;
 
   const run = ((command: Command | RegisteredCommand, invocation: CommandInvocation) =>
     // Suspended, because a caller builds the effect once — a binding's `run` is
@@ -1763,6 +1825,7 @@ export const makeCommands = (
       return meta ? isRemoteCommand(meta.target) : false;
     },
     resourcesFor,
+    resultSchemaFor,
     registerCommand,
     registerFullCommand,
   };

@@ -36,7 +36,7 @@ import { command, registeredCommand } from "../commands.ts";
 import { nestOwnerArgs } from "../test-owner-args.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
-import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
+import { makeLayout, layoutPanes, OwnerJsonText, paneSession } from "../layout.ts";
 import { PLUGIN_REDUCE_TIMEOUT_MS, PluginReducerError } from "../workspace-changes.ts";
 import type { QueuedPluginAction, WorkspaceReducerAnswer } from "../workspace-changes.ts";
 import type { ManagedSession, SessionSpec } from "./SessionRegistry.ts";
@@ -47,6 +47,9 @@ import {
   emptyPluginBehaviour,
   pluginBehaviourFromRegistrations,
 } from "../test-plugin-behaviour.ts";
+
+const asResult = (result: string | undefined) =>
+  result === undefined ? undefined : S.encodeSync(OwnerJsonText)(result);
 import type { TilingAlgorithmsService } from "../plugin/services.ts";
 import { defineDaemonCommand } from "../define-daemon-command.ts";
 
@@ -443,7 +446,10 @@ testEffect("activates prepared sessions after successful commit", () => {
     expect(result.snapshot.revision).toBe(1);
     const panes = layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root);
     expect(panes).toHaveLength(2);
-    expect(result.result).toEqual({ session: paneSession(panes[1]!.content)!, pane: panes[1]!.id });
+    expect(asResult(result.result)).toEqual({
+      session: paneSession(panes[1]!.content)!,
+      pane: panes[1]!.id,
+    });
 
     const sessions = yield* Ref.get(sessionRef);
     expect(sessions.prepared.length).toBe(1);
@@ -721,7 +727,7 @@ testEffect("reduce and runAction both run on the PluginBehaviour passed to run",
       Effect.sync(() => {
         calls.push("runAction");
       }),
-    runSession: () => Effect.succeed(null),
+    runSession: () => Effect.succeed(undefined),
     runTiling: () =>
       Effect.fail(new TilingAlgorithmError({ algorithm: "unused", message: "unused" })),
     planResume: () => Effect.succeed(Option.none()),
@@ -778,7 +784,7 @@ testEffect(
         Effect.sync(() => {
           ran.push(action);
         }),
-      runSession: () => Effect.succeed(null),
+      runSession: () => Effect.succeed(undefined),
       runTiling: () =>
         Effect.fail(new TilingAlgorithmError({ algorithm: "unused", message: "unused" })),
       planResume: () => Effect.succeed(Option.none()),
@@ -821,7 +827,7 @@ testEffect(
         reduce: () => Effect.succeed({ changes: [] }),
         checkDescriptor: (_type, descriptor) => Effect.succeed(descriptor),
         runAction: () => Effect.void,
-        runSession: () => Effect.succeed(null),
+        runSession: () => Effect.succeed(undefined),
         runTiling: (algorithmId) => {
           tilingCalls += 1;
           return Effect.fail(

@@ -44,7 +44,8 @@ import { PluginHostError } from "./plugin-host/rpc.ts";
 import { pluginScratchDir } from "./plugin/scratch.ts";
 import { removeStaleSocket } from "./remove-stale-socket.ts";
 import { type AttachHostService } from "./effect/AttachHost.ts";
-import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
+import type { AttachFrame } from "./effect/AttachProtocol.ts";
+import type { OwnerJsonText } from "./layout.ts";
 import { paneSession } from "./layout.ts";
 import { makeAgentLog } from "./effect/AgentLog.ts";
 import { EventBus } from "./effect/EventBus.ts";
@@ -101,6 +102,7 @@ import {
   command,
   commandDefinition,
   COMMAND_META,
+  encodeCoreCommandResult,
   fieldDeclaresPaneTarget,
   isCoreCommand,
   isRegisteredCommand,
@@ -108,6 +110,8 @@ import {
   WireCommand,
   Command,
   type CommandMeta,
+  type CommandResult,
+  type CommandTag,
   type RegisteredCommand,
 } from "./commands.ts";
 import {
@@ -1406,8 +1410,10 @@ export const makeDaemonService = Effect.fnUntraced(
       client: string,
       connection: string,
       request: Extract<AttachFrame, { readonly _tag: "run.request" }>,
-    ) => Effect.Effect<{ readonly result?: JsonValue; readonly workspace?: string }, string> = () =>
-      Effect.fail("daemon is not accepting attach commands");
+    ) => Effect.Effect<
+      { readonly result?: OwnerJsonText; readonly workspace?: string },
+      string
+    > = () => Effect.fail("daemon is not accepting attach commands");
 
     // Two requests, strictly ordered: the host must be committed in `starting`
     // before the transaction-driven restore half can run under it.
@@ -1582,6 +1588,15 @@ export const makeDaemonService = Effect.fnUntraced(
       return Effect.succeed(target ? (paneSession(target.pane.content) ?? null) : null);
     };
 
+    const ownedCoreResult = <T extends CommandTag>(
+      tag: T,
+      value: CommandResult<T>,
+    ): Effect.Effect<{ readonly result: OwnerJsonText }, ControlError> =>
+      encodeCoreCommandResult(tag, value).pipe(
+        Effect.map((result) => ({ result })),
+        Effect.mapError((error) => new ControlError({ message: error.message })),
+      );
+
     const runRemote = Effect.fnUntraced(function* (
       value: Command | RegisteredCommand,
       expectedRevision?: number,
@@ -1593,7 +1608,7 @@ export const makeDaemonService = Effect.fnUntraced(
         type PluginRemoteRoute =
           | {
               readonly _tag: "done";
-              readonly output: { readonly workspace?: string; readonly result?: JsonValue };
+              readonly output: { readonly workspace?: string; readonly result?: OwnerJsonText };
             }
           | { readonly _tag: "client" }
           | { readonly _tag: "unknown" };
@@ -1724,9 +1739,10 @@ export const makeDaemonService = Effect.fnUntraced(
         const cur = yield* model.get;
         const session = yield* resolveCaptureSession(command, context, cur.workspace);
         if (session) {
-          return {
-            result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))),
-          };
+          return yield* ownedCoreResult(
+            "pane.capture",
+            yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))),
+          );
         }
       }
       if (meta.target === "view")
@@ -1843,11 +1859,14 @@ export const makeDaemonService = Effect.fnUntraced(
       if (meta.target === "buffers") {
         switch (command._tag) {
           case "buffer.set":
-            return { result: yield* setBuffer(command.name, command.data) };
+            return yield* ownedCoreResult(
+              "buffer.set",
+              yield* setBuffer(command.name, command.data),
+            );
           case "buffer.list":
-            return { result: yield* listBuffers };
+            return yield* ownedCoreResult("buffer.list", yield* listBuffers);
           case "buffer.show":
-            return { result: yield* showBuffer(command.name) };
+            return yield* ownedCoreResult("buffer.show", yield* showBuffer(command.name));
           case "buffer.delete":
             yield* deleteBuffer(command.name);
             return {};
@@ -1859,7 +1878,7 @@ export const makeDaemonService = Effect.fnUntraced(
           Match.tag("plugin.reload", () =>
             Effect.gen(function* () {
               const outcome = yield* republishPlugins();
-              return { result: outcome.failures };
+              return yield* ownedCoreResult("plugin.reload", outcome.failures);
             }),
           ),
           Match.tag("plugin.eval", (command) =>
@@ -1874,7 +1893,7 @@ export const makeDaemonService = Effect.fnUntraced(
                   Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
                 );
               yield* republishPlugins();
-              return { result: evaluated };
+              return yield* ownedCoreResult("plugin.eval", evaluated);
             }),
           ),
           Match.tag("plugin.promote", (command) =>
@@ -1889,7 +1908,7 @@ export const makeDaemonService = Effect.fnUntraced(
                   Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
                 );
               yield* republishPlugins();
-              return { result: promoted };
+              return yield* ownedCoreResult("plugin.promote", promoted);
             }),
           ),
           Match.tag("plugin.enable", (command) =>
@@ -1904,7 +1923,7 @@ export const makeDaemonService = Effect.fnUntraced(
                   Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
                 );
               const outcome = yield* republishPlugins();
-              return { result: outcome.failures };
+              return yield* ownedCoreResult("plugin.enable", outcome.failures);
             }),
           ),
           Match.tag("plugin.disable", (command) =>
@@ -1919,7 +1938,7 @@ export const makeDaemonService = Effect.fnUntraced(
                   Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
                 );
               const outcome = yield* republishPlugins();
-              return { result: outcome.failures };
+              return yield* ownedCoreResult("plugin.disable", outcome.failures);
             }),
           ),
           Match.tag("process-plugin.action.invoke", (invoke) =>
@@ -1944,7 +1963,7 @@ export const makeDaemonService = Effect.fnUntraced(
               const { pid } = yield* spawnProcessPluginActionDetached(resolved).pipe(
                 Effect.mapError((message) => new ControlError({ message })),
               );
-              return { result: { pid } };
+              return yield* ownedCoreResult("process-plugin.action.invoke", { pid });
             }),
           ),
           Match.orElse((command) =>
@@ -1993,12 +2012,7 @@ export const makeDaemonService = Effect.fnUntraced(
         return yield* runRemote(decoded, request.expectedRevision, context, {
           client,
           connection,
-        }).pipe(
-          Effect.map(
-            (output) => output as { readonly result?: JsonValue; readonly workspace?: string },
-          ),
-          Effect.mapError((error) => error.message),
-        );
+        }).pipe(Effect.mapError((error) => error.message));
       });
 
     const controlHandlers = ControlRpcs.toLayer({
@@ -2058,7 +2072,7 @@ export const makeDaemonService = Effect.fnUntraced(
         guard(
           Effect.gen(function* () {
             if (values.length === 0) return yield* controlFail("command batch must not be empty");
-            const outputs: Array<{ result?: unknown; workspace?: string }> = [];
+            const outputs: Array<{ result?: OwnerJsonText; workspace?: string }> = [];
             let revision = expectedRevision;
             for (const value of values) {
               const output = yield* runRemote(value, revision, context);
