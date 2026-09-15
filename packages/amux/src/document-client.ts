@@ -7,11 +7,7 @@
 import { Effect, Option, Scope, Stream } from "effect";
 import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
-import {
-  connectControl,
-  controlCall,
-  toControlError,
-} from "./control-client.ts";
+import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { ControlError } from "./control.ts";
 import { fileUriFromPath } from "./document-uri.ts";
 

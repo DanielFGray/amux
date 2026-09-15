@@ -199,8 +199,7 @@ const exchangeCode = Effect.fnUntraced(function* (args: {
   }
   const now = yield* Effect.clockWith((c) => c.currentTimeMillis);
   const email = parseJwtClaims(decoded.id_token ?? "")?.email;
-  const metadata =
-    email !== undefined ? { accountId, email } : { accountId };
+  const metadata = email !== undefined ? { accountId, email } : { accountId };
   return {
     type: "oauth" as const,
     methodID: METHOD_ID,

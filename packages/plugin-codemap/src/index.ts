@@ -2,10 +2,7 @@
  * Codemap extractor package — per-file symbols, imports, calls, and Effect DI edges.
  * Index store, daemon plugin wiring, agent verbs, and pane land in later slices.
  */
-export {
-  extractFromTree,
-  filetypeForExtractPath,
-} from "./extract.ts";
+export { extractFromTree, filetypeForExtractPath } from "./extract.ts";
 export {
   CodemapEdge,
   CodemapImport,

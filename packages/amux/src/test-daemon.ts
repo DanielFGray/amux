@@ -10,11 +10,7 @@ import { ConfigProvider, Effect, Layer, Path, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { controlCall, type ControlClient } from "./control-client.ts";
-import {
-  startDaemon,
-  type SessionDaemonOptions,
-  type SessionDaemonService,
-} from "./daemon.ts";
+import { startDaemon, type SessionDaemonOptions, type SessionDaemonService } from "./daemon.ts";
 import { SessionStore } from "./session.ts";
 
 /** Provide the daemon services from an env map, without scoping or running. */

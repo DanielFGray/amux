@@ -4,10 +4,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { dirname, join } from "node:path";
 import { DEFAULT_LEADER, DEFAULT_PREFIX, type Keys } from "./bindings.ts";
-import {
-  OptionDeltasSchema,
-  type OptionDeltas,
-} from "./options.ts";
+import { OptionDeltasSchema, type OptionDeltas } from "./options.ts";
 import { Config as EffectConfig, Effect, Option, Schema as S, SchemaGetter } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
@@ -131,9 +128,7 @@ export const configPath: Effect.Effect<string> = Effect.map(configDir, (dir) =>
  */
 
 /** Accept any string; wrong types become empty so migration can apply defaults. */
-const LooseString = S.String.pipe(
-  S.catchDecoding(() => Effect.succeed(Option.some(""))),
-);
+const LooseString = S.String.pipe(S.catchDecoding(() => Effect.succeed(Option.some(""))));
 
 const BindingSequenceSchema = softArray(NonEmptyString);
 
@@ -175,10 +170,7 @@ const KeysSchema = RawKeysSchema.pipe(
         return key.replaceAll("<leader>", "<prefix>").replaceAll("<localleader>", "<leader>");
       };
       const bindings = Object.fromEntries(
-        Object.entries(keys.bindings).map(([name, sequence]) => [
-          name,
-          sequence.map(rewriteToken),
-        ]),
+        Object.entries(keys.bindings).map(([name, sequence]) => [name, sequence.map(rewriteToken)]),
       );
       return { prefix, leader, bindings };
     }),

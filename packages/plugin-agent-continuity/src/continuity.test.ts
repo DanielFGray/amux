@@ -18,7 +18,12 @@ import { claudeAdapter } from "./adapters/claude.ts";
 import { codexAdapter } from "./adapters/codex.ts";
 import { cursorAdapter } from "./adapters/cursor.ts";
 import { opencodeAdapter } from "./adapters/opencode.ts";
-import { MANAGED_MARKER, NestedHooksFileSchema, parseIntegrationVersion, SimpleHooksFileSchema } from "./hooks-install.ts";
+import {
+  MANAGED_MARKER,
+  NestedHooksFileSchema,
+  parseIntegrationVersion,
+  SimpleHooksFileSchema,
+} from "./hooks-install.ts";
 
 const preserveExcess = { onExcessProperty: "preserve" as const };
 
@@ -175,14 +180,18 @@ testEffect("installs claude hook and leaves user SessionStart hooks alone", () =
       );
 
       const hookPath = yield* claudeAdapter.hooks.install(home);
-      const settings = decodeNestedHooks(yield* fs.readFileString(join(home, ".claude/settings.json")));
+      const settings = decodeNestedHooks(
+        yield* fs.readFileString(join(home, ".claude/settings.json")),
+      );
       expect(yield* fs.readFileString(hookPath)).toContain("AMUX_INTEGRATION_ID=claude");
       expect(sessionStartLength(settings)).toBe(2);
       expect(nestedHookCommand(settings, "SessionStart", 0)).toBe("prog prime");
       expect(nestedHookCommand(settings, "SessionStart", 1)).toContain("session");
 
       expect(yield* claudeAdapter.hooks.uninstall(home)).toBe(true);
-      const after = decodeNestedHooks(yield* fs.readFileString(join(home, ".claude/settings.json")));
+      const after = decodeNestedHooks(
+        yield* fs.readFileString(join(home, ".claude/settings.json")),
+      );
       expect(sessionStartLength(after)).toBe(1);
       expect(nestedHookCommand(after, "SessionStart", 0)).toBe("prog prime");
     }),
@@ -251,7 +260,9 @@ testEffect("installs cursor hook into hooks.json and leaves unrelated stop hooks
 
       const hookPath = yield* cursorAdapter.hooks.install(home);
       expect(yield* fs.readFileString(hookPath)).toContain("AMUX_INTEGRATION_ID=cursor");
-      const hooksFile = decodeSimpleHooks(yield* fs.readFileString(join(home, ".cursor/hooks.json")));
+      const hooksFile = decodeSimpleHooks(
+        yield* fs.readFileString(join(home, ".cursor/hooks.json")),
+      );
       expect(simpleHookLength(hooksFile, "sessionStart")).toBe(1);
       expect(simpleHookCommand(hooksFile, "sessionStart", 0)).toContain("session");
       expect(simpleHookLength(hooksFile, "stop")).toBe(1);

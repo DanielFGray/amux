@@ -197,7 +197,10 @@ export const decodeShowReferencesArgs = (
   args: string | undefined,
 ): Option.Option<readonly LspLocation[]> =>
   Option.flatMap(Option.fromUndefinedOr(args), (text) =>
-    Option.map(S.decodeOption(S.fromJsonString(ShowReferencesArgsSchema))(text), (decoded) => decoded[2]),
+    Option.map(
+      S.decodeOption(S.fromJsonString(ShowReferencesArgsSchema))(text),
+      (decoded) => decoded[2],
+    ),
   );
 
 const CodeLensSchema = S.Struct({
@@ -464,11 +467,22 @@ const makeClient = (transport: LspTransport, uri: string): LspDocumentClient => 
     resultSchema: S.Codec<O, OI>,
   ) => request(transport, method, params, paramsSchema, S.OptionFromNullOr(resultSchema));
   return {
-    hover: (position) => optional("textDocument/hover", at(position), TextDocumentPositionParams, HoverSchema),
+    hover: (position) =>
+      optional("textDocument/hover", at(position), TextDocumentPositionParams, HoverSchema),
     definition: (position) =>
-      optional("textDocument/definition", at(position), TextDocumentPositionParams, DefinitionSchema),
+      optional(
+        "textDocument/definition",
+        at(position),
+        TextDocumentPositionParams,
+        DefinitionSchema,
+      ),
     declaration: (position) =>
-      optional("textDocument/declaration", at(position), TextDocumentPositionParams, DefinitionSchema),
+      optional(
+        "textDocument/declaration",
+        at(position),
+        TextDocumentPositionParams,
+        DefinitionSchema,
+      ),
     typeDefinition: (position) =>
       optional(
         "textDocument/typeDefinition",
@@ -499,7 +513,12 @@ const makeClient = (transport: LspTransport, uri: string): LspDocumentClient => 
         WorkspaceEditSchema,
       ),
     completion: (position) =>
-      optional("textDocument/completion", at(position), TextDocumentPositionParams, CompletionSchema),
+      optional(
+        "textDocument/completion",
+        at(position),
+        TextDocumentPositionParams,
+        CompletionSchema,
+      ),
     signatureHelp: (position) =>
       optional(
         "textDocument/signatureHelp",

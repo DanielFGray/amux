@@ -4,10 +4,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join as nodeJoin } from "node:path";
 import { Cause, Effect, Exit, Fiber, Path } from "effect";
-import {
-  startDaemon,
-  type SessionDaemonService,
-} from "../packages/amux/src/daemon.ts";
+import { startDaemon, type SessionDaemonService } from "../packages/amux/src/daemon.ts";
 import { SessionStore, sessionPaths } from "../packages/amux/src/session.ts";
 import { Command, command } from "../packages/amux/src/commands.ts";
 import {

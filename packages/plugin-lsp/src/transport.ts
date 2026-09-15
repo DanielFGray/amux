@@ -90,9 +90,9 @@ export const makeLspTransport = Effect.fnUntraced(function* (options: LspTranspo
     );
 
   const route = Effect.fnUntraced(function* (frame: string) {
-    const message = yield* S.decodeEffect(S.fromJsonString(JsonRpcHeading))(
-      frame,
-    ).pipe(Effect.mapError((error) => new LspTransportError({ message: String(error) })));
+    const message = yield* S.decodeEffect(S.fromJsonString(JsonRpcHeading))(frame).pipe(
+      Effect.mapError((error) => new LspTransportError({ message: String(error) })),
+    );
     const id = message.id;
     if (id !== undefined) {
       const reply = yield* Ref.modify(pending, (current) => {

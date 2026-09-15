@@ -99,7 +99,10 @@ const parseNestedHooksFile = (
   content: string,
   path: string,
 ): Effect.Effect<NestedHooksFile, ForeignHarnessHookError> =>
-  S.decodeEffect(S.fromJsonString(NestedHooksFileSchema), preserveExcess)(content).pipe(
+  S.decodeEffect(
+    S.fromJsonString(NestedHooksFileSchema),
+    preserveExcess,
+  )(content).pipe(
     Effect.map(mutableNestedFile),
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to parse JSON object at ${path}` }),
@@ -110,7 +113,10 @@ const parseSimpleHooksFile = (
   content: string,
   path: string,
 ): Effect.Effect<SimpleHooksFile, ForeignHarnessHookError> =>
-  S.decodeEffect(S.fromJsonString(SimpleHooksFileSchema), preserveExcess)(content).pipe(
+  S.decodeEffect(
+    S.fromJsonString(SimpleHooksFileSchema),
+    preserveExcess,
+  )(content).pipe(
     Effect.map(mutableSimpleFile),
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to parse JSON object at ${path}` }),
@@ -276,7 +282,10 @@ export const writeNestedHooksFile = (
   path: string,
   value: NestedHooksFile,
 ): Effect.Effect<void, PlatformError | ForeignHarnessHookError, FileSystem.FileSystem> =>
-  S.encodeEffect(S.fromJsonString(NestedHooksFileSchema, { space: 2 }), preserveExcess)(value).pipe(
+  S.encodeEffect(
+    S.fromJsonString(NestedHooksFileSchema, { space: 2 }),
+    preserveExcess,
+  )(value).pipe(
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to encode JSON at ${path}` }),
     ),
@@ -287,7 +296,10 @@ export const writeSimpleHooksFile = (
   path: string,
   value: SimpleHooksFile,
 ): Effect.Effect<void, PlatformError | ForeignHarnessHookError, FileSystem.FileSystem> =>
-  S.encodeEffect(S.fromJsonString(SimpleHooksFileSchema, { space: 2 }), preserveExcess)(value).pipe(
+  S.encodeEffect(
+    S.fromJsonString(SimpleHooksFileSchema, { space: 2 }),
+    preserveExcess,
+  )(value).pipe(
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to encode JSON at ${path}` }),
     ),

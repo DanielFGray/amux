@@ -725,37 +725,35 @@ testEffect("keeps the previous entry when edited source fails to import", () =>
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
-testEffect(
-  "checkpoint keeps a broken plugin's prior text and stores a sibling's good edit",
-  () =>
-    Effect.gen(function* () {
-      const dir = yield* tempDir;
-      const aPath = yield* writePluginFile(dir, "a.ts", mkPluginSrc("a"));
-      const bPath = yield* writePluginFile(dir, "b.ts", mkPluginSrc("b"));
-      const aHref = pathToFileURL(aPath).href;
-      const bHref = pathToFileURL(bPath).href;
-      const config = baseConfig({ plugins: [spec(aPath), spec(bPath)] });
-      const { host } = yield* makeHost();
+testEffect("checkpoint keeps a broken plugin's prior text and stores a sibling's good edit", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    const aPath = yield* writePluginFile(dir, "a.ts", mkPluginSrc("a"));
+    const bPath = yield* writePluginFile(dir, "b.ts", mkPluginSrc("b"));
+    const aHref = pathToFileURL(aPath).href;
+    const bHref = pathToFileURL(bPath).href;
+    const config = baseConfig({ plugins: [spec(aPath), spec(bPath)] });
+    const { host } = yield* makeHost();
 
-      const first = yield* loadPlugins(config, host, dir);
-      yield* checkpointLastGood(dir, first.entries);
+    const first = yield* loadPlugins(config, host, dir);
+    yield* checkpointLastGood(dir, first.entries);
 
-      yield* writePluginFile(dir, "a.ts", "this is broken ===");
-      const bEdited = `${mkPluginSrc("b")}\n// good-edit`;
-      yield* writePluginFile(dir, "b.ts", bEdited);
+    yield* writePluginFile(dir, "a.ts", "this is broken ===");
+    const bEdited = `${mkPluginSrc("b")}\n// good-edit`;
+    yield* writePluginFile(dir, "b.ts", bEdited);
 
-      const second = yield* loadPlugins(config, host, dir, [], first.entries);
-      expect(second.failures).toEqual([expect.objectContaining({ spec: aPath })]);
-      yield* checkpointLastGood(dir, second.entries);
+    const second = yield* loadPlugins(config, host, dir, [], first.entries);
+    expect(second.failures).toEqual([expect.objectContaining({ spec: aPath })]);
+    yield* checkpointLastGood(dir, second.entries);
 
-      const store = yield* makeLastGoodStore(join(dir, ".amux", "plugin-last-good.json"));
-      const saved = yield* store.read;
-      expect(Option.isSome(saved)).toBe(true);
-      if (Option.isNone(saved)) return;
-      const byUrl = new Map(saved.value.modules.map((module) => [module.url, module.text]));
-      expect(byUrl.get(aHref)).toBe(mkPluginSrc("a"));
-      expect(byUrl.get(bHref)).toBe(bEdited);
-    }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, Path.layer))),
+    const store = yield* makeLastGoodStore(join(dir, ".amux", "plugin-last-good.json"));
+    const saved = yield* store.read;
+    expect(Option.isSome(saved)).toBe(true);
+    if (Option.isNone(saved)) return;
+    const byUrl = new Map(saved.value.modules.map((module) => [module.url, module.text]));
+    expect(byUrl.get(aHref)).toBe(mkPluginSrc("a"));
+    expect(byUrl.get(bHref)).toBe(bEdited);
+  }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, Path.layer))),
 );
 
 testEffect("keeps the previous entry when edited source fails the compat check", () =>

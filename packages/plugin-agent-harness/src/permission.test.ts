@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { ConfigProvider, Effect, Fiber, Layer, Option, Schedule, Stream, Schema as S } from "effect";
+import {
+  ConfigProvider,
+  Effect,
+  Fiber,
+  Layer,
+  Option,
+  Schedule,
+  Stream,
+  Schema as S,
+} from "effect";
 import { NativeControl } from "./native-control.ts";
 import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
@@ -31,7 +40,12 @@ import {
   type AgentDelta,
   type AgentEventPayload,
 } from "@danielfgray/amux/protocol";
-import { readEvent, OpaqueJsonText, decodeOpaqueJsonText, type SequencedHarnessEvent } from "./protocol.ts";
+import {
+  readEvent,
+  OpaqueJsonText,
+  decodeOpaqueJsonText,
+  type SequencedHarnessEvent,
+} from "./protocol.ts";
 import { testEffect } from "@danielfgray/amux/testing";
 
 const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));

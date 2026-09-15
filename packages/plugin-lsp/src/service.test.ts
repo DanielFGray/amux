@@ -4,7 +4,12 @@ import { expect } from "bun:test";
 import { testEffect } from "../../amux/src/test-effect.ts";
 import { DocumentService, makeDocumentService, type DocumentSnapshot } from "./document.ts";
 import { builtInCatalog } from "./catalog.ts";
-import { LspService, LspServiceError, decodeShowReferencesArgs, type LspServiceOptions } from "./service.ts";
+import {
+  LspService,
+  LspServiceError,
+  decodeShowReferencesArgs,
+  type LspServiceOptions,
+} from "./service.ts";
 import { LspTransportError, type LspNotification, type LspTransport } from "./transport.ts";
 
 const tests = testEffect(BunServices.layer);

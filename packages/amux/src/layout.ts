@@ -1220,7 +1220,8 @@ export function encodeLayout(layout: Layout): Effect.Effect<string, LayoutFormat
   const normalized = makeLayout({ ...layout, root: collapse(layout.root) });
   return S.encodeEffect(S.fromJsonString(LayoutSchema))(normalized).pipe(
     Effect.mapError(
-      (error) => new LayoutFormatError({ message: `layout encode failed: ${formatSchemaError(error)}` }),
+      (error) =>
+        new LayoutFormatError({ message: `layout encode failed: ${formatSchemaError(error)}` }),
     ),
   );
 }

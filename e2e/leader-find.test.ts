@@ -93,23 +93,17 @@ test(
     await app.until(() => /\d+ err/.test(app!.screen()), "the error marker after sibling find");
     // Console is mux `<prefix>\`` (e2e LEADER is ctrl+s), not editor mapleader.
     await app.press(`${LEADER}\``);
-    await app.until(
-      () => {
-        const screen = app!.screen().toLowerCase();
-        // OpenTUI console can split the message on the pane border
-        // (`'no file —│open a buffer first'`), so match either half.
-        return screen.includes("no file") || screen.includes("open a buffer");
-      },
-      "sibling find error in the console",
-    );
+    await app.until(() => {
+      const screen = app!.screen().toLowerCase();
+      // OpenTUI console can split the message on the pane border
+      // (`'no file —│open a buffer first'`), so match either half.
+      return screen.includes("no file") || screen.includes("open a buffer");
+    }, "sibling find error in the console");
     await app.press(`${LEADER}\``);
-    await app.until(
-      () => {
-        const screen = app!.screen().toLowerCase();
-        return !screen.includes("no file") && !screen.includes("open a buffer");
-      },
-      "the console to close",
-    );
+    await app.until(() => {
+      const screen = app!.screen().toLowerCase();
+      return !screen.includes("no file") && !screen.includes("open a buffer");
+    }, "the console to close");
   },
   E2E_TIMEOUT,
 );

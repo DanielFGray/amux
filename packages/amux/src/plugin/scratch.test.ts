@@ -33,9 +33,11 @@ testEffect("materializeScratch writes the entry file", () =>
   Effect.gen(function* () {
     const scratchDir = yield* Effect.promise(() => mkdtemp(join(testDir, ".test-scratch-")));
     temporary.push(scratchDir);
-    const url = yield* materializeScratch("live.review", scratchSource("live.review"), scratchDir).pipe(
-      Effect.provide(BunFileSystem.layer),
-    );
+    const url = yield* materializeScratch(
+      "live.review",
+      scratchSource("live.review"),
+      scratchDir,
+    ).pipe(Effect.provide(BunFileSystem.layer));
     expect(fileURLToPath(url)).toBe(scratchEntryPath("live.review", scratchDir));
     const fs = yield* FileSystem.FileSystem;
     expect(yield* fs.readFileString(scratchEntryPath("live.review", scratchDir))).toContain(

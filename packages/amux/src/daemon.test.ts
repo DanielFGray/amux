@@ -4,11 +4,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Effect, Fiber, Stream, Schema } from "effect";
-import {
-  makeDaemonService,
-  DaemonError,
-  type SessionDaemonService,
-} from "./daemon.ts";
+import { makeDaemonService, DaemonError, type SessionDaemonService } from "./daemon.ts";
 import { SessionStore, sessionPaths } from "./session.ts";
 import { command } from "./commands.ts";
 import { AttachClient } from "./attach.ts";

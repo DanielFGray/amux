@@ -4,12 +4,7 @@
  */
 import { Schema as S } from "effect";
 
-export const SymbolKind = S.Literals([
-  "function",
-  "class",
-  "method",
-  "const",
-]);
+export const SymbolKind = S.Literals(["function", "class", "method", "const"]);
 export type SymbolKind = typeof SymbolKind.Type;
 
 export const Span = S.Struct({

@@ -40,9 +40,7 @@ const WireToolFunction = S.Struct({
   parameters: S.optional(
     S.Struct({
       type: S.String,
-      properties: S.optional(
-        S.Record(S.String, S.Struct({ type: S.String })),
-      ),
+      properties: S.optional(S.Record(S.String, S.Struct({ type: S.String }))),
       required: S.optional(S.Array(S.String)),
       additionalProperties: S.optional(S.Boolean),
     }),
@@ -72,10 +70,7 @@ const ChatCompletionsRequest = S.Struct({
   messages: S.optional(S.Array(WireMessage)),
   tools: S.optional(S.Array(WireTool)),
   tool_choice: S.optional(
-    S.Union([
-      S.String,
-      S.Struct({ type: S.String, function: S.Struct({ name: S.String }) }),
-    ]),
+    S.Union([S.String, S.Struct({ type: S.String, function: S.Struct({ name: S.String }) })]),
   ),
 });
 type ChatCompletionsRequest = typeof ChatCompletionsRequest.Type;

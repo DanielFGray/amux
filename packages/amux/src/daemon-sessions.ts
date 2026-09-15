@@ -40,7 +40,10 @@ export interface DaemonSessionsService {
    * this, interpreted by whichever plugin's worker reads it. The worker
    * decodes through its own Schema (e.g. NativeControl).
    */
-  readonly message: (id: string, message: OwnerJsonText) => Effect.Effect<void, DaemonSessionsError>;
+  readonly message: (
+    id: string,
+    message: OwnerJsonText,
+  ) => Effect.Effect<void, DaemonSessionsError>;
   readonly prompt: (
     target: string,
     text: string,

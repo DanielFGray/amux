@@ -4,7 +4,12 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { fillCommandSession, resolveCommandSession, splitCommandArgs, stripSessionFlag } from "./cli.ts";
+import {
+  fillCommandSession,
+  resolveCommandSession,
+  splitCommandArgs,
+  stripSessionFlag,
+} from "./cli.ts";
 import { testEffect } from "./test-effect.ts";
 
 test("escaped shell semicolons divide command argument groups", () => {

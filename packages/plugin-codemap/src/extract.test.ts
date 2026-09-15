@@ -39,9 +39,7 @@ const hasSymbol = (
   );
 
 const callsFrom = (extraction: FileExtraction, sourceName: string): ReadonlyArray<CodemapEdge> => {
-  const sources = new Set(
-    extraction.symbols.filter((s) => s.name === sourceName).map((s) => s.id),
-  );
+  const sources = new Set(extraction.symbols.filter((s) => s.name === sourceName).map((s) => s.id));
   return extraction.edges.filter((e) => e.relation === "calls" && sources.has(e.source));
 };
 
@@ -76,9 +74,9 @@ it.live("addPlugin nested in createPluginHost is a local symbol", () =>
   Effect.gen(function* () {
     const extraction = yield* extractRel("packages/amux/src/plugin/host.ts");
     expect(hasSymbol(extraction, "createPluginHost", { kind: "function" })).toBe(true);
-    expect(
-      hasSymbol(extraction, "addPlugin", { owner: "createPluginHost", kind: "const" }),
-    ).toBe(true);
+    expect(hasSymbol(extraction, "addPlugin", { owner: "createPluginHost", kind: "const" })).toBe(
+      true,
+    );
     expect(fileCallsTarget(extraction, "addPlugin")).toBe(true);
   }),
 );
@@ -87,9 +85,9 @@ it.live("WorkspaceTransaction.run is a Context.Service make method", () =>
   Effect.gen(function* () {
     const extraction = yield* extractRel("packages/amux/src/effect/WorkspaceTransaction.ts");
     expect(hasSymbol(extraction, "WorkspaceTransaction", { kind: "class" })).toBe(true);
-    expect(
-      hasSymbol(extraction, "run", { owner: "WorkspaceTransaction", kind: "method" }),
-    ).toBe(true);
+    expect(hasSymbol(extraction, "run", { owner: "WorkspaceTransaction", kind: "method" })).toBe(
+      true,
+    );
     const runId = extraction.symbols.find(
       (s) => s.name === "run" && s.owner === "WorkspaceTransaction",
     )?.id;

@@ -4,14 +4,7 @@
  * separate client processes. Moved from attachclient.test.ts (slow lane).
  */
 import { afterEach, expect } from "bun:test";
-import {
-  Config,
-  Effect,
-  Exit,
-  Option,
-  Path,
-  Scope,
-} from "effect";
+import { Config, Effect, Exit, Option, Path, Scope } from "effect";
 import { SessionHandle } from "../packages/amux/src/session-handle.ts";
 import { SessionClient, type SessionClientContract } from "../packages/amux/src/client.ts";
 import { captureVisible } from "../packages/amux/src/capture.ts";
@@ -30,7 +23,6 @@ const join = (...paths: string[]) =>
 
 const scopes: Scope.Closeable[] = [];
 const sessions: SessionHandle[] = [];
-
 
 const connect = Effect.fnUntraced(function* (
   id: string,

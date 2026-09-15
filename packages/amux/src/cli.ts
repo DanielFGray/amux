@@ -637,10 +637,7 @@ function main(): Effect.Effect<number> {
         cmds.push(
           isCoreCommandTag(parsed.tag)
             ? yield* Schema.decodeUnknownEffect(Command)({ _tag: parsed.tag, ...parsed.parsed })
-            : registeredCommand(
-                parsed.tag,
-                yield* encodeCliParsedArgs(parsed.parsed),
-              ),
+            : registeredCommand(parsed.tag, yield* encodeCliParsedArgs(parsed.parsed)),
         );
       }
 

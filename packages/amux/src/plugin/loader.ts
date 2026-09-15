@@ -133,9 +133,7 @@ const loadPluginsEffect = Effect.fnUntraced(function* (
           ? restoreLastGood(archive, archiveDir).pipe(
               Effect.map((restored) => {
                 const url = restored.get(diskUrl.href);
-                return url === undefined
-                  ? Option.none()
-                  : Option.some({ url, restored, archive });
+                return url === undefined ? Option.none() : Option.some({ url, restored, archive });
               }),
               Effect.orElseSucceed(() => Option.none()),
             )
