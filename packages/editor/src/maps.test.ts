@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { isMapPrefixStroke, pushBuiltinMap, strokeFromKey } from "./maps.ts";
+import {
+  BUILTIN_MAP_ENTRIES,
+  isMapPrefixStroke,
+  mapContinuationHints,
+  pushMap,
+  strokeFromKey,
+} from "./maps.ts";
 import type { KeyEvent } from "@opentui/core";
 
 const key = (name: string, extra: Partial<KeyEvent> = {}): KeyEvent =>
@@ -14,45 +20,60 @@ const key = (name: string, extra: Partial<KeyEvent> = {}): KeyEvent =>
   }) as KeyEvent;
 
 test("g is a prefix because maps exist under it — not a hardcoded flag", () => {
-  expect(isMapPrefixStroke("normal", "g")).toBe(true);
-  expect(isMapPrefixStroke("normal", "z")).toBe(true);
-  expect(isMapPrefixStroke("normal", "h")).toBe(false);
-  expect(isMapPrefixStroke("operator", "g")).toBe(true);
-  expect(isMapPrefixStroke("operator", "z")).toBe(false);
+  expect(isMapPrefixStroke(BUILTIN_MAP_ENTRIES, "normal", "g")).toBe(true);
+  expect(isMapPrefixStroke(BUILTIN_MAP_ENTRIES, "normal", "z")).toBe(true);
+  expect(isMapPrefixStroke(BUILTIN_MAP_ENTRIES, "normal", "h")).toBe(false);
+  expect(isMapPrefixStroke(BUILTIN_MAP_ENTRIES, "operator", "g")).toBe(true);
+  expect(isMapPrefixStroke(BUILTIN_MAP_ENTRIES, "operator", "z")).toBe(false);
 });
 
-test("pushBuiltinMap pending → match for gg / zz", () => {
-  expect(pushBuiltinMap("normal", [], "g")).toEqual({ _tag: "pending", keys: ["g"] });
-  expect(pushBuiltinMap("normal", ["g"], "g")).toEqual({
-    _tag: "matched",
-    id: "gg",
-    keys: ["g", "g"],
+test("pushMap pending → match for gg / zz", () => {
+  expect(pushMap(BUILTIN_MAP_ENTRIES, "normal", [], "g")).toEqual({
+    _tag: "pending",
+    keys: ["g"],
   });
-  expect(pushBuiltinMap("normal", ["g"], "*")).toEqual({
-    _tag: "matched",
-    id: "g*",
-    keys: ["g", "*"],
-  });
-  expect(pushBuiltinMap("normal", [], "z")).toEqual({ _tag: "pending", keys: ["z"] });
-  expect(pushBuiltinMap("normal", ["z"], "z")).toEqual({
-    _tag: "matched",
-    id: "zz",
-    keys: ["z", "z"],
+  const gg = pushMap(BUILTIN_MAP_ENTRIES, "normal", ["g"], "g");
+  expect(gg._tag).toBe("matched");
+  if (gg._tag === "matched") {
+    expect(gg.entry).toEqual({
+      _tag: "builtin",
+      id: "gg",
+      strokes: ["g", "g"],
+      scopes: ["normal", "operator"],
+    });
+  }
+  expect(pushMap(BUILTIN_MAP_ENTRIES, "normal", [], "z")).toEqual({
+    _tag: "pending",
+    keys: ["z"],
   });
 });
 
 test("operator scope excludes normal-only maps like gu / zz", () => {
-  expect(pushBuiltinMap("operator", ["g"], "u")).toEqual({ _tag: "miss" });
-  expect(pushBuiltinMap("operator", ["g"], "e")).toEqual({
-    _tag: "matched",
-    id: "ge",
-    keys: ["g", "e"],
-  });
-  expect(pushBuiltinMap("operator", [], "z")).toEqual({ _tag: "miss" });
+  expect(pushMap(BUILTIN_MAP_ENTRIES, "operator", ["g"], "u")).toEqual({ _tag: "miss" });
+  const ge = pushMap(BUILTIN_MAP_ENTRIES, "operator", ["g"], "e");
+  expect(ge._tag).toBe("matched");
+  expect(pushMap(BUILTIN_MAP_ENTRIES, "operator", [], "z")).toEqual({ _tag: "miss" });
 });
 
 test("strokeFromKey normalises shift+e to E", () => {
   expect(strokeFromKey(key("E"))).toBe("E");
   expect(strokeFromKey(key("e", { shift: true }))).toBe("E");
   expect(strokeFromKey(key("=", { shift: true }))).toBe("+");
+});
+
+test("mapContinuationHints lists command next keys only", () => {
+  const maps = [
+    ...BUILTIN_MAP_ENTRIES,
+    {
+      _tag: "command" as const,
+      name: "lsp.references",
+      strokes: ["g", "r", "r"],
+      scopes: ["normal"] as const,
+    },
+  ];
+  expect(
+    mapContinuationHints(maps, ["g"], "normal", (name) =>
+      name === "lsp.references" ? "LSP references" : undefined,
+    ),
+  ).toEqual([{ keys: ["r"], desc: "LSP references" }]);
 });

@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test";
-import { Context, Data, Duration, Effect, Layer, Option, Schedule } from "effect";
+import { Context, Data, Effect, Layer, Option, Schedule } from "effect";
 import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, type CliRenderer, type KeyEvent } from "@opentui/core";
 import { RendererContext, _render } from "@opentui/solid";
@@ -11,7 +11,6 @@ import {
   waitFor,
 } from "@danielfgray/amux/testing";
 import {
-  BindingsTag,
   ContextsTag,
   OptionsTag,
   resolveOptions,
@@ -260,16 +259,11 @@ testEffect(
     expect(seenBindings.includes("editor.focused.surround")).toBe(true);
     expect(seenBindings.includes("editor.focused.search")).toBe(true);
     expect(seenBindings.includes("editor.focused.substitute")).toBe(true);
-    // Multi-stroke maps/LSP are CommandSpecs (one dispatch path); syncCommandChords
-    // mirrors them onto the shared trie. Cite: ts-b36737.
+    // Builtin maps are engine grammar; LSP g* are keyless CommandSpecs
+    // with engine map rows. Diagnostic ]d stays keymap-only.
     expect(seenBindings.includes("editor.normal.lsp.references")).toBe(true);
-    expect(seenBindings.includes("editor.normal.map.gg")).toBe(true);
-    expect(seenBindings.includes("editor.operator.map.gg")).toBe(true);
-    // Test host stubs bindings.register (records names only), so hidden flags
-    // are not on Bindings.commands() here — covered by the registration source.
-    expect(
-      Duration.toMillis(Option.getOrThrow(host.get(BindingsTag)).chords.timeoutlen()),
-    ).toBeGreaterThan(0);
+    expect(seenBindings.includes("editor.normal.lsp.diagnosticNext")).toBe(true);
+    expect(seenBindings.includes("editor.normal.map.gg")).toBe(false);
     expect(seenBindings.includes("editor.operator.key.w")).toBe(true);
     expect(seenBindings.includes("editor.insert.key.escape")).toBe(true);
     expect(

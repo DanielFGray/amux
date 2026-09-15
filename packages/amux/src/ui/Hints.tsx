@@ -21,8 +21,8 @@ interface Line {
  * function only needs to know whether either one currently holds, not which.
  *
  * `maxDelayMs` is `'timeoutlen'`: pending clears then, so a configured delay
- * that would meet or exceed it shows immediately (and the caller should
- * re-arm timeoutlen when the panel opens — see {@link ChordMatcher.rearmTimeout}).
+ * that would meet or exceed it shows immediately. hintVisibility caps the
+ * delay under timeoutlen; OpenTUI has no rearmTimeout.
  */
 export function hintVisibility(
   triggered: boolean,

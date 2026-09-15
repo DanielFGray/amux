@@ -11,6 +11,10 @@ export interface ContextKeyInput {
     value: Exclude<KeyData[K], undefined>,
   ) => void;
   readonly consume: (options?: { preventDefault?: boolean; stopPropagation?: boolean }) => void;
+  /** Whether `name` is bound in the active keymap right now. */
+  readonly bound: (name: string) => boolean;
+  /** Refresh showcmd / pending subscribers after this context changed pending state. */
+  readonly notifyPending: () => void;
 }
 
 /**
@@ -100,6 +104,17 @@ export interface ContextSpec {
    * panel renders alongside every `CommandSpec`-derived group.
    */
   hints?: readonly { keys: string[]; desc: string }[];
+  /**
+   * Continuations while this context owns a pending prefix that is not on
+   * the mux keymap (editor pendingMap, …). When non-null, which-key shows
+   * these instead of keymap graph continuations.
+   */
+  pendingContinuations?: () => {
+    readonly pending: readonly string[];
+    /** Which-key group label for {@link entries}. */
+    readonly group: string;
+    readonly entries: readonly { keys: string[]; desc: string }[];
+  } | null;
 }
 
 /**

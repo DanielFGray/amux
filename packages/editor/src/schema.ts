@@ -21,6 +21,7 @@ import type { Grammar } from "@danielfgray/amux-highlight";
 import type { TextBuffer, TextEdit } from "@danielfgray/amux-text-buffer";
 import type { CmdAtom } from "./cmd-atom.ts";
 import type { ChangeList, JumpList } from "./jumps.ts";
+import type { MapEntry } from "./maps.ts";
 
 export const EditorMode = S.Literals([
   "normal",
@@ -211,6 +212,13 @@ export const EditorRequest = S.TaggedUnion({
     bang: S.Boolean,
   },
   /**
+   * A multi-key map matched a registered CommandSpec name. The pane dispatches
+   * that command through Bindings (same run body as a key binding).
+   */
+  "map-command": {
+    name: S.String,
+  },
+  /**
    * Push text to the host clipboard via OSC 52 (`"+` / `"*`).
    * Fulfilled by the pane shell through `PaneViewProps.copyText`.
    */
@@ -307,6 +315,13 @@ export type EditorState = {
   readonly count: string;
   /** Waiting for the target character after `f`/`F`/`t`/`T`. */
   readonly pendingFind: { readonly kind: FindKind } | null;
+  /**
+   * Incomplete multi-key map (`g…` / `z…`). Showcmd grammar role; not the mux
+   * keymap pending sequence.
+   */
+  readonly pendingMap: readonly string[];
+  /** Live map table (builtins + plugin command entries). */
+  readonly maps: readonly MapEntry[];
   /** Last character-find, for `;` and `,`. */
   readonly lastFind: { readonly kind: FindKind; readonly char: string } | null;
   /** Visible window used by H/M/L and Ctrl-D/U. */

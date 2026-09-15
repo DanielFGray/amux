@@ -30,6 +30,12 @@ test("showcmdStrokes reports count + operator + find", () => {
   expect(showcmdStrokes(state)).toEqual(["3", "d", "f"]);
 });
 
+test("showcmdStrokes reports pending map prefix", () => {
+  const pending = press(initialEditor(), "g");
+  expect(showcmdStrokes(pending)).toEqual(["g"]);
+  expect(pending.pendingMap).toEqual(["g"]);
+});
+
 test("showcmdStrokes clears when idle", () => {
   expect(showcmdStrokes(initialEditor())).toEqual([]);
 });

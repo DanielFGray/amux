@@ -1,8 +1,8 @@
 /**
- * Builtin multi-key maps. Live prefix-wait is {@link ChordMatcher} via
- * CommandSpec → syncCommandChords (one trie). This module stays the pure
- * trie for tests / documentation — not a second pending buffer in
- * EditorState. Cite: chord-matcher.ts; ts-b36737.
+ * Builtin and plugin multi-key maps (`gg`, `grr`, `zz`, …). Live wait lives in
+ * reduceEditor as {@link EditorState.pendingMap} against {@link EditorState.maps}
+ * — same grammar role as operators and `f{char}`. Not mux keymap sequences:
+ * pane-history can feed the engine with no editor plugin loaded.
  */
 import type { KeyEvent } from "@opentui/core";
 
@@ -25,20 +25,26 @@ export type BuiltinMapId =
   | "zt"
   | "zb";
 
-/** Where a builtin map is active. */
+/** Where a map is active. */
 export type MapScope = "normal" | "operator";
 
-export type BuiltinMap = {
-  readonly id: BuiltinMapId;
-  /** Canonical strokes for the algebra trie (`typeKeys` / reduceEditor). */
-  readonly strokes: readonly string[];
-  /**
-   * Binding-layer strokes for `Bindings.chords` (may use `shift+e` where the
-   * algebra uses `E`). Same `id` — one handler.
-   */
-  readonly bindingStrokes: readonly string[];
-  readonly scopes: readonly MapScope[];
-};
+/**
+ * One map the engine can match. Builtin ids run {@link runBuiltinMap}; command
+ * names set an EditorRequest the plugin fulfills via the registered CommandSpec.
+ */
+export type MapEntry =
+  | {
+      readonly _tag: "builtin";
+      readonly id: BuiltinMapId;
+      readonly strokes: readonly string[];
+      readonly scopes: readonly MapScope[];
+    }
+  | {
+      readonly _tag: "command";
+      readonly name: string;
+      readonly strokes: readonly string[];
+      readonly scopes: readonly MapScope[];
+    };
 
 /**
  * Normalize a key to a map stroke. Printable letters honour shift as uppercase
@@ -61,34 +67,30 @@ export const strokeFromKey = (key: KeyEvent): string | null => {
   return key.name;
 };
 
-export const BUILTIN_MAPS: readonly BuiltinMap[] = [
-  { id: "gg", strokes: ["g", "g"], bindingStrokes: ["g", "g"], scopes: ["normal", "operator"] },
-  { id: "ge", strokes: ["g", "e"], bindingStrokes: ["g", "e"], scopes: ["normal", "operator"] },
-  {
-    id: "gE",
-    strokes: ["g", "E"],
-    bindingStrokes: ["g", "shift+e"],
-    scopes: ["normal", "operator"],
-  },
-  { id: "g-", strokes: ["g", "-"], bindingStrokes: ["g", "-"], scopes: ["normal"] },
-  { id: "g+", strokes: ["g", "+"], bindingStrokes: ["g", "+"], scopes: ["normal"] },
-  { id: "g;", strokes: ["g", ";"], bindingStrokes: ["g", ";"], scopes: ["normal"] },
-  { id: "g,", strokes: ["g", ","], bindingStrokes: ["g", ","], scopes: ["normal"] },
-  { id: "gv", strokes: ["g", "v"], bindingStrokes: ["g", "v"], scopes: ["normal"] },
-  { id: "gi", strokes: ["g", "i"], bindingStrokes: ["g", "i"], scopes: ["normal"] },
-  { id: "gu", strokes: ["g", "u"], bindingStrokes: ["g", "u"], scopes: ["normal"] },
-  { id: "gU", strokes: ["g", "U"], bindingStrokes: ["g", "shift+u"], scopes: ["normal"] },
-  { id: "g~", strokes: ["g", "~"], bindingStrokes: ["g", "~"], scopes: ["normal"] },
-  { id: "g*", strokes: ["g", "*"], bindingStrokes: ["g", "*"], scopes: ["normal"] },
-  { id: "g#", strokes: ["g", "#"], bindingStrokes: ["g", "#"], scopes: ["normal"] },
-  { id: "zz", strokes: ["z", "z"], bindingStrokes: ["z", "z"], scopes: ["normal"] },
-  { id: "zt", strokes: ["z", "t"], bindingStrokes: ["z", "t"], scopes: ["normal"] },
-  { id: "zb", strokes: ["z", "b"], bindingStrokes: ["z", "b"], scopes: ["normal"] },
+/** Builtin table as {@link MapEntry} rows for {@link EditorState.maps}. */
+export const BUILTIN_MAP_ENTRIES: readonly MapEntry[] = [
+  { _tag: "builtin", id: "gg", strokes: ["g", "g"], scopes: ["normal", "operator"] },
+  { _tag: "builtin", id: "ge", strokes: ["g", "e"], scopes: ["normal", "operator"] },
+  { _tag: "builtin", id: "gE", strokes: ["g", "E"], scopes: ["normal", "operator"] },
+  { _tag: "builtin", id: "g-", strokes: ["g", "-"], scopes: ["normal"] },
+  { _tag: "builtin", id: "g+", strokes: ["g", "+"], scopes: ["normal"] },
+  { _tag: "builtin", id: "g;", strokes: ["g", ";"], scopes: ["normal"] },
+  { _tag: "builtin", id: "g,", strokes: ["g", ","], scopes: ["normal"] },
+  { _tag: "builtin", id: "gv", strokes: ["g", "v"], scopes: ["normal"] },
+  { _tag: "builtin", id: "gi", strokes: ["g", "i"], scopes: ["normal"] },
+  { _tag: "builtin", id: "gu", strokes: ["g", "u"], scopes: ["normal"] },
+  { _tag: "builtin", id: "gU", strokes: ["g", "U"], scopes: ["normal"] },
+  { _tag: "builtin", id: "g~", strokes: ["g", "~"], scopes: ["normal"] },
+  { _tag: "builtin", id: "g*", strokes: ["g", "*"], scopes: ["normal"] },
+  { _tag: "builtin", id: "g#", strokes: ["g", "#"], scopes: ["normal"] },
+  { _tag: "builtin", id: "zz", strokes: ["z", "z"], scopes: ["normal"] },
+  { _tag: "builtin", id: "zt", strokes: ["z", "t"], scopes: ["normal"] },
+  { _tag: "builtin", id: "zb", strokes: ["z", "b"], scopes: ["normal"] },
 ];
 
 export type MapPushResult =
   | { readonly _tag: "pending"; readonly keys: readonly string[] }
-  | { readonly _tag: "matched"; readonly id: BuiltinMapId; readonly keys: readonly string[] }
+  | { readonly _tag: "matched"; readonly entry: MapEntry; readonly keys: readonly string[] }
   | { readonly _tag: "miss" };
 
 const strokesEqual = (a: readonly string[], b: readonly string[]): boolean =>
@@ -97,25 +99,56 @@ const strokesEqual = (a: readonly string[], b: readonly string[]): boolean =>
 const isStrictPrefix = (prefix: readonly string[], full: readonly string[]): boolean =>
   prefix.length < full.length && prefix.every((stroke, i) => stroke === full[i]);
 
-const mapsInScope = (scope: MapScope): readonly BuiltinMap[] =>
-  BUILTIN_MAPS.filter((entry) => entry.scopes.includes(scope));
+const mapsInScope = (maps: readonly MapEntry[], scope: MapScope): readonly MapEntry[] =>
+  maps.filter((entry) => entry.scopes.includes(scope));
 
-/** Push one stroke against the builtin trie for `scope`. */
-export const pushBuiltinMap = (
+/** Push one stroke against a map table for `scope`. */
+export const pushMap = (
+  maps: readonly MapEntry[],
   scope: MapScope,
   pending: readonly string[],
   stroke: string,
 ): MapPushResult => {
   if (stroke.length === 0 || stroke === "escape") return { _tag: "miss" };
-  const maps = mapsInScope(scope);
+  const active = mapsInScope(maps, scope);
   const candidate = [...pending, stroke];
-  const longer = maps.some((entry) => isStrictPrefix(candidate, entry.strokes));
-  const exact = maps.find((entry) => strokesEqual(candidate, entry.strokes));
+  const longer = active.some((entry) => isStrictPrefix(candidate, entry.strokes));
+  const exact = active.find((entry) => strokesEqual(candidate, entry.strokes));
   if (longer) return { _tag: "pending", keys: candidate };
-  if (exact) return { _tag: "matched", id: exact.id, keys: candidate };
+  if (exact) return { _tag: "matched", entry: exact, keys: candidate };
   return { _tag: "miss" };
 };
 
 /** True when `stroke` alone is a strict prefix of some map in scope. */
-export const isMapPrefixStroke = (scope: MapScope, stroke: string): boolean =>
-  mapsInScope(scope).some((entry) => entry.strokes[0] === stroke && entry.strokes.length > 1);
+export const isMapPrefixStroke = (
+  maps: readonly MapEntry[],
+  scope: MapScope,
+  stroke: string,
+): boolean =>
+  mapsInScope(maps, scope).some((entry) => entry.strokes[0] === stroke && entry.strokes.length > 1);
+
+/** Next-key which-key rows for a pending map prefix (command entries only). */
+export const mapContinuationHints = (
+  maps: readonly MapEntry[],
+  pending: readonly string[],
+  scope: MapScope,
+  descOf: (name: string) => string | undefined,
+): readonly { keys: string[]; desc: string }[] => {
+  const out: { keys: string[]; desc: string }[] = [];
+  for (const entry of mapsInScope(maps, scope)) {
+    if (entry.strokes.length <= pending.length) continue;
+    if (pending.some((stroke, i) => entry.strokes[i] !== stroke)) continue;
+    const next = entry.strokes[pending.length];
+    if (next === undefined) continue;
+    if (entry._tag === "builtin") continue;
+    const desc = descOf(entry.name);
+    if (desc === undefined) continue;
+    const existing = out.find((row) => row.desc === desc);
+    if (existing) {
+      if (!existing.keys.includes(next)) existing.keys.push(next);
+    } else {
+      out.push({ keys: [next], desc });
+    }
+  }
+  return out;
+};

@@ -43,7 +43,7 @@ import {
   type MotionContext,
   type MotionRange,
 } from "./motions.ts";
-import { type BuiltinMapId, type MapScope } from "./maps.ts";
+import { type BuiltinMapId, type MapScope, BUILTIN_MAP_ENTRIES, isMapPrefixStroke, pushMap, strokeFromKey } from "./maps.ts";
 import {
   appendChangeKey,
   cancelChange,
@@ -191,6 +191,8 @@ export function initialEditor(): EditorState {
     request: null,
     count: "",
     pendingFind: null,
+    pendingMap: [],
+    maps: BUILTIN_MAP_ENTRIES,
     lastFind: null,
     viewport: DEFAULT_VIEWPORT,
     pending: null,
@@ -260,6 +262,7 @@ export function reduceEditor(
         request: null,
         count: "",
         pendingFind: null,
+        pendingMap: [],
         pending: null,
         pendingSurround: null,
         pendingReplace: null,
@@ -292,6 +295,7 @@ export function reduceEditor(
         pending: null,
         pendingSurround: null,
         pendingFind: null,
+        pendingMap: [],
         count: "",
         undoTree: initialUndoTree(buffer, cursor),
         changeBase: null,
@@ -440,8 +444,47 @@ function normalKey(state: EditorState, key: KeyEvent): EditorState {
     return playMacro(state, name.length === 1 ? name.toLowerCase() : "", parsedCount(state));
   }
 
-  // Multi-key maps (`g…` / `z…` / `gr*`) live on Bindings.chords — not here.
-  // Cite: maps.ts; chord-matcher.ts; ts-9e2f54.
+  // Multi-key maps (`gg` / `grr` / `zz` / …) against state.maps. Do not start
+  // a map while replace/find/indent/… is waiting — `rz` is replace, not a `z`
+  // map prefix. Operator pending is allowed so `dgg` works.
+  {
+    const stroke = strokeFromKey(key);
+    const scope = mapScopeOf(state);
+    const canStartMap =
+      state.pendingReplace === null &&
+      state.pendingFind === null &&
+      state.pendingIndent === null &&
+      state.pendingCase === null &&
+      state.pendingEqual === null &&
+      state.pendingSurround === null &&
+      !state.pendingMark &&
+      state.pendingJump === null &&
+      !state.pendingMacro &&
+      !state.pendingAt &&
+      state.pendingRegister === "";
+    if (
+      stroke !== null &&
+      (state.pendingMap.length > 0 ||
+        (canStartMap && isMapPrefixStroke(state.maps, scope, stroke)))
+    ) {
+      const result = pushMap(state.maps, scope, state.pendingMap, stroke);
+      if (result._tag === "pending") {
+        return { ...state, pendingMap: result.keys, message: null };
+      }
+      if (result._tag === "matched") {
+        const cleared = { ...state, pendingMap: [] };
+        if (result.entry._tag === "builtin") {
+          return runBuiltinMap(cleared, result.entry.id);
+        }
+        return {
+          ...cleared,
+          request: { _tag: "map-command", name: result.entry.name },
+          message: null,
+        };
+      }
+      state = { ...state, pendingMap: [] };
+    }
+  }
 
   // `g~` / `gu` / `gU` / `=` wait for a motion (or a doubled letter).
   if (state.pendingCase !== null) {
@@ -481,6 +524,7 @@ const cancelPendingOnEscape = (state: EditorState): EditorState => {
     state.pendingReplace !== null ||
     state.pendingIndent !== null ||
     state.pendingFind !== null ||
+    state.pendingMap.length > 0 ||
     state.pendingMark ||
     state.pendingJump !== null ||
     state.pendingCase !== null ||
@@ -498,6 +542,7 @@ const cancelPendingOnEscape = (state: EditorState): EditorState => {
       pendingReplace: null,
       pendingIndent: null,
       pendingFind: null,
+      pendingMap: [],
       pendingMark: false,
       pendingJump: null,
       pendingCase: null,
@@ -866,7 +911,7 @@ export const mapScopeOf = (state: EditorState): MapScope =>
     ? "operator"
     : "normal";
 
-/** Apply a completed builtin map. Exported for the plugin chord layer. */
+/** Apply a completed builtin map. */
 export const runBuiltinMap = (state: EditorState, id: BuiltinMapId): EditorState => {
   const cleared: EditorState = { ...state, message: null };
   switch (id) {
@@ -2066,6 +2111,7 @@ function unknownKey(state: EditorState, name: string): EditorState {
     pendingReplace: null,
     pendingIndent: null,
     pendingFind: null,
+    pendingMap: [],
     count: "",
     message: `not a normal-mode key: ${name}`,
   });
@@ -2502,6 +2548,7 @@ function leaveInsert(state: EditorState): EditorState {
     lastInsert,
     count: "",
     pendingFind: null,
+    pendingMap: [],
     pending: null,
     pendingSurround: null,
     pendingInsertReg: false,
@@ -2978,6 +3025,7 @@ function repeatLastChange(state: EditorState): EditorState {
     pendingReplace: null,
     pendingIndent: null,
     pendingFind: null,
+    pendingMap: [],
   };
   for (const name of keys) {
     current = reduceEditor(current, { _tag: "key", key: keyFromName(name) });

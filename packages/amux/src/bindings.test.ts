@@ -1,6 +1,6 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
-import { Context, Duration, Effect, Option } from "effect";
+import { Context, Effect, Option } from "effect";
 import { NO_REALM, Realm, realmOf } from "./realm.ts";
 import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
@@ -18,6 +18,7 @@ import {
   nextKeys,
   paletteEntries,
   pendingStrokes,
+  pendingStrokeDisplay,
   registerLayerChecked,
   type CommandSpec,
 } from "./bindings.ts";
@@ -1034,11 +1035,11 @@ test("a user override replaces a plugin default instead of adding to it", async 
       bindings: { "plugin.agent.new": ["<prefix>g"] },
     })[0]!.entries[0],
   ).toMatchObject({ keys: "^a g", custom: true });
-  expect(
-    bindings.chords
-      .activeBindings()
-      .filter((binding) => binding.id.startsWith("cmd:plugin.agent.new:")),
-  ).toHaveLength(1);
+  expect(keysFor(commands[0]!, {
+    prefix: "ctrl+a",
+    leader: "space",
+    bindings: { "plugin.agent.new": ["<prefix>g"] },
+  })).toEqual(["<prefix>g"]);
   bindings.dispose();
   t.renderer.destroy();
 });
@@ -1424,16 +1425,6 @@ test("a context projects leader bindings as bare keys without hiding rebindings 
 
     setActive(true);
     expect(
-      bindings.chords
-        .activeBindings()
-        .filter((binding) => binding.id.includes("mode.alias.window.goto"))
-        .map((binding) => [...binding.strokes]),
-    ).toEqual([["g", "g"]]);
-    t.mockInput.pressKey("x");
-    t.mockInput.pressKey("g");
-    t.mockInput.pressKey("g");
-    expect(fired).toEqual(["focus-left", "focus-left", "goto-window"]);
-    expect(
       nextKeys(bindings, bindings.commands(), [mode], []).flatMap((group) => group.entries),
     ).toEqual(
       expect.arrayContaining([
@@ -1441,6 +1432,10 @@ test("a context projects leader bindings as bare keys without hiding rebindings 
         expect.objectContaining({ keys: ["g"], desc: "go to window" }),
       ]),
     );
+    t.mockInput.pressKey("x");
+    t.mockInput.pressKey("g");
+    t.mockInput.pressKey("g");
+    expect(fired).toEqual(["focus-left", "focus-left", "goto-window"]);
     expect(
       nextKeys(bindings, bindings.commands(), [mode], []).flatMap((group) => group.entries),
     ).not.toContainEqual(expect.objectContaining({ desc: "more commands" }));
@@ -1569,7 +1564,7 @@ test("timeoutlen prefers the longer chord, else the exact shorter binding", asyn
   }
 });
 
-test("createBindings exposes a ChordMatcher with the same timeoutlen; CommandSpecs sync onto it", async () => {
+test("createBindings exposes timeoutlenMs; multi-stroke CommandSpecs dispatch on the keymap", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const fired: string[] = [];
@@ -1590,23 +1585,24 @@ test("createBindings exposes a ChordMatcher with the same timeoutlen; CommandSpe
         timeoutlenMs: 40,
       },
     );
-    expect(bindings.chords.timeoutlen()).toEqual(Duration.millis(40));
-    expect(bindings.chords.push("a")._tag).toBe("pending");
-    const matched = bindings.chords.push("b");
-    expect(matched._tag).toBe("matched");
-    if (matched._tag === "matched") expect(matched.id).toContain("t.ab");
+    expect(bindings.chords.timeoutlenMs()).toBe(40);
+    t.mockInput.pressKey("a");
+    await Bun.sleep(10);
+    expect(bindings.keymap.getPendingSequence().map((p) => p.display)).toEqual(["a"]);
+    t.mockInput.pressKey("b");
+    await Bun.sleep(10);
     expect(fired).toEqual(["ab"]);
+    expect(bindings.keymap.getPendingSequence()).toEqual([]);
   } finally {
     t.renderer.destroy();
   }
 });
 
 /**
- * ChordMatcher map-fail: abandoned `<leader>` then unbound `j` retries `j`
- * (neovim handle_mapping). createBindings syncs `<leader>*` CommandSpecs onto
- * chords and feeds them from the global chord intercept.
+ * Neovim map-fail: abandoned `<leader>` then unbound `j` retries `j`
+ * (handle_mapping). Multi-stroke lives on the keymap layer.
  */
-test("space then unbound j retries j via ChordMatcher (neovim map-fail)", async () => {
+test("space then unbound j retries j via keymap pending (neovim map-fail)", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const fired: string[] = [];
@@ -1645,7 +1641,7 @@ test("space then unbound j retries j via ChordMatcher (neovim map-fail)", async 
     t.mockInput.pressKey("j");
     await Bun.sleep(10);
     expect(fired).toEqual(["j"]);
-    expect(bindings.chords.pending()).toEqual([]);
+    expect(bindings.keymap.getPendingSequence()).toEqual([]);
 
     t.mockInput.pressKey(" ");
     t.mockInput.pressKey("e");
@@ -1656,7 +1652,7 @@ test("space then unbound j retries j via ChordMatcher (neovim map-fail)", async 
   }
 });
 
-test("which-key lists leader continuations from ChordMatcher pending", async () => {
+test("which-key lists leader continuations from keymap pending", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const normal: ContextSpec = {
@@ -1692,7 +1688,9 @@ test("which-key lists leader continuations from ChordMatcher pending", async () 
 
     t.mockInput.pressKey(" ");
     await Bun.sleep(10);
-    expect(bindings.chords.pending()).toEqual(["<leader>"]);
+    expect(bindings.keymap.getPendingSequence().map((p) => pendingStrokeDisplay(p))).toEqual([
+      "<leader>",
+    ]);
     expect(nextKeys(bindings, bindings.commands(), [normal], [{ display: "<leader>" }])).toEqual([
       {
         group: "editor",
@@ -1730,7 +1728,7 @@ test("pending grammar is display-only and independent of chord pending", async (
     bindings.pending.notify();
     bindings.pending.notify(); // same strokes — still notifies; equality is the source's job
     expect(pendingStrokes(bindings.pending, "grammar")).toEqual(["3", "d"]);
-    expect(bindings.chords.pending()).toEqual([]);
+    expect(bindings.keymap.getPendingSequence()).toEqual([]);
     expect(pendingStrokes(bindings.pending, "chord")).toEqual([]);
     expect(seen).toEqual([["d"], ["3", "d"], ["3", "d"]]);
     stop();
@@ -1740,7 +1738,56 @@ test("pending grammar is display-only and independent of chord pending", async (
   }
 });
 
-test("pending table rejects a second source for the same role", async () => {
+test("higher-priority exact fires before a lower layer's longer sequence", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const high: ContextSpec = {
+      id: "high",
+      active: () => true,
+      priority: CONTEXT_PRIORITY.APP_MODE,
+      rebindable: false,
+    };
+    const low: ContextSpec = {
+      id: "low",
+      active: () => true,
+      priority: CONTEXT_PRIORITY.GLOBAL,
+      rebindable: false,
+    };
+    createBindings(
+      t.renderer,
+      [
+        contextCommand(high, {
+          name: "enter",
+          key: "<prefix>",
+          desc: "enter",
+          group: "high",
+          run: Effect.sync(() => fired.push("enter")),
+        }),
+        contextCommand(low, {
+          name: "focus",
+          key: "<prefix>h",
+          desc: "focus",
+          group: "low",
+          run: Effect.sync(() => fired.push("focus")),
+        }),
+      ],
+      {
+        keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
+        onUnhandled: () => true,
+        timeoutlenMs: 40,
+      },
+    );
+
+    t.mockInput.pressKey("s", { ctrl: true });
+    await Bun.sleep(20);
+    expect(fired).toEqual(["enter"]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("pending table rejects a second source for count or chord; grammar concatenates", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const bindings = createBindings(t.renderer, [], {
@@ -1758,9 +1805,14 @@ test("pending table rejects a second source for the same role", async () => {
 
     const table = createPendingTable();
     table.register({ id: "a", role: "grammar", strokes: () => ["x"] });
-    expect(() => table.register({ id: "b", role: "grammar", strokes: () => ["y"] })).toThrow(
-      /pending role 'grammar' is already registered by 'a'/,
-    );
+    table.register({ id: "b", role: "grammar", strokes: () => ["y"] });
+    expect(pendingStrokes(table, "grammar")).toEqual(["x", "y"]);
+    expect(() =>
+      table.register({ id: "c", role: "count", strokes: () => ["1"] }),
+    ).not.toThrow();
+    expect(() =>
+      table.register({ id: "d", role: "count", strokes: () => ["2"] }),
+    ).toThrow(/pending role 'count' is already registered by 'c'/);
   } finally {
     t.renderer.destroy();
   }

@@ -28,13 +28,17 @@ import type { OptionSpec } from "@danielfgray/amux";
 import { editorOpenCommand } from "./command-args.ts";
 import { EditorControllerTag, EditorPane, type EditorController } from "./EditorPane.tsx";
 import { EditorIo, listEntriesWith, runShellCommand, type EditorIoService } from "./io.ts";
-import { BUILTIN_MAPS, type BuiltinMapId, type MapScope } from "./maps.ts";
+import {
+  BUILTIN_MAP_ENTRIES,
+  mapContinuationHints,
+  type MapEntry,
+} from "./maps.ts";
 import {
   applySurround,
   beginSearch,
   beginSubstitute,
   beginSurround,
-  runBuiltinMap,
+  mapScopeOf,
 } from "./vim-core.ts";
 import { showcmdStrokes } from "./showcmd.ts";
 import { registerLspUi, type LspUi } from "./lsp-ui.tsx";
@@ -279,6 +283,36 @@ export const editorPlugin: PluginDefinition = definePlugin({
 
       const [controllers, setControllers] = createSignal<readonly EditorController[]>([]);
       const focusedEditor = () => controllers().find((controller) => controller.active()) ?? null;
+      // Builtin + LSP g* in engine notation — CommandSpecs keep desc/group/run, no keymap key.
+      const editorMaps: readonly MapEntry[] = [
+        ...BUILTIN_MAP_ENTRIES,
+        { _tag: "command", name: "lsp.references", strokes: ["g", "r", "r"], scopes: ["normal"] },
+        { _tag: "command", name: "lsp.definition", strokes: ["g", "r", "d"], scopes: ["normal"] },
+        { _tag: "command", name: "lsp.gd", strokes: ["g", "d"], scopes: ["normal"] },
+        { _tag: "command", name: "lsp.gD", strokes: ["g", "D"], scopes: ["normal"] },
+        {
+          _tag: "command",
+          name: "lsp.implementation",
+          strokes: ["g", "r", "i"],
+          scopes: ["normal"],
+        },
+        {
+          _tag: "command",
+          name: "lsp.typeDefinition",
+          strokes: ["g", "r", "t"],
+          scopes: ["normal"],
+        },
+        { _tag: "command", name: "lsp.codeAction", strokes: ["g", "r", "a"], scopes: ["normal"] },
+        { _tag: "command", name: "lsp.codeLens", strokes: ["g", "r", "x"], scopes: ["normal"] },
+        {
+          _tag: "command",
+          name: "lsp.documentSymbols",
+          strokes: ["g", "O"],
+          scopes: ["normal"],
+        },
+        { _tag: "command", name: "lsp.diagnosticFloat", strokes: ["g", "l"], scopes: ["normal"] },
+        { _tag: "command", name: "lsp.rename", strokes: ["g", "r", "n"], scopes: ["normal"] },
+      ];
       // Lazy grammar source — EditorPane's effect notifies on state/active flips;
       // unregister notifies so an empty controller list clears showcmd.
       const notifyShowcmd = () => bindings.pending.notify();
@@ -291,6 +325,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
         },
       });
       const registerController = (paneId: string, controller: EditorController) => {
+        controller.apply((state) => ({ ...state, maps: editorMaps }));
         setControllers((current) => [...current, controller]);
         // Bind this controller in the pane's realm, so a command dispatched
         // from this pane resolves EditorControllerTag to *this* editor. The
@@ -397,12 +432,6 @@ export const editorPlugin: PluginDefinition = definePlugin({
         }
         if (count.digits() !== "") input.setData("count", count.count());
       };
-      /**
-       * Count digits only. Multi-key wait (`g*` / `<leader>*` / …) is owned by
-       * Bindings.chords via createBindings' global chord feed — not a second
-       * beforeDispatch push (that would double-stroke the trie).
-       * Cite: bindings.ts chord feed; chord-matcher.ts.
-       */
       const normal: ContextSpec = {
         id: "editor.normal",
         active: active((controller) => {
@@ -422,6 +451,25 @@ export const editorPlugin: PluginDefinition = definePlugin({
         priority: CONTEXT_PRIORITY.PANE,
         rebindable: false,
         beforeDispatch: countInput,
+        // Unbound keys (g/z map prefixes, …) reach reduceEditor — same path as
+        // operator/visual. Map wait lives on EditorState.pendingMap.
+        handle: (event) => dispatchEditor(event),
+        pendingContinuations: () => {
+          const controller = focusedEditor();
+          if (controller === null) return null;
+          const state = controller.state();
+          if (state.pendingMap.length === 0) return null;
+          const entries = mapContinuationHints(
+            state.maps,
+            state.pendingMap,
+            mapScopeOf(state),
+            (name) => {
+              const cmd = bindings.commands().find((entry) => entry.name === name);
+              return cmd?.desc;
+            },
+          );
+          return { pending: state.pendingMap, group: "editor", entries: [...entries] };
+        },
       };
       const operator: ContextSpec = {
         id: "editor.operator",
@@ -736,159 +784,79 @@ export const editorPlugin: PluginDefinition = definePlugin({
           }),
         );
       }
-      // Mapping chords as CommandSpecs — syncCommandChords mirrors them onto
-      // Bindings.chords so prefix-wait / showcmd / which-key share one trie.
-      // Builtin `g*` / `z*` share the table with LSP (`grr`, …). Matched
-      // builtins apply via runBuiltinMap; they do not feedVim raw keys back
-      // into a pendingG flag. Cite: maps.ts; chord-matcher.ts; ts-b36737.
-      const feedVim = (strokes: readonly string[]) => {
-        const controller = focusedEditor();
-        if (controller === null) return;
-        for (const stroke of strokes) {
-          const shift =
-            stroke.startsWith("shift+") || (stroke.length === 1 && stroke !== stroke.toLowerCase());
-          const name = stroke.startsWith("shift+")
-            ? stroke.slice("shift+".length)
-            : stroke.length === 1
-              ? stroke.toLowerCase()
-              : stroke;
-          controller.dispatch({
-            name,
-            sequence: stroke.length === 1 ? stroke : "",
-            shift,
-            ctrl: false,
-            meta: false,
-            option: false,
-            eventType: "press",
-            raw: stroke,
-          } as KeyEvent);
-        }
-      };
-      const applyBuiltin = (id: BuiltinMapId) =>
-        editorEffect((editor) => {
-          editor.apply((state) => runBuiltinMap(state, id));
-        });
-      bindings.chords.setAmbiguousTimeout((strokes) => {
-        // Mux `<prefix>` wait abandons; do not feed vim a token name.
-        if (strokes[0] === "<prefix>") return;
-        // `<leader>` is a chord token; vim-core wants the physical key (space).
-        feedVim(strokes.map((stroke) => (stroke === "<leader>" ? bindings.leader() : stroke)));
-      });
-      // Dual-scope builtins (gg/ge/gE) register under normal *and* operator so
-      // `dgg` keeps working — mutually exclusive contexts, same key token.
-      // Key form is unspaced (`grr`, `gshift+d`); spaces are literal keys.
-      const mapContexts = (scopes: readonly MapScope[]) =>
-        scopes.flatMap((scope) => {
-          if (scope === "normal") return [normal];
-          if (scope === "operator") return [operator];
-          return [];
-        });
-      yield* Effect.forEach(BUILTIN_MAPS, (entry) =>
-        Effect.forEach(mapContexts(entry.scopes), (context) =>
-          bindings.register(
-            contextCommand(context, {
-              name: `map.${entry.id}`,
-              key: entry.bindingStrokes.join(""),
-              desc: entry.id,
-              group: "editor",
-              hidden: true,
-              run: applyBuiltin(entry.id),
-            }),
-          ),
-        ),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "map.g+.shift",
-          key: "gshift+=",
-          desc: "g+",
-          group: "editor",
-          hidden: true,
-          run: applyBuiltin("g+"),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.references",
-          key: "grr",
-          desc: "LSP references",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestReferences()),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.definition",
-          key: "grd",
-          desc: "LSP definition",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestDefinition()),
-        }),
-      );
-      // Vim `gd` / `gD` — LSP definition (declaration API not wired yet).
-      // Cite: neovim `gd` local / `gD` global; both map to textDocument/definition.
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.gd",
-          key: "gd",
-          desc: "LSP definition (gd)",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestDefinition()),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.gD",
-          key: "gshift+d",
-          desc: "LSP declaration (gD)",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestDeclaration()),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.implementation",
-          key: "gri",
-          desc: "LSP implementation",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestImplementation()),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.typeDefinition",
-          key: "grt",
-          desc: "LSP type definition",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestTypeDefinition()),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.codeAction",
-          key: "gra",
-          desc: "LSP code action",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestCodeAction()),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.codeLens",
-          key: "grx",
-          desc: "LSP code lens",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestCodeLens()),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.documentSymbols",
-          key: "gshift+o",
-          desc: "LSP document symbols",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestDocumentSymbols()),
-        }),
+      // Builtin maps live in reduceEditor. LSP `g*` chords are CommandSpecs
+      // (desc/group/run, no keymap key) with engine map rows in editorMaps so
+      // gg and grr share one pending trie. Diagnostic `]d` stays keymap-only.
+      yield* Effect.forEach(
+        [
+          contextCommand(normal, {
+            name: "lsp.references",
+            desc: "LSP references",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestReferences()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.definition",
+            desc: "LSP definition",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestDefinition()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.gd",
+            desc: "LSP definition (gd)",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestDefinition()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.gD",
+            desc: "LSP declaration (gD)",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestDeclaration()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.implementation",
+            desc: "LSP implementation",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestImplementation()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.typeDefinition",
+            desc: "LSP type definition",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestTypeDefinition()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.codeAction",
+            desc: "LSP code action",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestCodeAction()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.codeLens",
+            desc: "LSP code lens",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestCodeLens()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.documentSymbols",
+            desc: "LSP document symbols",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestDocumentSymbols()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.diagnosticFloat",
+            desc: "diagnostic under cursor",
+            group: "editor",
+            run: editorEffect((editor) => editor.showDiagnosticFloat()),
+          }),
+          contextCommand(normal, {
+            name: "lsp.rename",
+            desc: "LSP rename",
+            group: "editor",
+            run: editorEffect((editor) => editor.requestRename()),
+          }),
+        ],
+        (spec) => bindings.register(spec),
       );
       yield* bindings.register(
         contextCommand(normal, {
@@ -926,49 +894,9 @@ export const editorPlugin: PluginDefinition = definePlugin({
           run: editorEffect((editor) => editor.jumpDiagnostic("first")),
         }),
       );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.diagnosticFloat",
-          key: "gl",
-          desc: "diagnostic under cursor",
-          group: "editor",
-          // nvim uses <C-W>d — mux owns CTRL-W, so `gl` (show diagnostics float).
-          run: editorEffect((editor) => editor.showDiagnosticFloat()),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "map.gstar.shift",
-          key: "gshift+8",
-          desc: "g*",
-          group: "editor",
-          hidden: true,
-          run: applyBuiltin("g*"),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "map.ghash.shift",
-          key: "gshift+3",
-          desc: "g#",
-          group: "editor",
-          hidden: true,
-          run: applyBuiltin("g#"),
-        }),
-      );
-      yield* bindings.register(
-        contextCommand(normal, {
-          name: "lsp.rename",
-          key: "grn",
-          desc: "LSP rename",
-          group: "editor",
-          run: editorEffect((editor) => editor.requestRename()),
-        }),
-      );
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           disposeGrammarPending();
-          bindings.chords.setAmbiguousTimeout(null);
         }),
       );
       yield* Effect.forEach(motionBindings, ([key, desc]) =>
@@ -1007,6 +935,9 @@ export const editorPlugin: PluginDefinition = definePlugin({
             search={getSearch}
             registerController={registerController}
             onShowcmdSync={notifyShowcmd}
+            onMapCommand={(name) => {
+              bindings.dispatch(name);
+            }}
           />
         ),
       ]);
@@ -1117,9 +1048,8 @@ export const editorPlugin: PluginDefinition = definePlugin({
           ),
         );
       };
-      // Multi-key `<leader>*` CommandSpecs sync onto Bindings.chords in
-      // createBindings.apply — no hand dual-register. Cite: bindings.ts
-      // syncCommandChords.
+      // Multi-key `<leader>*` CommandSpecs register as keymap layer sequences
+      // in createBindings.apply.
       yield* bindings.register(
         contextCommand(normal, {
           name: "open",

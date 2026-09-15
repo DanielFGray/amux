@@ -1,6 +1,6 @@
 /** @effect-diagnostics *:skip-file -- plain-async e2e: drives the real app PTY. */
 /**
- * which-key panel: ChordMatcher pending + hintVisibility (including whichKeyDelay
+ * which-key panel: keymap pending + hintVisibility (including whichKeyDelay
  * capped by timeoutlen so a 2s delay still shows before the chord wait clears).
  */
 import { test, expect, afterAll } from "bun:test";

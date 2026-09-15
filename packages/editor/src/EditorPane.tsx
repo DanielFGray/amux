@@ -140,8 +140,10 @@ export interface EditorViewProps extends PaneViewProps {
   readonly editor?: EditorService;
   /** Publish this pane's controller to the plugin's mode contexts. */
   readonly registerController?: (paneId: string, controller: EditorController) => () => void;
-  /** Re-publish grammar showcmd when focus or state changes (ts-9e2f54). */
+  /** Re-publish grammar showcmd when focus or state changes. */
   readonly onShowcmdSync?: () => void;
+  /** Fulfill a map-command request by dispatching the registered CommandSpec. */
+  readonly onMapCommand?: (name: string) => void;
   /** Tree-sitter highlight provider, built by the plugin activation. Absent
    *  when tests mount the view directly without highlighting — the pane then
    *  renders plain text. */
@@ -866,6 +868,11 @@ function createEditorBuffer(props: EditorViewProps) {
                 arg: request.arg,
                 state: next,
               });
+              yield* updateAndSync((s) => ({ ...s, request: null }));
+              return;
+            }
+            if (request._tag === "map-command") {
+              props.onMapCommand?.(request.name);
               yield* updateAndSync((s) => ({ ...s, request: null }));
               return;
             }

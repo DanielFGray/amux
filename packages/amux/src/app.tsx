@@ -12,7 +12,6 @@ import { Dynamic } from "solid-js/web";
 import type { ValidComponent } from "solid-js";
 import {
   Context,
-  Duration,
   Effect,
   Exit,
   FiberMap,
@@ -37,6 +36,7 @@ import { createKeyDispatcher, sendKeys, type SendTarget } from "./send.ts";
 import { NO_REALM, paneRealm, realmOf } from "./realm.ts";
 import {
   createBindings,
+  contextCommand,
   helpGroups,
   nextKeys,
   formatSequence,
@@ -52,7 +52,7 @@ import {
   mayDispatchPaletteEntry,
   paletteEntries,
 } from "./bindings.ts";
-import { KeyInvocation } from "./key-invocation.ts";
+import { KeyInvocation, createCountAccumulator } from "./key-invocation.ts";
 import {
   COMMAND_META,
   CommandError,
@@ -2158,6 +2158,41 @@ function buildApp(
     };
   }
 
+  // Sticky window mode: `<prefix>ctrl+w` arms a hydra; bare keys live on the
+  // mode context (not `<prefix>ctrl+w*` globals). Cite: hydra.nvim / vim CTRL-W.
+  const [windowMode, setWindowMode] = createSignal(false);
+  const windowCount = createCountAccumulator();
+  const windowModeEntry: ContextSpec = {
+    id: "amux.window.entry",
+    active: () => !windowMode(),
+    priority: CONTEXT_PRIORITY.APP_MODE,
+    rebindable: false,
+  };
+  const windowModeContext: ContextSpec = {
+    id: "amux.window",
+    active: windowMode,
+    priority: CONTEXT_PRIORITY.APP_MODE,
+    // Bare window keys appear in the keybind editor for remapping.
+    rebindable: true,
+    showOnEntry: true,
+    beforeDispatch: (input) => {
+      if (windowCount.offer(input.event, input.bound)) {
+        input.notifyPending();
+        input.consume({ preventDefault: true });
+        input.event.preventDefault();
+        return;
+      }
+      if (windowCount.digits() !== "") input.setData("count", windowCount.count());
+    },
+    // Unbound keys stay in the hydra — do not fall through to the PTY.
+    handle: () => true,
+  };
+  const windowCommand = (spec: CommandSpec): CommandSpec =>
+    contextCommand(windowModeContext, {
+      ...spec,
+      run: spec.run.pipe(Effect.ensuring(Effect.sync(() => windowCount.reset()))),
+    });
+
   const COMMANDS: CommandSpec[] = [
     // Panes — splits keep the tmux-ish | and -, which read better than " and %.
     bind("pane.split-row", ["<prefix>|", "<prefix>\\"], command("pane.split", { axis: "row" }), {
@@ -2203,9 +2238,9 @@ function buildApp(
         desc: `resize pane ${direction}`,
       }),
     ),
-    // Vim CTRL-W window table under the mux prefix. Counts while pending
-    // (`^S ^W 80|`) are ChordMatcher grammar, not separate bindings.
-    // Cite: neovim window_commands; chord-matcher + key-invocation counts.
+    // Vim CTRL-W table as bare keys inside amux.window (hydra). Entry is the
+    // only global `<prefix>ctrl+w` binding so it fires at once. Counts use the
+    // context beforeDispatch accumulator. Cite: neovim window_commands.
     ...(
       [
         ["left", "h"],
@@ -2214,55 +2249,73 @@ function buildApp(
         ["right", "l"],
       ] as const
     ).map(([direction, letter]) =>
-      bind(
-        `pane.window-focus-${direction}`,
-        `<prefix>ctrl+w${letter}`,
-        command("pane.focus", { direction }),
-        { desc: `window: focus ${direction}`, group: "window" },
+      windowCommand(
+        bind(
+          `pane.window-focus-${direction}`,
+          letter,
+          command("pane.focus", { direction }),
+          { desc: `window: focus ${direction}`, group: "window" },
+        ),
       ),
     ),
-    bind("pane.window-next", "<prefix>ctrl+ww", command("pane.next"), {
-      desc: "window: next pane",
-      group: "window",
-    }),
-    bind("pane.window-prev", "<prefix>ctrl+wshift+w", command("pane.last"), {
-      desc: "window: last pane",
-      group: "window",
-    }),
-    bind("pane.window-close", "<prefix>ctrl+wc", command("pane.close"), {
-      desc: "window: close pane",
-      group: "window",
-    }),
-    bind("pane.window-close-q", "<prefix>ctrl+wq", command("pane.close"), {
-      desc: "window: close pane",
-      group: "window",
-      hidden: true,
-    }),
-    bind("pane.window-split-row", "<prefix>ctrl+wv", command("pane.split", { axis: "row" }), {
-      desc: "window: split left/right",
-      group: "window",
-    }),
-    bind("pane.window-split-column", "<prefix>ctrl+ws", command("pane.split", { axis: "column" }), {
-      desc: "window: split top/bottom",
-      group: "window",
-    }),
-    bind("pane.window-zoom", "<prefix>ctrl+wo", command("pane.zoom"), {
-      desc: "window: zoom pane",
-      group: "window",
-    }),
-    bind("pane.window-break", "<prefix>ctrl+wshift+t", command("pane.break"), {
-      desc: "window: break to new window",
-      group: "window",
-    }),
-    bind(
-      "pane.window-balance",
-      "<prefix>ctrl+w=",
-      command("window.select-layout", { preset: "tiled" }),
-      { desc: "window: balance panes", group: "window" },
+    windowCommand(
+      bind("pane.window-next", "w", command("pane.next"), {
+        desc: "window: next pane",
+        group: "window",
+      }),
     ),
-    {
+    windowCommand(
+      bind("pane.window-prev", "shift+w", command("pane.last"), {
+        desc: "window: last pane",
+        group: "window",
+      }),
+    ),
+    windowCommand(
+      bind("pane.window-close", "c", command("pane.close"), {
+        desc: "window: close pane",
+        group: "window",
+      }),
+    ),
+    windowCommand(
+      bind("pane.window-close-q", "q", command("pane.close"), {
+        desc: "window: close pane",
+        group: "window",
+        hidden: true,
+      }),
+    ),
+    windowCommand(
+      bind("pane.window-split-row", "v", command("pane.split", { axis: "row" }), {
+        desc: "window: split left/right",
+        group: "window",
+      }),
+    ),
+    windowCommand(
+      bind("pane.window-split-column", "s", command("pane.split", { axis: "column" }), {
+        desc: "window: split top/bottom",
+        group: "window",
+      }),
+    ),
+    windowCommand(
+      bind("pane.window-zoom", "o", command("pane.zoom"), {
+        desc: "window: zoom pane",
+        group: "window",
+      }),
+    ),
+    windowCommand(
+      bind("pane.window-break", "shift+t", command("pane.break"), {
+        desc: "window: break to new window",
+        group: "window",
+      }),
+    ),
+    windowCommand(
+      bind("pane.window-balance", "=", command("window.select-layout", { preset: "tiled" }), {
+        desc: "window: balance panes",
+        group: "window",
+      }),
+    ),
+    windowCommand({
       name: "pane.window-width",
-      key: "<prefix>ctrl+w|",
+      key: "|",
       desc: "window: set width (count = columns)",
       group: "window",
       run: Effect.gen(function* () {
@@ -2276,10 +2329,10 @@ function buildApp(
           keyInvocation(),
         );
       }),
-    },
-    {
+    }),
+    windowCommand({
       name: "pane.window-height",
-      key: "<prefix>ctrl+w_",
+      key: "_",
       desc: "window: set height (count = rows)",
       group: "window",
       run: Effect.gen(function* () {
@@ -2293,7 +2346,23 @@ function buildApp(
           keyInvocation(),
         );
       }),
-    },
+    }),
+    // Sole global window binding — no longer continuations, so it fires at once.
+    contextCommand(windowModeEntry, {
+      name: "window.mode",
+      key: "<prefix>ctrl+w",
+      desc: "window mode",
+      group: "window",
+      run: Effect.sync(() => setWindowMode(true)),
+    }),
+    windowCommand({
+      name: "window.mode.leave",
+      key: "escape",
+      desc: "leave window mode",
+      group: "window",
+      hidden: true,
+      run: Effect.sync(() => setWindowMode(false)),
+    }),
     bind("pane.zoom", "<prefix>z", command("pane.zoom"), {
       desc: "zoom the focused pane (Z in the tab)",
     }),
@@ -2493,13 +2562,14 @@ function buildApp(
     pane: focusedPaneId,
     withRealm: (...args) => commands.withRealm(...args),
   });
-  // Sticky minimode: after `^S ^W`, bare h/j/|/… keep firing window maps until
-  // Escape. Same ChordMatcher API the editor uses for a future sticky `g`.
-  // Cite: chord-matcher.ts ChordMode; hydra.nvim.
-  rawBindings.chords.registerMode({
-    id: "amux.window",
-    strokes: ["<prefix>", "ctrl+w"],
-    desc: "window",
+  rawBindings.pending.register({
+    id: "amux.window.grammar",
+    role: "grammar",
+    strokes: () => {
+      if (!windowMode()) return [];
+      const digits = windowCount.digits();
+      return digits === "" ? [] : [digits];
+    },
   });
   setConflicts(rawBindings.conflicts());
   const bindingTable = contributions.table<CommandSpec>();
@@ -2575,7 +2645,7 @@ function buildApp(
    *  "hint-delay" fiber slot without the other's state going stale. */
   function armHintVisibility(triggered: boolean, stillTriggered: () => boolean) {
     runFiber("hint-delay", Effect.void);
-    const timeoutMs = Duration.toMillis(bindings.chords.timeoutlen());
+    const timeoutMs = bindings.chords.timeoutlenMs();
     const visibility = hintVisibility(
       triggered,
       options()["appearance.whichKeyHints"],
@@ -2588,9 +2658,6 @@ function buildApp(
     }
     const show = () => {
       setHintsVisible(true);
-      // Full timeoutlen from when the panel appears — otherwise a long
-      // whichKeyDelay races the chord wait and the panel only flashes.
-      bindings.chords.rearmTimeout();
     };
     if (visibility.visible) {
       show();
@@ -2605,17 +2672,35 @@ function buildApp(
     armHintVisibility(sequence.length > 0, () => pendingParts().length > 0 || showOnEntryActive());
   }
 
-  // which-key: chord trie only. showcmd: one pending table (grammar/chord/count).
-  // Cite: ts-5583b8; which-key must not route through the pending table.
-  const disposeChordPending = bindings.chords.subscribe((strokes) => {
-    updateHintVisibility(strokes.map((display) => ({ display })));
+  // Keymap pending is one source; an active context's pendingContinuations
+  // (editor pendingMap, …) wins when present. One memo feeds visibility + hints.
+  const [keymapPending, setKeymapPending] = createSignal<readonly { display: string }[]>([]);
+  const disposeChordPending = bindings.chords.subscribePending((parts) => {
+    setKeymapPending(parts);
   });
   const disposeShowcmdPending = bindings.pending.subscribe(() => {
     setShowcmdEpoch((n) => n + 1);
   });
+  const contextPending = createMemo(() => {
+    showcmdEpoch();
+    for (const context of contexts()) {
+      if (!context.active() || context.pendingContinuations === undefined) continue;
+      const hints = context.pendingContinuations();
+      if (hints !== null && hints.pending.length > 0) return hints;
+    }
+    return null;
+  });
+  const whichKeyPending = createMemo(() => {
+    const ctx = contextPending();
+    if (ctx !== null) return ctx.pending.map((display) => ({ display }));
+    return keymapPending();
+  });
+  createEffect(() => {
+    updateHintVisibility(whichKeyPending());
+  });
   const disposeHintRearm = bindings.keymap.intercept("key:after", (input) => {
     if (!input.handled || !rearmHintsOnKeyActive()) return;
-    armHintVisibility(true, () => pendingParts().length > 0 || showOnEntryActive());
+    armHintVisibility(true, () => whichKeyPending().length > 0 || showOnEntryActive());
   });
 
   // `on` with `defer: true` only fires on an actual flip of showOnEntryActive
@@ -2628,8 +2713,8 @@ function buildApp(
       showOnEntryActive,
       (active) => {
         if (active) {
-          armHintVisibility(true, () => pendingParts().length > 0 || showOnEntryActive());
-        } else if (pendingParts().length === 0) {
+          armHintVisibility(true, () => whichKeyPending().length > 0 || showOnEntryActive());
+        } else if (whichKeyPending().length === 0) {
           setHintsVisible(false);
         }
       },
@@ -2660,7 +2745,7 @@ function buildApp(
   createEffect(
     on(
       () => [options()["appearance.whichKeyHints"], options()["appearance.whichKeyDelay"]],
-      () => updateHintVisibility(pendingParts()),
+      () => updateHintVisibility(whichKeyPending()),
     ),
   );
 
@@ -2685,12 +2770,16 @@ function buildApp(
     const body = [grammarSeq, chordSeq].filter((part) => part.length > 0).join(" ");
     return [digits === "" ? body : `${body} ${digits}`];
   });
-  const hints = createMemo(() =>
-    // which-key is the chord trie only — operator grammar has no continuations list.
-    pendingParts().length === 0
+  const hints = createMemo(() => {
+    const ctx = contextPending();
+    if (ctx !== null) {
+      return ctx.entries.length > 0 ? [{ group: ctx.group, entries: [...ctx.entries] }] : [];
+    }
+    const parts = whichKeyPending();
+    return parts.length === 0
       ? []
-      : nextKeys(bindings, bindings.commands(), contexts(), pendingParts()),
-  );
+      : nextKeys(bindings, bindings.commands(), contexts(), parts);
+  });
 
   // Recomputed whenever the keys change, since that is what the list is *for*:
   // the reference and the editor are the same rows, read back out of the keymap
@@ -2979,6 +3068,7 @@ function buildApp(
   // of forcing them into named commands. `rebindable: false` because there is
   // nothing here a keybind editor could show or remap.
   const contextGroups = {
+    "amux.window": (): readonly ContextSpec[] => [windowModeEntry, windowModeContext],
     "amux.sessions": (): readonly ContextSpec[] => [
       {
         id: "amux.buffers",
@@ -3205,7 +3295,12 @@ function buildApp(
     setPromptError,
     inspectLines,
     clearInspect: () => setInspectLines(null),
-    pending: () => pending().join(" "),
+    // which-key title follows whichKeyPending (keymap or context pendingContinuations).
+    pending: () => {
+      const parts = whichKeyPending();
+      if (parts.length > 0) return formatSequence(parts, bindings.leaders());
+      return pending().join(" ");
+    },
     hintsVisible,
     hints,
     coreBindings: () => COMMANDS,
@@ -3310,6 +3405,18 @@ function buildApp(
         SlotsTag.pipe(
           Effect.flatMap((slots) =>
             Effect.forEach(panelGroups["amux.windows"](), (entry) => slots.register(entry)),
+          ),
+        ),
+    }),
+    definePlugin({
+      id: "amux.window",
+      inject: [ContextsTag],
+      effect: () =>
+        ContextsTag.pipe(
+          Effect.flatMap((contexts) =>
+            Effect.forEach(contextGroups["amux.window"](), (context) =>
+              contexts.register(context),
+            ),
           ),
         ),
     }),

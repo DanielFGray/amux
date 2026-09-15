@@ -311,17 +311,6 @@ export {
   type ConstraintTable,
 } from "./constraint.ts";
 export {
-  createChordMatcher,
-  DEFAULT_CHORD_TIMEOUTLEN,
-  DEFAULT_CHORD_TIMEOUTLEN_MS,
-  type ChordBinding,
-  type ChordFork,
-  type ChordMatcher,
-  type ChordMode,
-  type ChordPushResult,
-  type ChordStroke,
-} from "./chord-matcher.ts";
-export {
   createCountAccumulator,
   KeyDataSchema,
   KeyInvocation,

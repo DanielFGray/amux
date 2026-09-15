@@ -1,7 +1,7 @@
 /**
- * Display-only strokes for mux showcmd. Operator / find / surround grammar
- * stays in vim-core; this formats what chrome should show alongside
- * {@link ChordMatcher.pending}. Cite: neovim 'showcmd'; amux Bindings grammar pending.
+ * Display-only strokes for mux showcmd. Operator / find / surround / map
+ * grammar stays in vim-core; this formats what chrome should show alongside
+ * the keymap pending sequence. Cite: neovim 'showcmd'.
  */
 import type { EditorState, FindKind, OperatorPending, SurroundPending } from "./schema.ts";
 
@@ -69,6 +69,7 @@ export function showcmdStrokes(state: EditorState): readonly string[] {
   }
   if (state.pendingReplace !== null) strokes.push("r");
   if (state.pendingFind !== null) strokes.push(findChar(state.pendingFind.kind));
+  if (state.pendingMap.length > 0) strokes.push(...state.pendingMap);
   if (state.pendingSurround !== null) strokes.push(...surroundStrokes(state.pendingSurround));
   if (state.pendingMark) strokes.push("m");
   if (state.pendingJump !== null) strokes.push(state.pendingJump);
