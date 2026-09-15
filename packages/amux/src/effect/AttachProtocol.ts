@@ -240,12 +240,13 @@ const Pong = S.TaggedStruct("pong", {
  * Ask an attached client to run a command against its own registry.
  *
  * Client-target verbs (core and plugin) still register and run only on the
- * client. The daemon forwards opaque command JSON; the client decodes it
- * against whatever schema the tag's owner registered.
+ * client. `command` is WireCommand as {@link OwnerJsonText}: the daemon encodes
+ * with `S.fromJsonString(WireCommand)`, the client decodes once the same way.
+ * AttachProtocol only needs OwnerJsonText — no cycle with commands.ts.
  */
 const CommandRequest = S.TaggedStruct("command.request", {
   id: S.String,
-  command: JsonValueSchema,
+  command: OwnerJsonText,
   /**
    * Who asked. Required so the receiving client can build a
    * {@link CommandInvocation} without guessing.

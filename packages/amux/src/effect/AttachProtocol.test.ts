@@ -83,7 +83,7 @@ test("a forwarded command retains the session that caused it", () => {
   const encoded = encodeAttachFrame({
     _tag: "command.request",
     id: "reload-1",
-    command: { _tag: "plugin.reload" },
+    command: controlText({ _tag: "plugin.reload" }),
     agent: "agent-1",
     source: "cli",
   });
@@ -91,7 +91,7 @@ test("a forwarded command retains the session that caused it", () => {
     {
       _tag: "command.request",
       id: "reload-1",
-      command: { _tag: "plugin.reload" },
+      command: controlText({ _tag: "plugin.reload" }),
       agent: "agent-1",
       source: "cli",
     },
@@ -102,7 +102,7 @@ test("command.request carries a key source across the wire", () => {
   const encoded = encodeAttachFrame({
     _tag: "command.request",
     id: "cap-1",
-    command: { _tag: "pane.capture" },
+    command: controlText({ _tag: "pane.capture" }),
     source: "key",
     pane: "s1:p1",
   });
@@ -110,7 +110,7 @@ test("command.request carries a key source across the wire", () => {
     {
       _tag: "command.request",
       id: "cap-1",
-      command: { _tag: "pane.capture" },
+      command: controlText({ _tag: "pane.capture" }),
       source: "key",
       pane: "s1:p1",
     },

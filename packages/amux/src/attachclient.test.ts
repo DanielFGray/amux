@@ -34,6 +34,9 @@ import { OwnerJsonText } from "./layout.ts";
 import { command, WireCommand } from "./commands.ts";
 
 const descriptorText = (value: typeof OwnerJsonText.Encoded) => S.decodeSync(OwnerJsonText)(value);
+const nestedFromText = (text: OwnerJsonText) => S.encodeSync(OwnerJsonText)(text);
+const commandTag = (text: OwnerJsonText) =>
+  S.decodeSync(S.fromJsonString(S.Struct({ _tag: S.String })))(text)._tag;
 import { controlCall } from "./control-client.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { testEffect } from "./test-effect.ts";
@@ -1229,10 +1232,7 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
     yield* Effect.forkScoped(
       Stream.runForEach(client.commandRequests, ({ id, command: raw }) =>
         Effect.sync(() => {
-          const tag =
-            raw && typeof raw === "object" && "_tag" in raw
-              ? String((raw as { _tag: unknown })._tag)
-              : "";
+          const tag = commandTag(raw);
           if (tag === "pane.capture") client.respondCommand(id, "plugin-frame-text");
           else client.respondCommand(id, undefined, `unexpected ${tag}`);
         }),
@@ -1294,10 +1294,7 @@ testEffect("key-sourced client command runs on the pressing client, not the firs
     yield* Effect.forkScoped(
       Stream.runForEach(first.commandRequests, ({ id, command: raw }) =>
         Effect.sync(() => {
-          const tag =
-            raw && typeof raw === "object" && "_tag" in raw
-              ? String((raw as { _tag: unknown })._tag)
-              : "";
+          const tag = commandTag(raw);
           if (tag === "pane.capture") {
             firstHits += 1;
             first.respondCommand(id, "from-first");
@@ -1308,10 +1305,7 @@ testEffect("key-sourced client command runs on the pressing client, not the firs
     yield* Effect.forkScoped(
       Stream.runForEach(second.commandRequests, ({ id, command: raw, source }) =>
         Effect.sync(() => {
-          const tag =
-            raw && typeof raw === "object" && "_tag" in raw
-              ? String((raw as { _tag: unknown })._tag)
-              : "";
+          const tag = commandTag(raw);
           if (tag === "pane.capture") {
             expect(source).toBe("key");
             secondHits += 1;
@@ -1371,10 +1365,7 @@ testEffect("key client command whose handler runs a nested session command compl
     yield* Effect.forkScoped(
       Stream.runForEach(client.commandRequests, ({ id, command: raw, source }) =>
         Effect.gen(function* () {
-          const tag =
-            raw && typeof raw === "object" && "_tag" in raw
-              ? String((raw as { _tag: unknown })._tag)
-              : "";
+          const tag = commandTag(raw);
           if (tag !== "pane.capture") {
             client.respondCommand(id, undefined, `unexpected ${tag}`);
             return;
@@ -1482,7 +1473,7 @@ testEffect("unnamed client-routed send-keys pins the calling pane, not focus", (
     yield* Effect.forkScoped(
       Stream.runForEach(client.commandRequests, ({ id, command: raw }) =>
         Effect.sync(() => {
-          seen = raw;
+          seen = nestedFromText(raw);
           client.respondCommand(id, undefined);
         }),
       ),
@@ -1545,16 +1536,13 @@ testEffect("plugin.inspect subject forms are not given a pinned caller pane", ()
     yield* Effect.forkScoped(
       Stream.runForEach(client.commandRequests, ({ id, command: raw }) =>
         Effect.sync(() => {
-          seen.push(raw);
-          const tag =
-            raw && typeof raw === "object" && "_tag" in raw
-              ? String((raw as { _tag: unknown })._tag)
-              : "";
+          seen.push(nestedFromText(raw));
+          const tag = commandTag(raw);
           if (tag !== "plugin.inspect") {
             client.respondCommand(id, undefined, `unexpected ${tag}`);
             return;
           }
-          const q = raw as {
+          const q = nestedFromText(raw) as {
             plugin?: string;
             command?: string;
             pane?: string;

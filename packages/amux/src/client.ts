@@ -7,11 +7,8 @@ import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
 import { WireCommand, type Command, type RuntimeCommand } from "./commands.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
-import {
-  parseWorkspaceJson,
-  workspaceSessions,
-  type WorkspaceSnapshot,
-} from "./workspace.ts";
+import type { OwnerJsonText } from "./layout.ts";
+import { parseWorkspaceJson, workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
 import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import {
   processAlive,
@@ -72,7 +69,7 @@ export interface SessionClientContract extends DaemonSession {
   readonly commandRequests: Stream.Stream<
     {
       readonly id: string;
-      readonly command: JsonValue;
+      readonly command: OwnerJsonText;
       readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;

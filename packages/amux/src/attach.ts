@@ -38,10 +38,7 @@ import {
   Schema as S,
 } from "effect";
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts";
-import {
-  parseWorkspaceJson,
-  type WorkspaceSnapshot,
-} from "./workspace.ts";
+import { parseWorkspaceJson, type WorkspaceSnapshot } from "./workspace.ts";
 import type { WorkspaceCommandContext } from "./workspace-command-context.ts";
 import { captureRootRuntime, type RootRuntimeContext, defaultRootRuntime } from "./env.ts";
 
@@ -124,7 +121,7 @@ export interface AttachClientContract {
   readonly commandRequests: Stream.Stream<
     {
       readonly id: string;
-      readonly command: JsonValue;
+      readonly command: OwnerJsonText;
       readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;
@@ -201,7 +198,7 @@ class AttachClientConnection {
   private readonly _workspaceQ: Queue.Queue<WorkspaceSnapshot>;
   private readonly _commandQ: Queue.Queue<{
     readonly id: string;
-    readonly command: JsonValue;
+    readonly command: OwnerJsonText;
     readonly source: "key" | "socket" | "cli";
     readonly pane?: string;
     readonly agent?: string;
@@ -225,7 +222,7 @@ class AttachClientConnection {
       readonly workspace: Queue.Queue<WorkspaceSnapshot>;
       readonly command: Queue.Queue<{
         readonly id: string;
-        readonly command: JsonValue;
+        readonly command: OwnerJsonText;
         readonly source: "key" | "socket" | "cli";
         readonly pane?: string;
         readonly agent?: string;
@@ -297,7 +294,7 @@ class AttachClientConnection {
   get commandRequests(): Stream.Stream<
     {
       readonly id: string;
-      readonly command: JsonValue;
+      readonly command: OwnerJsonText;
       readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;
@@ -599,7 +596,7 @@ const makeScoped = (
     const workspaceQ = yield* Queue.sliding<WorkspaceSnapshot>(1);
     const commandQ = yield* Queue.unbounded<{
       readonly id: string;
-      readonly command: JsonValue;
+      readonly command: OwnerJsonText;
       readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
       readonly agent?: string;

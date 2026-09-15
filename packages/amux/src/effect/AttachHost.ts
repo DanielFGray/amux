@@ -227,7 +227,7 @@ export interface AttachHostService {
   readonly runOnClient: (
     client: string,
     connection: string,
-    command: JsonValue,
+    command: OwnerJsonText,
     invocation: {
       readonly source: "key" | "socket" | "cli";
       readonly pane?: string;
@@ -480,7 +480,7 @@ export const makeAttachHost = <
     const runOnClient = (
       client: string,
       connection: string,
-      command: JsonValue,
+      command: OwnerJsonText,
       invocation: {
         readonly source: "key" | "socket" | "cli";
         readonly pane?: string;

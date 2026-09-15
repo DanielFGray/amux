@@ -45,6 +45,7 @@ import { pluginScratchDir } from "./plugin/scratch.ts";
 import { removeStaleSocket } from "./remove-stale-socket.ts";
 import { type AttachHostService } from "./effect/AttachHost.ts";
 import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
+import { paneSession } from "./layout.ts";
 import { makeAgentLog } from "./effect/AgentLog.ts";
 import { EventBus } from "./effect/EventBus.ts";
 import { DaemonModel, DaemonModelError, layerDaemonModel } from "./effect/DaemonModel.ts";
@@ -104,7 +105,7 @@ import {
   isCoreCommand,
   isClientPluginCommandTag,
   WireCommand,
-  type Command,
+  Command,
   type CommandMeta,
   type RuntimeCommand,
 } from "./commands.ts";
@@ -132,7 +133,6 @@ import {
   type ResumePlanCandidate,
 } from "./agent-restore.ts";
 import { gitWorktreeExists } from "./git.ts";
-import { paneSession } from "./layout.ts";
 import { createHeadlessKeyParser, parseSendKeys } from "./send.ts";
 import { encodeKey } from "./keys.ts";
 import { errorMessage } from "./error-message.ts";
@@ -1668,10 +1668,13 @@ export const makeDaemonService = Effect.fnUntraced(
         const cur = yield* model.get;
         const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
         const invocation = yield* clientInvocation(ctx);
+        const encoded = yield* S.encodeEffect(S.fromJsonString(WireCommand))(value).pipe(
+          Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
+        );
         const result = yield* host.runOnClient(
           target.client,
           target.connection,
-          value as JsonValue,
+          encoded,
           invocation,
         );
         return result === undefined ? {} : { result };
@@ -1726,7 +1729,7 @@ export const makeDaemonService = Effect.fnUntraced(
         );
       if (meta.target === "client") {
         const cur = yield* model.get;
-        let routed: JsonValue = command as JsonValue;
+        let routed: Command = command;
         // Pin resolveTarget onto commands whose pane field is a declared target
         // (PaneTarget annotation). Subject panes (plugin.inspect) are unchanged.
         // invocation.pane stays the caller (clientInvocation(ctx)).
@@ -1753,7 +1756,17 @@ export const makeDaemonService = Effect.fnUntraced(
             if (paneNamed) return yield* controlFail(`pane '${String(command.pane)}' not found`);
             return yield* controlFail(`command '${command._tag}' could not resolve a pane`);
           }
-          routed = { ...command, pane: target.pane.id } as JsonValue;
+          routed = yield* S.decodeUnknownEffect(Command)({
+            ...command,
+            pane: target.pane.id,
+          }).pipe(
+            Effect.mapError(
+              (error) =>
+                new ControlError({
+                  message: `could not pin pane on '${command._tag}': ${errorMessage(error)}`,
+                }),
+            ),
+          );
         }
         const connections = yield* model.attachedConnections;
         const target = caller ?? connections[0];
@@ -1761,10 +1774,13 @@ export const makeDaemonService = Effect.fnUntraced(
         const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
         const host = yield* requireHost;
         const invocation = yield* clientInvocation(ctx);
+        const encoded = yield* S.encodeEffect(S.fromJsonString(WireCommand))(routed).pipe(
+          Effect.mapError((error) => new ControlError({ message: errorMessage(error) })),
+        );
         const result = yield* host.runOnClient(
           target.client,
           target.connection,
-          routed,
+          encoded,
           invocation,
         );
         return result === undefined ? {} : { result };

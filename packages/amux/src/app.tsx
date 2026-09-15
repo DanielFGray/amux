@@ -10,7 +10,18 @@ import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { ValidComponent } from "solid-js";
-import { Context, Duration, Effect, Exit, FiberMap, Option, Result, Scope, Stream } from "effect";
+import {
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  FiberMap,
+  Option,
+  Result,
+  Scope,
+  Stream,
+  Schema as S,
+} from "effect";
 import { theme, setTheme } from "./ui/theme.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- path access is part of the plain render-tree boundary.
 import { basename, join } from "node:path";
@@ -51,6 +62,7 @@ import {
   makeCommands,
   isCoreCommand,
   runDetached,
+  WireCommand,
   type Command,
   type CommandHandlers,
   type CommandInvocation,
@@ -587,33 +599,32 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       "command-requests",
       Stream.runForEach(
         options.session.commandRequests,
-        ({ id, command: raw, source, pane, agent }) => {
-          const tag = (raw as RuntimeCommand)._tag;
-          // The daemon cannot know a plugin verb's `target` — it holds no
-          // registry of its own — so a request reaching a client is where
-          // "view commands never run remotely" actually gets enforced, using
-          // the same check a core command's CLI invocation already goes through.
-          if (!app.commands.isRemoteCommand(tag))
-            return Effect.sync(() =>
-              options.session.respondCommand(
-                id,
-                undefined,
-                `command '${tag}' is a view command, not remotely invocable`,
-              ),
+        ({ id, command: raw, source, pane, agent }) =>
+          Effect.gen(function* () {
+            const decoded = yield* S.decodeEffect(S.fromJsonString(WireCommand))(raw).pipe(
+              Effect.mapError((error) => `invalid forwarded command: ${errorMessage(error)}`),
             );
-          return app.commands
-            .run(raw as RuntimeCommand, commandInvocation(source, pane, agent))
-            .pipe(
-              Effect.map((result) =>
-                options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined),
-              ),
-              Effect.catch((error) =>
-                Effect.sync(() =>
-                  options.session.respondCommand(id, undefined, errorMessage(error)),
+            // The daemon cannot know a plugin verb's `target` — it holds no
+            // registry of its own — so a request reaching a client is where
+            // "view commands never run remotely" actually gets enforced.
+            if (!app.commands.isRemoteCommand(decoded._tag)) {
+              return yield* Effect.fail(
+                `command '${decoded._tag}' is a view command, not remotely invocable`,
+              );
+            }
+            const result = yield* app.commands.run(decoded, commandInvocation(source, pane, agent));
+            options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined);
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.sync(() =>
+                options.session.respondCommand(
+                  id,
+                  undefined,
+                  typeof error === "string" ? error : errorMessage(error),
                 ),
               ),
-            );
-        },
+            ),
+          ),
       ),
     );
     return { ...app, pluginHost };
