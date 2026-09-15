@@ -570,9 +570,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
           group: "editor",
           run: Effect.gen(function* () {
             const invocation = yield* KeyInvocation;
-            const value = invocation.data.count;
-            const capturedCount = typeof value === "number" ? value : undefined;
-            if (dispatchEditor(invocation.event, capturedCount)) count.reset();
+            if (dispatchEditor(invocation.event, invocation.data.count)) count.reset();
           }),
         });
 

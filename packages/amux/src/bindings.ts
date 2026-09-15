@@ -22,11 +22,12 @@ import {
 import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
 import {
   createCountAccumulator,
+  KeyDataSchema,
   KeyInvocation,
+  type KeyData,
   type KeyInvocationValue,
 } from "./key-invocation.ts";
 import { NO_REALM, Realm } from "./realm.ts";
-import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import {
   createChordMatcher,
   DEFAULT_CHORD_TIMEOUTLEN_MS,
@@ -552,7 +553,7 @@ export function createBindings(
   let activeCommand: string | null = null;
   /** Keystroke that armed the chord match — for KeyInvocation on chord dispatch. */
   let chordEvent: KeyEvent | null = null;
-  let chordData: Readonly<Record<string, JsonValue>> = {};
+  let chordData: KeyData = {};
   /** Mux/editor map counts while ChordMatcher pending — not OpenTUI getData. */
   const chordCount = createCountAccumulator();
   const pendingTable = createPendingTable();
@@ -661,9 +662,9 @@ export function createBindings(
 
       const chordStroke = stroke === prefix ? "<prefix>" : stroke === leader ? "<leader>" : stroke;
       chordEvent = input.event;
-      // OpenTUI getData is unknown at the I/O boundary — decode here, not via a
-      // helper that would re-accept unknown.
-      const editorCount = S.decodeUnknownOption(JsonValueSchema)(input.getData("count"));
+      // OpenTUI getData is unknown at the I/O boundary — decode the count
+      // field with KeyData's owner type.
+      const editorCount = S.decodeUnknownOption(S.Finite)(input.getData("count"));
       chordData =
         chordCount.digits() !== ""
           ? { count: chordCount.count() }
@@ -751,7 +752,7 @@ export function createBindings(
           const previous = activeCommand;
           activeCommand = cmd.name;
           try {
-            const captured = S.decodeUnknownOption(S.Record(S.String, JsonValueSchema))(ctx.data);
+            const captured = S.decodeOption(KeyDataSchema)(ctx.data);
             runDetached(
               cmd.name,
               invoke(

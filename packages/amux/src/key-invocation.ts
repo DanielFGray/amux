@@ -1,6 +1,14 @@
-import { Context } from "effect";
+import { Context, Schema as S } from "effect";
 import type { KeyEvent } from "@opentui/core";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
+
+/**
+ * What a key context may publish onto a command's {@link KeyInvocation}.
+ * A new field here is a new key-data contract every context shares.
+ */
+export const KeyDataSchema = S.Struct({
+  count: S.optionalKey(S.Finite),
+});
+export type KeyData = typeof KeyDataSchema.Type;
 
 /**
  * What the keymap captured for one command dispatch — the library's own
@@ -17,14 +25,8 @@ import type { JsonValue } from "./effect/AttachProtocol.ts";
  */
 export interface KeyInvocationValue {
   readonly event: KeyEvent;
-  /**
-   * Whatever the dispatching context captured before this command ran — a
-   * count, a register letter, a find-motion's target char, a text object,
-   * or nothing. One bag rather than one field per shape: a context decides
-   * what it captures, and this module cannot enumerate every context's
-   * vocabulary in advance.
-   */
-  readonly data: Readonly<Record<string, JsonValue>>;
+  /** Context-published key data for this dispatch ({@link KeyDataSchema}). */
+  readonly data: KeyData;
   readonly input: string;
   readonly payload: unknown;
 }

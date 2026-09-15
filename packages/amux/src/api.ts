@@ -324,7 +324,9 @@ export {
 } from "./chord-matcher.ts";
 export {
   createCountAccumulator,
+  KeyDataSchema,
   KeyInvocation,
+  type KeyData,
   type KeyInvocationValue,
 } from "./key-invocation.ts";
 

@@ -2267,8 +2267,7 @@ function buildApp(
       group: "window",
       run: Effect.gen(function* () {
         const inv = yield* KeyInvocation;
-        const raw = inv.data.count;
-        const cells = typeof raw === "number" ? raw : undefined;
+        const cells = inv.data.count;
         yield* commands.run(
           command(
             "pane.set-size",
@@ -2285,8 +2284,7 @@ function buildApp(
       group: "window",
       run: Effect.gen(function* () {
         const inv = yield* KeyInvocation;
-        const raw = inv.data.count;
-        const cells = typeof raw === "number" ? raw : undefined;
+        const cells = inv.data.count;
         yield* commands.run(
           command(
             "pane.set-size",

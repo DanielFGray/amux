@@ -68,7 +68,7 @@ test("chord feed accumulates count while prefix ctrl+w is pending", async () => 
           group: "window",
           run: Effect.gen(function* () {
             const inv = yield* KeyInvocation;
-            seen = typeof inv.data.count === "number" ? inv.data.count : undefined;
+            seen = inv.data.count;
           }),
         },
       ],

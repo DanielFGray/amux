@@ -1,12 +1,15 @@
 import type { KeyEvent } from "@opentui/core";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
+import type { KeyData } from "./key-invocation.ts";
 
 /** The part of a keymap's pre-dispatch input available to a context. Kept
  * narrow so a context can accumulate arguments without taking ownership of
  * the keymap or inventing a second dispatch path. */
 export interface ContextKeyInput {
   readonly event: KeyEvent;
-  readonly setData: (name: string, value: JsonValue) => void;
+  readonly setData: <K extends keyof KeyData>(
+    name: K,
+    value: Exclude<KeyData[K], undefined>,
+  ) => void;
   readonly consume: (options?: { preventDefault?: boolean; stopPropagation?: boolean }) => void;
 }
 
