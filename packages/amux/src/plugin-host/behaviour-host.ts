@@ -111,7 +111,7 @@ export type BehaviourHostRuntime = {
  * Owns the publication revision Ref: each successful Publish increments it.
  */
 export const createBehaviourHostRuntime = Effect.gen(function* () {
-  const socket = yield* Config.string("AMUX_PLUGIN_CAPABILITIES_SOCKET");
+  const socket = yield* Config.String("AMUX_PLUGIN_CAPABILITIES_SOCKET");
   const sessionsContext = yield* Layer.build(daemonSessionsFromCapabilitiesSocket(socket));
   const sessions: DaemonSessionsService = Context.get(sessionsContext, DaemonSessions);
 
@@ -141,8 +141,8 @@ export const createBehaviourHostRuntime = Effect.gen(function* () {
   const revision = yield* Ref.make<PluginPublicationRevision>(0);
 
   // Fixed for this host generation — supervisor sets both in the child env.
-  const configDirectory = yield* Config.string("AMUX_PLUGIN_CONFIG_DIRECTORY");
-  const scratchDirectory = yield* Config.string("AMUX_PLUGIN_SCRATCH_DIRECTORY");
+  const configDirectory = yield* Config.String("AMUX_PLUGIN_CONFIG_DIRECTORY");
+  const scratchDirectory = yield* Config.String("AMUX_PLUGIN_SCRATCH_DIRECTORY");
 
   // Last successful prepare's entries — a failed Prepare leaves this alone so the
   // next attempt can keep a working plugin when its edited source will not import.

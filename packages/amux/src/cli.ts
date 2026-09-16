@@ -65,7 +65,7 @@ const printBatchResult = (result: OwnerJsonText): Effect.Effect<void, string> =>
 const readEnv = (name: string): string | undefined =>
   Option.getOrUndefined(
     Effect.runSync(
-      Config.option(Config.string(name)).pipe(
+      Config.option(Config.String(name)).pipe(
         Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
       ),
     ),

@@ -105,7 +105,7 @@ export function sanitizeAgentError(error: Error | string): string {
 }
 
 /** Repair calls a prior process could not finish before any provider sees the restored history. */
-export const closeOpenToolCalls = (chat: Chat.Service) =>
+export const closeOpenToolCalls = (chat: Chat.Chat) =>
   Ref.update(chat.history, (prompt) => {
     const answered = new Set<string>();
     const open = new Map<string, string>();
@@ -213,7 +213,7 @@ export function harnessDeltaForPart(
  */
 export function makeAgentWorker<E = never>(options: {
   readonly session: string;
-  readonly chat: Chat.Service;
+  readonly chat: Chat.Chat;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
   /**
    * Handlers already installed (`AgentToolkit`). Prefer this over

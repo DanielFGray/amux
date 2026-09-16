@@ -70,8 +70,8 @@ const instructionFileForDirectory = Effect.fnUntraced(function* (directory: stri
 
 const configDirectory = Effect.gen(function* () {
   const path = yield* Path.Path;
-  const xdg = yield* Config.option(Config.string("XDG_CONFIG_HOME"));
-  const home = yield* Config.string("HOME").pipe(Effect.orElseSucceed(() => "."));
+  const xdg = yield* Config.option(Config.String("XDG_CONFIG_HOME"));
+  const home = yield* Config.String("HOME").pipe(Effect.orElseSucceed(() => "."));
   return path.join(
     Option.getOrElse(xdg, () => path.join(home, ".config")),
     "amux",

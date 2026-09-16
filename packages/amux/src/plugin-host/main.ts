@@ -78,7 +78,7 @@ export const runPluginHostMain = (
 ): void => {
   const program = Effect.gen(function* () {
     const socket = Option.getOrUndefined(
-      yield* Config.option(Config.string("AMUX_PLUGIN_HOST_SOCKET")),
+      yield* Config.option(Config.String("AMUX_PLUGIN_HOST_SOCKET")),
     );
     if (!socket) {
       return yield* Effect.die("AMUX_PLUGIN_HOST_SOCKET is required");

@@ -22,9 +22,9 @@ import { processPluginPathComponent } from "../process-plugin/paths.ts";
  * The scratch directory is the list: every `<stem>.ts` is an active scratch
  * plugin. No separate manifest — that would store what the directory already holds.
  */
-const xdgStateHome = EffectConfig.string("XDG_STATE_HOME").pipe(
+const xdgStateHome = EffectConfig.String("XDG_STATE_HOME").pipe(
   EffectConfig.orElse(() =>
-    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "state"))),
+    EffectConfig.String("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "state"))),
   ),
   EffectConfig.withDefault(join(".", ".local", "state")),
 );

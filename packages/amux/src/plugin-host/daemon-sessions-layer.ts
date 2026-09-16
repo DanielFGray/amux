@@ -119,7 +119,7 @@ export const DaemonSessionsFromCapabilities: Layer.Layer<
   ConfigProvider.ConfigProvider
 > = Layer.unwrap(
   Effect.map(
-    Config.string("AMUX_PLUGIN_CAPABILITIES_SOCKET"),
+    Config.String("AMUX_PLUGIN_CAPABILITIES_SOCKET"),
     daemonSessionsFromCapabilitiesSocket,
   ),
 );

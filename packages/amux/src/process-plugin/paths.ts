@@ -19,23 +19,23 @@ import * as FileSystem from "effect/FileSystem";
  * yield them (see `defaultProcessPluginRoots` in registry.ts).
  */
 
-const xdgDataHome = EffectConfig.string("XDG_DATA_HOME").pipe(
+const xdgDataHome = EffectConfig.String("XDG_DATA_HOME").pipe(
   EffectConfig.orElse(() =>
-    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "share"))),
+    EffectConfig.String("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "share"))),
   ),
   EffectConfig.withDefault(join(".", ".local", "share")),
 );
 
-const xdgConfigHome = EffectConfig.string("XDG_CONFIG_HOME").pipe(
+const xdgConfigHome = EffectConfig.String("XDG_CONFIG_HOME").pipe(
   EffectConfig.orElse(() =>
-    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
+    EffectConfig.String("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
   ),
   EffectConfig.withDefault(join(".", ".config")),
 );
 
-const xdgStateHome = EffectConfig.string("XDG_STATE_HOME").pipe(
+const xdgStateHome = EffectConfig.String("XDG_STATE_HOME").pipe(
   EffectConfig.orElse(() =>
-    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "state"))),
+    EffectConfig.String("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "state"))),
   ),
   EffectConfig.withDefault(join(".", ".local", "state")),
 );

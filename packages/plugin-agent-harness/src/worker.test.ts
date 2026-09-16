@@ -74,7 +74,7 @@ const scriptedModel = (
 };
 
 const runWorker = <A>(
-  model: Effect.Effect<LanguageModel.Service>,
+  model: Effect.Effect<LanguageModel.LanguageModel>,
   body: (
     worker: {
       readonly prompt: (
@@ -89,7 +89,7 @@ const runWorker = <A>(
       readonly interrupt: (reason?: string) => Effect.Effect<void>;
       readonly close: Effect.Effect<void>;
     },
-    chat: Chat.Service,
+    chat: Chat.Chat,
   ) => Effect.Effect<A>,
   options?: {
     readonly emit?: (frame: WorkerFrame) => Effect.Effect<void>;

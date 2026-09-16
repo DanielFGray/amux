@@ -115,7 +115,7 @@ const gateway = (recorded: Recorded) => {
 const run = <A, E>(
   recorded: Recorded,
   use: (
-    model: LanguageModel.Service,
+    model: LanguageModel.LanguageModel,
   ) => Effect.Effect<A, E, LanguageModel.LanguageModel | HttpClient.HttpClient>,
 ) =>
   Effect.gen(function* () {
@@ -137,7 +137,7 @@ const API = "https://opencode.ai/zen/v1";
  * bag; the assertions here are about the protocol, not about that wrapper.
  */
 const parts = <Tools extends Record<string, Tool.Any> = {}>(
-  model: LanguageModel.Service,
+  model: LanguageModel.LanguageModel,
   options?: Partial<LanguageModel.GenerateTextOptions<Tools>>,
 ) => {
   // `streamText`'s overloads pick the toolkit-shaped one or the toolkit-free
@@ -152,10 +152,25 @@ const parts = <Tools extends Record<string, Tool.Any> = {}>(
   return Stream.runCollect(stream).pipe(Effect.map((all) => all.map(fixture)));
 };
 
+const PART_BRAND_KEYS = new Set(["~effect/ai/Content/Part", "~effect/ai/Response/Part"]);
+
 const fixture = <Tools extends Record<string, Tool.Any>>(part: AiResponse.StreamPart<Tools>) => {
   const { metadata: _metadata, ...rest } = part;
-  const entries = Object.entries(rest).filter(([key]) => key !== "~effect/ai/Content/Part");
-  return Object.fromEntries(entries);
+  const entries = Object.entries(rest).filter(([key]) => !PART_BRAND_KEYS.has(key));
+  if (part.type !== "finish") return Object.fromEntries(entries);
+  // Usage is a Schema.Class instance; strip undefined optional counts so the
+  // fixture matches the plain protocol shape the assertions describe.
+  return {
+    ...Object.fromEntries(entries.filter(([key]) => key !== "usage")),
+    usage: {
+      inputTokens: Object.fromEntries(
+        Object.entries(part.usage.inputTokens).filter(([, value]) => value !== undefined),
+      ),
+      outputTokens: Object.fromEntries(
+        Object.entries(part.usage.outputTokens).filter(([, value]) => value !== undefined),
+      ),
+    },
+  };
 };
 
 const without = (type: string) => (all: ReadonlyArray<ReturnType<typeof fixture>>) =>

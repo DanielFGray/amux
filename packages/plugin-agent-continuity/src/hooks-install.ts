@@ -13,9 +13,6 @@ export const INTEGRATION_ID_MARKER = "AMUX_INTEGRATION_ID=";
 export const INTEGRATION_VERSION_MARKER = "AMUX_INTEGRATION_VERSION=";
 export const MANAGED_MARKER = "AMUX_AGENT_STATE_PLUGIN=1";
 
-/** Effect SchemaAST: keep undeclared object keys through decode and encode. */
-const preserveExcess = { onExcessProperty: "preserve" as const };
-
 export const homeDir = (): string => {
   // @effect-diagnostics-next-line processEnv:off -- default-argument fallback outside Effect.
   return process.env.HOME ?? ".";
@@ -55,19 +52,27 @@ const NestedHookEntrySchema = S.Struct({
 });
 
 /** Claude / Codex settings: nested SessionStart-style entries under `hooks`. */
-export const NestedHooksFileSchema = S.Struct({
-  hooks: S.optionalKey(S.Record(S.String, S.Array(NestedHookEntrySchema))),
-});
+export const NestedHooksFileSchema = S.StructWithRest(
+  S.Struct({
+    hooks: S.optionalKey(S.Record(S.String, S.Array(NestedHookEntrySchema))),
+  }),
+  // Index signature keeps undeclared top-level settings keys through encode.
+  [S.Record(S.String, S.Unknown)],
+);
 
 const SimpleHookEntrySchema = S.Struct({
   command: S.String,
 });
 
 /** Cursor hooks.json: flat `{ command }` entries plus optional `version`. */
-export const SimpleHooksFileSchema = S.Struct({
-  version: S.optionalKey(S.Finite),
-  hooks: S.optionalKey(S.Record(S.String, S.Array(SimpleHookEntrySchema))),
-});
+export const SimpleHooksFileSchema = S.StructWithRest(
+  S.Struct({
+    version: S.optionalKey(S.Finite),
+    hooks: S.optionalKey(S.Record(S.String, S.Array(SimpleHookEntrySchema))),
+  }),
+  // Index signature keeps undeclared top-level settings keys through encode.
+  [S.Record(S.String, S.Unknown)],
+);
 
 export type NestedHookEntry = typeof NestedHookEntrySchema.Type;
 export type NestedHooksMap = {
@@ -99,10 +104,7 @@ const parseNestedHooksFile = (
   content: string,
   path: string,
 ): Effect.Effect<NestedHooksFile, ForeignHarnessHookError> =>
-  S.decodeEffect(
-    S.fromJsonString(NestedHooksFileSchema),
-    preserveExcess,
-  )(content).pipe(
+  S.decodeEffect(S.fromJsonString(NestedHooksFileSchema))(content).pipe(
     Effect.map(mutableNestedFile),
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to parse JSON object at ${path}` }),
@@ -113,10 +115,7 @@ const parseSimpleHooksFile = (
   content: string,
   path: string,
 ): Effect.Effect<SimpleHooksFile, ForeignHarnessHookError> =>
-  S.decodeEffect(
-    S.fromJsonString(SimpleHooksFileSchema),
-    preserveExcess,
-  )(content).pipe(
+  S.decodeEffect(S.fromJsonString(SimpleHooksFileSchema))(content).pipe(
     Effect.map(mutableSimpleFile),
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to parse JSON object at ${path}` }),
@@ -282,10 +281,7 @@ export const writeNestedHooksFile = (
   path: string,
   value: NestedHooksFile,
 ): Effect.Effect<void, PlatformError | ForeignHarnessHookError, FileSystem.FileSystem> =>
-  S.encodeEffect(
-    S.fromJsonString(NestedHooksFileSchema, { space: 2 }),
-    preserveExcess,
-  )(value).pipe(
+  S.encodeEffect(S.fromJsonString(NestedHooksFileSchema, { space: 2 }))(value).pipe(
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to encode JSON at ${path}` }),
     ),
@@ -296,10 +292,7 @@ export const writeSimpleHooksFile = (
   path: string,
   value: SimpleHooksFile,
 ): Effect.Effect<void, PlatformError | ForeignHarnessHookError, FileSystem.FileSystem> =>
-  S.encodeEffect(
-    S.fromJsonString(SimpleHooksFileSchema, { space: 2 }),
-    preserveExcess,
-  )(value).pipe(
+  S.encodeEffect(S.fromJsonString(SimpleHooksFileSchema, { space: 2 }))(value).pipe(
     Effect.mapError(
       () => new ForeignHarnessHookError({ message: `failed to encode JSON at ${path}` }),
     ),

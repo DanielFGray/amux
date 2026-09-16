@@ -23,7 +23,7 @@ export function commandName(cmd: readonly string[]): string {
 }
 
 /** Basename of `$SHELL`, lowercased — empty when unset. Yield; do not `runSync`. */
-export const shellName = Config.string("SHELL").pipe(
+export const shellName = Config.String("SHELL").pipe(
   Config.map((shell) => shell.split("/").pop()?.toLowerCase() ?? ""),
   Config.withDefault(""),
 );

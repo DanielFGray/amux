@@ -46,7 +46,7 @@ if (import.meta.main) {
   // Read through Config inside the Effect — not Effect.runSync at module load.
   const boot = Effect.gen(function* () {
     const barrier = Option.getOrUndefined(
-      yield* Config.option(Config.string("AMUX_DAEMON_START_BARRIER")),
+      yield* Config.option(Config.String("AMUX_DAEMON_START_BARRIER")),
     );
     if (barrier) {
       while (!(yield* Effect.promise(() => Bun.file(barrier).exists()))) {

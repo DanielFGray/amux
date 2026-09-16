@@ -108,9 +108,9 @@ export const DEFAULT_CONFIG: Config = {
  * reading XDG at import time was an Effect.runSync side effect. Callers that
  * need the default roots yield them (same shape as process-plugin/paths.ts).
  */
-const xdgConfigHome = EffectConfig.string("XDG_CONFIG_HOME").pipe(
+const xdgConfigHome = EffectConfig.String("XDG_CONFIG_HOME").pipe(
   EffectConfig.orElse(() =>
-    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
+    EffectConfig.String("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
   ),
   EffectConfig.withDefault(join(".", ".config")),
 );

@@ -268,7 +268,7 @@ export const decodeKey = (encoded: string): Option.Option<Key> => {
 /** Key Schema: Encoded is vim notation; Type is the Key struct. */
 export const KeySchema = S.String.pipe(
   S.decodeTo(KeyStruct, {
-    decode: SchemaGetter.transformOrFail((encoded: string) => {
+    decode: SchemaGetter.transformEffect((encoded: string) => {
       const key = decodeKey(encoded);
       if (Option.isNone(key)) {
         return Effect.fail(
@@ -277,7 +277,7 @@ export const KeySchema = S.String.pipe(
       }
       return Effect.succeed(key.value);
     }),
-    encode: SchemaGetter.transformOrFail((key: Key) => {
+    encode: SchemaGetter.transformEffect((key: Key) => {
       const encoded = encodeKey(key);
       if (encoded === null) {
         return Effect.fail(new SchemaIssue.InvalidValue({ message: "key is not encodable" }));

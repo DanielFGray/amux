@@ -36,7 +36,7 @@ function readConfig<A>(config: Config.Config<A>): A {
 }
 
 function probeFlag(name: string): boolean {
-  return readConfig(Config.boolean(name).pipe(Config.withDefault(false)));
+  return readConfig(Config.Boolean(name).pipe(Config.withDefault(false)));
 }
 
 function startupMark(name: string): void {
@@ -47,7 +47,7 @@ function startupMark(name: string): void {
 function flushStartupProbe(): void {
   if (!probeFlag("AMUX_STARTUP_PROBE")) return;
   const path = readConfig(
-    Config.string("AMUX_STARTUP_PROBE_PATH").pipe(
+    Config.String("AMUX_STARTUP_PROBE_PATH").pipe(
       Config.withDefault(`/tmp/amux-startup-probe-${process.pid}.json`),
     ),
   );

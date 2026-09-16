@@ -95,14 +95,25 @@ const body = Effect.fnUntraced(function* (
     choice.oneOf === undefined
       ? options.tools
       : options.tools.filter((tool) => choice.oneOf?.has(tool.name));
-  const tools = allowed.filter(Tool.isUserDefined).map((tool) => ({
-    type: "function" as const,
-    function: {
-      name: tool.name,
-      description: Tool.getDescription(tool) ?? "",
-      parameters: Tool.getJsonSchema(tool),
-    },
-  }));
+  const tools = allowed.filter(Tool.isUserDefined).map((tool) => {
+    // Chat Completions tool schemas reject excess properties; Schema's default
+    // JSON Schema leaves them open (`additionalProperties: true`).
+    const document = S.toJsonSchemaDocument(tool.parametersSchema, {
+      onExcessProperty: "error",
+    });
+    const parameters =
+      Object.keys(document.definitions).length > 0
+        ? { ...document.schema, $defs: document.definitions }
+        : document.schema;
+    return {
+      type: "function" as const,
+      function: {
+        name: tool.name,
+        description: Tool.getDescription(tool) ?? "",
+        parameters,
+      },
+    };
+  });
   const result: RequestBody = {
     model,
     messages: yield* messages(options.prompt),

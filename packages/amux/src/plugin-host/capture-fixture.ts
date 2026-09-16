@@ -42,7 +42,7 @@ const captureOnce = (
   expect: string,
 ): Effect.Effect<void, CaptureFixtureError | DaemonSessionsError | Config.ConfigError> =>
   Effect.gen(function* () {
-    const capSocket = yield* Config.string("AMUX_PLUGIN_CAPABILITIES_SOCKET");
+    const capSocket = yield* Config.String("AMUX_PLUGIN_CAPABILITIES_SOCKET");
     const text = yield* Effect.gen(function* () {
       const sessions = yield* DaemonSessions;
       const screen = yield* sessions.capture(session);

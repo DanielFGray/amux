@@ -15,9 +15,9 @@ import * as FileSystem from "effect/FileSystem";
  * yield it; every function below also takes an optional store dir so tests
  * can point at a scratch directory instead of the real store.
  */
-const xdgDataHome = EffectConfig.string("XDG_DATA_HOME").pipe(
+const xdgDataHome = EffectConfig.String("XDG_DATA_HOME").pipe(
   EffectConfig.orElse(() =>
-    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "share"))),
+    EffectConfig.String("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "share"))),
   ),
   EffectConfig.withDefault(join(".", ".local", "share")),
 );

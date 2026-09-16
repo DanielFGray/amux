@@ -383,7 +383,7 @@ export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdE
 
 /** Read an environment variable while preserving the shell's empty-is-unset behavior. */
 export const optionalEnvVar = (name: string) =>
-  Config.option(Config.string(name)).pipe(
+  Config.option(Config.String(name)).pipe(
     Config.map(Option.filter((value) => value.length > 0)),
     Effect.orDie,
   );

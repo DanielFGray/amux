@@ -25,12 +25,10 @@ import {
   SimpleHooksFileSchema,
 } from "./hooks-install.ts";
 
-const preserveExcess = { onExcessProperty: "preserve" as const };
-
-const decodeNestedHooks = S.decodeSync(S.fromJsonString(NestedHooksFileSchema), preserveExcess);
-const encodeNestedHooks = S.encodeSync(S.fromJsonString(NestedHooksFileSchema), preserveExcess);
-const decodeSimpleHooks = S.decodeSync(S.fromJsonString(SimpleHooksFileSchema), preserveExcess);
-const encodeSimpleHooks = S.encodeSync(S.fromJsonString(SimpleHooksFileSchema), preserveExcess);
+const decodeNestedHooks = S.decodeSync(S.fromJsonString(NestedHooksFileSchema));
+const encodeNestedHooks = S.encodeSync(S.fromJsonString(NestedHooksFileSchema));
+const decodeSimpleHooks = S.decodeSync(S.fromJsonString(SimpleHooksFileSchema));
+const encodeSimpleHooks = S.encodeSync(S.fromJsonString(SimpleHooksFileSchema));
 
 type NestedHooksFile = typeof NestedHooksFileSchema.Type;
 type SimpleHooksFile = typeof SimpleHooksFileSchema.Type;
@@ -66,7 +64,7 @@ const RpcLineSchema = S.Struct({
     }),
   ),
 });
-const decodeRpcLine = S.decodeSync(S.fromJsonString(RpcLineSchema), preserveExcess);
+const decodeRpcLine = S.decodeSync(S.fromJsonString(RpcLineSchema));
 
 const scoped = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Scope.Scope>) =>
   effect.pipe(Effect.provide(BunFileSystem.layer));

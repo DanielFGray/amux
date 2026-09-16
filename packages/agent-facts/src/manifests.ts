@@ -339,8 +339,8 @@ export const layer = (
 ): Layer.Layer<AgentManifestRegistry, never, FileSystem.FileSystem | Path.Path> =>
   Layer.effect(AgentManifestRegistry, loadRegistry(configHome));
 
-export const configHome = Config.string("XDG_CONFIG_HOME").pipe(
-  Config.orElse(() => Config.string("HOME").pipe(Config.map((home) => `${home}/.config`))),
+export const configHome = Config.String("XDG_CONFIG_HOME").pipe(
+  Config.orElse(() => Config.String("HOME").pipe(Config.map((home) => `${home}/.config`))),
   Config.withDefault(".config"),
 );
 

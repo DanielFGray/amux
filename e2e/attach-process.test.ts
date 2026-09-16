@@ -69,7 +69,7 @@ const screen = (session: SessionHandle) => captureVisible(session.term);
 testEffect("a daemon started on demand keeps agents between two separate clients", () =>
   Effect.gen(function* () {
     const home = tempDir("autostart");
-    const inheritedPath = yield* Config.option(Config.string("PATH"));
+    const inheritedPath = yield* Config.option(Config.String("PATH"));
     const env = {
       PATH: Option.getOrUndefined(inheritedPath),
       HOME: home,

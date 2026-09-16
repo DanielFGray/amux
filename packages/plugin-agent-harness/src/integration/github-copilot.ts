@@ -72,7 +72,7 @@ const resolveClientId = Effect.fnUntraced(function* (endpoints: CopilotEndpoints
   if (endpoints.clientId !== undefined && endpoints.clientId.length > 0) {
     return endpoints.clientId;
   }
-  const configured = yield* Config.option(Config.string(GITHUB_COPILOT_CLIENT_ID_CONFIG)).pipe(
+  const configured = yield* Config.option(Config.String(GITHUB_COPILOT_CLIENT_ID_CONFIG)).pipe(
     Effect.mapError(
       () =>
         new OAuthFailed({

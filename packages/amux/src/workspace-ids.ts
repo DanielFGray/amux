@@ -41,7 +41,7 @@ export type NewPaneIdParts = typeof NewPaneIdPartsSchema.Type;
  */
 export const NewPaneIdPartsFromStringSchema = NewPaneIdSchema.pipe(
   S.decodeTo(NewPaneIdPartsSchema, {
-    decode: SchemaGetter.transformOrFail((id: string) => {
+    decode: SchemaGetter.transformEffect((id: string) => {
       const match = NEW_PANE_ID_RE.exec(id);
       if (match === null || match[1] === undefined || match[2] === undefined) {
         return Effect.fail(

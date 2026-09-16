@@ -44,7 +44,7 @@ const ACTION_OUTPUT_MAX_BYTES = 64 * 1024;
 type Fs = FileSystem.FileSystem | Path.Path;
 
 const readEnv = (name: string): Effect.Effect<Option.Option<string>> =>
-  Config.option(Config.string(name)).pipe(Effect.orElseSucceed(() => Option.none()));
+  Config.option(Config.String(name)).pipe(Effect.orElseSucceed(() => Option.none()));
 
 const currentBinPath = (): string | undefined => {
   try {

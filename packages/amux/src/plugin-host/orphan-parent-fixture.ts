@@ -11,7 +11,7 @@ import { PluginHostError, type PluginHostStatus } from "./rpc.ts";
 import { awaitPluginHostClient, supervisePluginHost } from "./supervisor.ts";
 
 const program = Effect.gen(function* () {
-  const socketPath = yield* Config.string("AMUX_PLUGIN_HOST_SOCKET");
+  const socketPath = yield* Config.String("AMUX_PLUGIN_HOST_SOCKET");
   const capabilitiesSocketPath = `${socketPath}.capabilities`;
   const status = yield* SubscriptionRef.make<PluginHostStatus>({
     state: "starting",
@@ -20,7 +20,7 @@ const program = Effect.gen(function* () {
   const generation = yield* SubscriptionRef.make(
     Option.none<PluginPublication<PluginHostBehaviourCalls>>(),
   );
-  const configDirectory = yield* Config.string("HOME").pipe(Effect.orElseSucceed(() => "/tmp"));
+  const configDirectory = yield* Config.String("HOME").pipe(Effect.orElseSucceed(() => "/tmp"));
   const scratchDirectory = `${configDirectory}/amux-scratch`;
 
   yield* Effect.forkScoped(
