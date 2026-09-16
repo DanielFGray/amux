@@ -195,6 +195,17 @@ testEffect("client projection of a deferred resume sends resize and flushes the 
       }, "agent session ref to land"),
     );
 
+    // `close` bounds its final save, so the reloaded daemon can only resume what
+    // already reached the state file.
+    yield* Effect.promise(() =>
+      waitFor(async () => {
+        const state = await Bun.file(paths.state)
+          .text()
+          .catch(() => "");
+        return state.includes("conv-client-resize");
+      }, "the agent session ref to reach the session state file"),
+    );
+
     yield* daemon.close;
     daemons.splice(daemons.indexOf(daemon), 1);
 

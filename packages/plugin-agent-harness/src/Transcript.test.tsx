@@ -16,6 +16,26 @@ import {
 import { Effect, Option } from "effect";
 const jp = (value: typeof OpaqueJsonText.Encoded) => Option.getOrThrow(decodeOpaqueJsonText(value));
 import type { AgentFrame } from "@danielfgray/amux/protocol";
+import { waitFor } from "@danielfgray/amux/testing";
+
+/**
+ * Renders until the screen shows `text`. Markdown highlighting settles
+ * asynchronously inside MarkdownRenderable, so a fixed delay before capturing
+ * only holds up on an idle machine.
+ */
+const frameShowing = async (
+  target: Awaited<ReturnType<typeof createTestRenderer>>,
+  what: string,
+  settled: (frame: string) => boolean,
+): Promise<string> => {
+  let frame = "";
+  await waitFor(async () => {
+    await target.renderOnce();
+    frame = target.captureCharFrame();
+    return settled(frame);
+  }, `the frame to show ${what}`);
+  return frame;
+};
 
 /** Wrap a harness event/fragment the way core actually delivers it — this
  *  test used to hand `Transcript` the harness tags directly, which the wire
@@ -139,12 +159,11 @@ test("assistant markdown renders prose and fenced code without fence markers", a
     () => <Transcript sessionId="native" frames={() => events} sync={() => {}} width={60} />,
     target.renderer,
   );
-  await target.renderOnce();
-  // Tree-sitter highlight settles asynchronously inside MarkdownRenderable.
-  await Bun.sleep(500);
-  await target.renderOnce();
-  await target.renderOnce();
-  const frame = target.captureCharFrame();
+  const frame = await frameShowing(
+    target,
+    "the fenced code with its markers concealed",
+    (f) => f.includes("const x = 1;") && !f.includes("```"),
+  );
   expect(frame).toContain("try this:");
   expect(frame).toContain("const x = 1;");
   expect(frame).toContain("done");
@@ -167,11 +186,11 @@ test("assistant markdown conceals emphasis markers", async () => {
     () => <Transcript sessionId="native" frames={() => events} sync={() => {}} width={40} />,
     target.renderer,
   );
-  await target.renderOnce();
-  await Bun.sleep(200);
-  await target.renderOnce();
-  const frame = target.captureCharFrame();
-  expect(frame).toContain("bold");
+  const frame = await frameShowing(
+    target,
+    "the emphasis markers concealed",
+    (f) => f.includes("bold") && !f.includes("**"),
+  );
   expect(frame).not.toContain("**");
   expect(frame).toContain("one");
   expect(frame).toContain("two");

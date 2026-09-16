@@ -3,15 +3,18 @@
  * which-key panel: keymap pending + hintVisibility (including whichKeyDelay
  * capped by timeoutlen so a 2s delay still shows before the chord wait clears).
  */
-import { test, expect, afterAll } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
 import { join } from "node:path";
 import { launch, LEADER, E2E_TIMEOUT, defaultE2ePlugins, type App } from "./app.ts";
 
 const REPO = join(import.meta.dir, "..");
 
 let app: App | undefined;
-afterAll(async () => {
+// Each test launches its own app. A leaked one keeps its daemon alive and the
+// next run that reuses the session name attaches to it and finds no agent.
+afterEach(async () => {
   await app?.stop();
+  app = undefined;
 });
 
 test(
@@ -25,10 +28,12 @@ test(
       },
     });
     await app.press(LEADER);
-    await Bun.sleep(200);
-    const screen = app.screen();
-    expect(screen.includes("^s")).toBe(true);
-    expect(screen.includes("split left/right")).toBe(true);
+    await app.until(
+      () => app?.screen().includes("split left/right") === true,
+      "the which-key panel",
+      5000,
+    );
+    expect(app.screen().includes("^s")).toBe(true);
   },
   E2E_TIMEOUT,
 );
@@ -44,8 +49,12 @@ test(
       },
     });
     await app.press(LEADER);
-    await Bun.sleep(150);
-    expect(app.screen().includes("split left/right")).toBe(true);
+    // Under the 2s delay the panel would never draw this early; timeoutlen caps it.
+    await app.until(
+      () => app?.screen().includes("split left/right") === true,
+      "the which-key panel before the 2s delay would fire",
+      1500,
+    );
     await Bun.sleep(800);
     expect(app.screen().includes("split left/right")).toBe(true);
   },
@@ -71,10 +80,12 @@ test(
     await app.press("\x1b");
     await Bun.sleep(100);
     await app.press(" ");
-    await Bun.sleep(200);
-    const screen = app.screen();
-    expect(screen.includes("SPC")).toBe(true);
-    expect(screen.includes("open an editor pane")).toBe(true);
+    await app.until(
+      () => app?.screen().includes("open an editor pane") === true,
+      "the editor leader chords",
+      5000,
+    );
+    expect(app.screen().includes("SPC")).toBe(true);
   },
   E2E_TIMEOUT,
 );

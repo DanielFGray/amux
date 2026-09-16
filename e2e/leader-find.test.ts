@@ -8,7 +8,7 @@
  * picker, and the screen stayed blank. file-ui now registers the overlay on
  * first open.
  */
-import { test, expect, afterAll } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
 import { join } from "node:path";
 import { launch, E2E_TIMEOUT, LEADER, defaultE2ePlugins, type App } from "./app.ts";
 
@@ -17,8 +17,11 @@ const REPO = join(import.meta.dir, "..");
 const MAPLEADER = " ";
 
 let app: App | undefined;
-afterAll(async () => {
+// Each test launches its own app. A leaked one keeps its daemon alive and the
+// next run that reuses the session name attaches to it and finds no agent.
+afterEach(async () => {
   await app?.stop();
+  app = undefined;
 });
 
 test(
