@@ -18,11 +18,14 @@ import type { DirEntry } from "./command-completion.ts";
 
 export type { DirEntry } from "./command-completion.ts";
 
-export const EditorDescriptor = S.Struct({ file: S.String });
+/**
+ * The remount contract of an `amux.editor` pane, shared by the daemon command
+ * that places the pane and the pane view that reads it back. `file` is absent
+ * for an editor opened with no file, so an empty descriptor is a value the view
+ * understands rather than a decode failure.
+ */
+export const EditorDescriptor = S.Struct({ file: S.optionalKey(S.String) });
 export type EditorDescriptor = S.Schema.Type<typeof EditorDescriptor>;
-
-export const EditorDescriptorOrNull = S.NullOr(EditorDescriptor);
-export type EditorDescriptorOrNull = S.Schema.Type<typeof EditorDescriptorOrNull>;
 
 export const EditorReadResult = S.Struct({
   file: S.String,

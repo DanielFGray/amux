@@ -47,13 +47,7 @@ import { documentWatch, replaceDocument } from "@danielfgray/amux/document-clien
 import { fileUriFromPath } from "@danielfgray/amux/document-uri.ts";
 import type { KeyEvent, MouseEvent } from "@opentui/core";
 import type { TextChunk } from "@opentui/core";
-import {
-  EditorDescriptor,
-  EditorDescriptorOrNull,
-  EditorIo,
-  type EditorIoService,
-  type EditorReadResult,
-} from "./io.ts";
+import { EditorDescriptor, EditorIo, type EditorIoService, type EditorReadResult } from "./io.ts";
 import type { EditorService } from "./api.ts";
 import { fileArgCompletion, fileCompletionItems, splitPathPrefix } from "./command-completion.ts";
 import {
@@ -910,11 +904,20 @@ function createEditorBuffer(props: EditorViewProps) {
         ),
       );
 
-      // The descriptor's file is opened on mount. Validation is at the
-      // boundary, not behind a chain of `typeof` guards.
-      const descriptor = S.decodeOption(S.fromJsonString(EditorDescriptorOrNull))(props.descriptor);
-      if (descriptor._tag === "Some" && descriptor.value !== null) {
-        yield* dispatchOpen(shellOf(phaseRef), descriptor.value.file, false);
+      // The descriptor's file is opened on mount. An empty descriptor is the
+      // no-file editor; anything the Schema rejects is reported, because a
+      // dropped decode leaves a blank buffer and no way to tell why.
+      const descriptor = yield* S.decodeEffect(S.fromJsonString(EditorDescriptor))(
+        props.descriptor,
+      ).pipe(
+        Effect.catch((error) =>
+          updateAndSync((s) => ({ ...s, message: `descriptor failed: ${error.message}` })).pipe(
+            Effect.as<EditorDescriptor>({}),
+          ),
+        ),
+      );
+      if (descriptor.file !== undefined) {
+        yield* dispatchOpen(shellOf(phaseRef), descriptor.file, false);
       }
 
       return yield* Effect.never;

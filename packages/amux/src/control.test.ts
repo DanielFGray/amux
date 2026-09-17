@@ -14,7 +14,7 @@ import { Effect, Option, Stream, Schema as S } from "effect";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { connectControl } from "./control-client.ts";
 import { command } from "./commands.ts";
-import { OwnerJsonText } from "./layout.ts";
+import { layoutRefs, OwnerJsonText } from "./layout.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { waitFor } from "./test-wait.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
@@ -353,6 +353,19 @@ test("pane.capture of a sessionless plugin pane needs an attached client", async
     }),
   );
   const pane = (resultFrom(outputs[0]!.result) as { pane: string }).pane;
+
+  // The daemon writes the workspace with the Schema clients parse it with. A
+  // descriptor is JSON text in the model and nested JSON on the wire, so a
+  // plain stringify reaches the client nested twice and its pane mounts with a
+  // descriptor it cannot decode.
+  const parsed = await Effect.runPromise(parseWorkspaceJson(outputs[0]!.workspace!));
+  const placed = layoutRefs(parsed.spaces[0]!.windows[0]!.layout).find(
+    (entry) => entry.id === pane,
+  )!;
+  expect(placed.content).toMatchObject({
+    type: "amux.editor",
+    descriptor: descriptorText({ file: "/x" }),
+  });
 
   const error = await ctl(daemon.id, env, (c) =>
     Effect.flip(c.Batch({ values: [command("pane.capture", { pane })] })),

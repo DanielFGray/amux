@@ -1,6 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- resolve() is pure path math for the CLI cwd, not I/O.
 import { resolve } from "node:path";
-import { Effect, Schema as S } from "effect";
+import { Effect } from "effect";
 import {
   DaemonCommandsTag,
   PluginReducerError,
@@ -12,13 +12,9 @@ import {
   type PluginDefinition,
 } from "@danielfgray/amux";
 import { EditorOpenArgs } from "./command-args.ts";
+import { EditorDescriptor } from "./io.ts";
 
-/** Descriptor for panes of type `amux.editor`. */
-export const EditorDescriptorSchema = S.Struct({
-  file: S.optionalKey(S.String),
-});
-
-const editorPane = definePaneType("amux.editor", EditorDescriptorSchema);
+const editorPane = definePaneType("amux.editor", EditorDescriptor);
 
 const editorOpen = defineDaemonCommand({
   tag: "editor.open",
@@ -33,7 +29,7 @@ const editorOpen = defineDaemonCommand({
       // from the client): replace that leaf and keep the displaced PTY alive.
       // Remote call without a caller: split. `split: true` always splits.
       const raw = command.file?.trim() ?? "";
-      const descriptor: typeof EditorDescriptorSchema.Type =
+      const descriptor: EditorDescriptor =
         raw.length === 0 ? {} : { file: raw.startsWith("/") ? raw : resolve(context.cwd, raw) };
       const target = reads.activeWindow;
       if (target === null) {

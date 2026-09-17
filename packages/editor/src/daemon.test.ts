@@ -1,6 +1,7 @@
 import { expect } from "bun:test";
 import { Effect, Schema as S } from "effect";
-import { EditorDescriptorSchema, editorDaemonCommands } from "./daemon.ts";
+import { editorDaemonCommands } from "./daemon.ts";
+import { EditorDescriptor } from "./io.ts";
 import type { WorkspaceCommandContext, WorkspaceReadPackage } from "@danielfgray/amux";
 import { creationResultSchema } from "@danielfgray/amux";
 import { testEffect } from "@danielfgray/amux/testing";
@@ -46,9 +47,7 @@ testEffect("editor.open splits when there is no calling pane", () =>
       type: "amux.editor",
       mode: "split",
     });
-    expect(
-      yield* S.decodeEffect(S.fromJsonString(EditorDescriptorSchema))(place.descriptor),
-    ).toEqual({});
+    expect(yield* S.decodeEffect(S.fromJsonString(EditorDescriptor))(place.descriptor)).toEqual({});
     const result = answer.changes[1] as { _tag: "result.set"; result: string };
     expect(result._tag).toBe("result.set");
     expect(yield* S.decodeEffect(S.fromJsonString(CreationResult))(result.result)).toEqual({
@@ -94,9 +93,7 @@ testEffect("editor.open resolves a relative file against the calling cwd", () =>
     });
     const place = answer.changes[0] as { _tag: "plugin.place"; descriptor: string };
     expect(place._tag).toBe("plugin.place");
-    expect(
-      yield* S.decodeEffect(S.fromJsonString(EditorDescriptorSchema))(place.descriptor),
-    ).toEqual({
+    expect(yield* S.decodeEffect(S.fromJsonString(EditorDescriptor))(place.descriptor)).toEqual({
       file: "/tmp/project/src/foo.ts",
     });
   }),

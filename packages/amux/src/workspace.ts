@@ -202,6 +202,27 @@ function paneCounter(id: string): number | null {
   });
 }
 
+/**
+ * Encode the JSON string used by the control and attach protocols.
+ *
+ * The pair of {@link parseWorkspaceJson}: both ends go through the snapshot
+ * Schema because the snapshot's Type and its wire form differ. A pane
+ * descriptor is JSON text in the model and nested JSON on the wire, so a plain
+ * stringify would send the text as a string and the reader would nest it twice.
+ */
+export function formatWorkspaceJson(
+  snapshot: WorkspaceSnapshot,
+): Effect.Effect<string, WorkspaceParseError> {
+  return S.encodeEffect(WorkspaceSnapshotJson)(snapshot).pipe(
+    Effect.mapError(
+      (error) =>
+        new WorkspaceParseError({
+          message: `workspace cannot be encoded: ${String(error)}`,
+        }),
+    ),
+  );
+}
+
 /** Decode the JSON string used by the control and attach protocols. */
 export function parseWorkspaceJson(
   value: string,

@@ -116,6 +116,7 @@ import {
 } from "./commands.ts";
 import {
   findPaneBySession,
+  formatWorkspaceJson,
   markSessionExited,
   markSessionUnavailable,
   parseWorkspaceCommandContext,
@@ -1379,15 +1380,24 @@ export const makeDaemonService = Effect.fnUntraced(
         ),
         Layer.provide(
           makeEvents((snapshot) =>
-            requireHost.pipe(
-              Effect.flatMap((h) =>
-                h.publish({
-                  _tag: "workspace" as const,
-                  revision: snapshot.revision,
-                  state: encodeJson(snapshot),
-                } satisfies AttachFrame),
+            formatWorkspaceJson(snapshot).pipe(
+              Effect.flatMap((state) =>
+                requireHost.pipe(
+                  Effect.flatMap((h) =>
+                    h.publish({
+                      _tag: "workspace" as const,
+                      revision: snapshot.revision,
+                      state,
+                    } satisfies AttachFrame),
+                  ),
+                  Effect.ignore,
+                ),
               ),
-              Effect.ignore,
+              // A snapshot the wire Schema rejects is a model bug. Say so —
+              // an unpublished frame leaves every client a revision behind.
+              Effect.catch((error) =>
+                Effect.logError(`workspace frame not published: ${error.message}`),
+              ),
             ),
           ),
         ),
@@ -1627,14 +1637,15 @@ export const makeDaemonService = Effect.fnUntraced(
                   ctx,
                   behaviour,
                 );
+                const workspace = yield* formatWorkspaceJson(output.snapshot);
                 if (output.result === undefined)
                   return {
                     _tag: "done",
-                    output: { workspace: encodeJson(output.snapshot) },
+                    output: { workspace },
                   } satisfies PluginRemoteRoute;
                 return {
                   _tag: "done",
-                  output: { workspace: encodeJson(output.snapshot), result: output.result },
+                  output: { workspace, result: output.result },
                 } satisfies PluginRemoteRoute;
               }
               if (registration.meta.target === "session") {
@@ -1851,8 +1862,9 @@ export const makeDaemonService = Effect.fnUntraced(
               ctx,
               behaviour,
             );
-            if (output.result === undefined) return { workspace: encodeJson(output.snapshot) };
-            return { workspace: encodeJson(output.snapshot), result: output.result };
+            const workspace = yield* formatWorkspaceJson(output.snapshot);
+            if (output.result === undefined) return { workspace };
+            return { workspace, result: output.result };
           }),
         );
       }
@@ -2041,11 +2053,12 @@ export const makeDaemonService = Effect.fnUntraced(
             const pluginUiRecord: Record<string, PluginUiReadyReport> = {};
             for (const [key, value] of uiReady) pluginUiRecord[key] = value;
             const times = yield* attachTimes();
+            const workspaceJson = yield* formatWorkspaceJson(cur.workspace);
             const baseStatus = {
               attached: cur.state.attached,
               ...times,
               session: structuredClone(cur.state),
-              workspace: encodeJson(cur.workspace),
+              workspace: workspaceJson,
               agents: [...agents],
               pluginHost,
               pluginPublicationRevision: Option.isSome(publication)
@@ -2108,12 +2121,13 @@ export const makeDaemonService = Effect.fnUntraced(
                 const state = yield* workspaceSession(next, cur.state);
                 yield* persist(state);
                 yield* model.commitWorkspace(next, state);
+                const frame = yield* formatWorkspaceJson(next);
                 yield* requireHost.pipe(
                   Effect.flatMap((h) =>
                     h.publish({
                       _tag: "workspace",
                       revision: next.revision,
-                      state: encodeJson(next),
+                      state: frame,
                     } satisfies AttachFrame),
                   ),
                 );
@@ -2141,12 +2155,13 @@ export const makeDaemonService = Effect.fnUntraced(
                     const state = yield* workspaceSession(next, cur.state);
                     yield* persist(state);
                     yield* model.commitWorkspace(next, state);
+                    const frame = yield* formatWorkspaceJson(next);
                     yield* requireHost.pipe(
                       Effect.flatMap((h) =>
                         h.publish({
                           _tag: "workspace",
                           revision: next.revision,
-                          state: encodeJson(next),
+                          state: frame,
                         } satisfies AttachFrame),
                       ),
                     );
@@ -2175,12 +2190,13 @@ export const makeDaemonService = Effect.fnUntraced(
                         const state = yield* workspaceSession(cleared, after.state);
                         yield* persist(state);
                         yield* model.commitWorkspace(cleared, state);
+                        const frame = yield* formatWorkspaceJson(cleared);
                         yield* requireHost.pipe(
                           Effect.flatMap((h) =>
                             h.publish({
                               _tag: "workspace",
                               revision: cleared.revision,
-                              state: encodeJson(cleared),
+                              state: frame,
                             } satisfies AttachFrame),
                           ),
                         );
