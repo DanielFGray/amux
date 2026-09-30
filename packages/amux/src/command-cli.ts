@@ -112,7 +112,7 @@ function parseFieldSpecs(tag: string, fields: FieldSpec[], argv: string[]): Pars
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    const flagMatch = arg.match(/^--([a-zA-Z][a-zA-Z0-9_-]*)(?:=(.*))?$/);
+    const flagMatch = arg.match(/^--([a-zA-Z][a-zA-Z0-9_-]*)(?:=([\s\S]*))?$/);
     if (flagMatch) {
       const name = flagMatch[1]!;
       const field = fields.find((f) => f.name === name);
@@ -230,7 +230,7 @@ export function parsePluginArgs(argv: readonly string[]): ParseArgsResult {
   const parsed: Record<string, JsonValue> = {};
   const errors: string[] = [];
   for (const arg of argv) {
-    const flagMatch = arg.match(/^--([a-zA-Z][a-zA-Z0-9_-]*)=(.*)$/);
+    const flagMatch = arg.match(/^--([a-zA-Z][a-zA-Z0-9_-]*)=([\s\S]*)$/);
     if (!flagMatch) {
       errors.push(`plugin commands take only --key=value flags: ${arg}`);
       continue;
