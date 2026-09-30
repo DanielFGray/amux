@@ -449,6 +449,28 @@ const PaneCapture = define(
   },
   S.String,
 );
+// The blocking counterpart to pane.capture: poll the pane's visible text
+// until it contains a literal pattern, then return the capture either way.
+// This collapses the send-keys → poll-capture loop an outside driver would
+// otherwise hand-roll into one RPC. Literal substring match, the same
+// matching the skill prescribes; `matched` reports whether the pattern
+// appeared before the timeout so a timeout is data, not an error.
+const PaneExpect = define(
+  "pane.expect",
+  {
+    pattern: S.String.pipe(S.check(S.isMinLength(1))),
+    timeout: S.optionalKey(S.Int.pipe(S.check(S.isGreaterThanOrEqualTo(0)))),
+    session: S.optionalKey(S.String),
+    ...PaneTarget,
+  },
+  {
+    desc: "wait until the pane's visible text contains a pattern",
+    group: "panes",
+    target: "client",
+    exposure: "agent",
+  },
+  S.Struct({ matched: S.Boolean, text: S.String }),
+);
 // The machine-facing read surface (ts-33067b). These are pure projections of
 // the daemon's model: they mutate nothing, publish no frame, and mark nothing
 // seen, so an observing agent cannot hide a blocked agent from the human.
@@ -988,6 +1010,7 @@ export const COMMAND_DEFS = [
   PaneMove,
   PaneSendKeys,
   PaneCapture,
+  PaneExpect,
   PaneList,
   PaneCurrent,
   PaneLayout,
@@ -1395,6 +1418,7 @@ export const Commands = {
   PaneMove,
   PaneSendKeys,
   PaneCapture,
+  PaneExpect,
   PaneList,
   PaneCurrent,
   PaneLayout,
