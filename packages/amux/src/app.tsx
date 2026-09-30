@@ -10,7 +10,7 @@ import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { ValidComponent } from "solid-js";
-import { Context, Duration, Effect, Exit, FiberMap, Layer, Option, Path, Scope, Stream } from "effect";
+import { Clock, Context, Duration, Effect, Exit, FiberMap, Layer, Option, Path, Scope, Stream } from "effect";
 import { theme, setTheme } from "./ui/theme.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- path access is part of the plain render-tree boundary.
 import { basename, dirname, join } from "node:path";
@@ -1723,6 +1723,34 @@ function buildApp(
             new CommandError({ message: `pane '${id}' has no capturable content` }),
           );
         return Effect.succeed(capturePluginPane(target));
+      }),
+    // pane.expect on a client-only leaf: the daemon answered every
+    // session-backed pane itself, so anything routed here has no replay
+    // screen — poll the client's own frame the way pane.capture reads it.
+    "pane.expect": ({ pane, pattern, timeout }) =>
+      Effect.gen(function* () {
+        const id = pane ?? spaces.activeWindow?.focused?.id;
+        if (id === undefined)
+          return yield* new CommandError({ message: "no pane to expect on" });
+        const target = findPane(id);
+        if (!target) return yield* new CommandError({ message: `pane '${id}' not found` });
+        const session = target.session;
+        const read = (): Effect.Effect<string, CommandError> =>
+          session !== null
+            ? Effect.sync(() => captureSpan(session.term, "visible"))
+            : target instanceof ComponentPane
+              ? Effect.sync(() => capturePluginPane(target))
+              : Effect.fail(
+                  new CommandError({ message: `pane '${id}' has no expectable content` }),
+                );
+        const deadline = (yield* Clock.currentTimeMillis) + (timeout ?? 30_000);
+        let text = "";
+        for (;;) {
+          text = yield* read();
+          if (text.includes(pattern)) return { matched: true, text };
+          if ((yield* Clock.currentTimeMillis) >= deadline) return { matched: false, text };
+          yield* Effect.sleep(50);
+        }
       }),
     "pane.list": runCommand,
     "pane.current": runCommand,
