@@ -7,20 +7,30 @@ export function generateSkill(): string {
 
   return `---
 name: amux
-description: "Control amux, an agent-aware terminal multiplexer. Use only when the user asks to use amux or to inspect or control its spaces, windows, panes, sessions, or agents. Requires an amux-managed pane."
+description: "Control amux, an agent-aware terminal multiplexer. Use only when the user asks to use amux or to inspect or control its spaces, windows, panes, sessions, or agents. Works from an amux-managed pane or as an outside driver with --session."
 ---
 
 # amux
 
 amux organizes terminals into spaces, windows, and panes. The daemon owns the workspace and sessions; the CLI sends ordered commands to that daemon.
 
-Before any control command, verify that this agent runs in an amux-managed pane:
+Before any control command, determine which daemon you are driving:
 
 \`\`\`bash
 test -n "\${AMUX_DAEMON_SESSION:-}" && test -n "\${AMUX_PANE_ID:-}"
 \`\`\`
 
-If this check fails, state that the process is not in an amux-managed pane and stop. Do not control the default or focused session from outside amux.
+If this check passes, you run inside an amux-managed pane: the daemon is
+\`\${AMUX_DAEMON_SESSION}\`, and \`--current\` addresses your own pane.
+
+If it fails, you are an outside driver. Do not stop — select the daemon with
+\`AMUX_DAEMON_SESSION=<id>\` in the environment of every invocation, and always name your
+pane (\`--pane <id>\`): there is no calling pane here, so \`--current\` and the
+focused pane are meaningless to you. Add \`--no-focus\` for background work so
+the human's view never moves under them. (The \`--session <id>\` flag also selects
+the daemon, but for \`pane.capture\` and \`pane.expect\` it doubles as the command's
+session filter — the env var selects the daemon only, so the session resolves
+from \`--pane\`.)
 
 ## Invoke the CLI
 
@@ -77,16 +87,27 @@ amux agent.get <session-id>  # one agent, by its session id
 Create a pane with \`pane.split <row|column>\`, which reports the \`session\` and \`pane\` it created. Address later commands by those ids rather than by focus: focus belongs to whoever is driving the UI, and it moves.
 
 \`\`\`bash
+export AMUX_DAEMON_SESSION=dogfood  # select the daemon; see above
 amux pane.split row
-amux pane.send-keys --pane s1:p3 --keys "bun test"
-amux pane.send-keys --pane s1:p3 --keys $'\\r'
-amux pane.capture --pane s1:p3
+amux pane.send-keys --pane s1:p3 --keys "'bun test' Enter"
+amux pane.expect --pane s1:p3 --pattern "3 passed" --timeout 60000
 amux pane.close --pane s1:p3
 \`\`\`
 
-\`pane.send-keys\` types bytes; it does not submit. Send the terminating key yourself, and send it as carriage return (\`$'\\r'\`), not newline. A shell prompt accepts either, so a wrong newline works until the target is a full-screen program — where it inserts a line break into the input instead of running anything.
+\`pane.send-keys\` takes tmux-style tokens, not raw bytes: whitespace separates
+tokens, so quote anything that must stay together. A token wrapped in \`'...'\` is
+literal text, spaces and all; an unquoted token that names a real key (\`Enter\`,
+\`ctrl+c\`, \`space\`) is sent as that key. Quote text that could read as a key name.
+To type a command and run it, send the quoted literal and the key in one call —
+\`--keys "'bun test' Enter"\`. It does not submit on its own: send the terminating
+key yourself, as the \`Enter\` key name, not a newline or carriage return — a raw
+\`\r\` is whitespace to the tokenizer and never reaches the pane. A shell prompt
+accepts a newline, so a wrong newline works until the target is a full-screen program,
+where it inserts a line break into the input instead of running anything.
 
-\`pane.capture\` returns the pane's visible text. For a PTY pane that is the terminal grid (escape sequences may still appear in some modes); for a plugin pane (editor, native agent chat, …) it is the live OpenTUI frame cropped to that pane — plain characters, no VT stream. Match on a literal substring you expect. Wait on that output rather than on elapsed time. A pane moved to another space gets a new space-qualified id; the move reports both the new id and \`previous_pane_id\`, so re-anchor from the result rather than the stale handle. A closed id is never reissued, so a stale handle no-ops instead of reaching the wrong pane.
+\`pane.capture\` returns the pane's visible text. For a PTY pane that is the terminal grid (escape sequences may still appear in some modes); for a plugin pane (editor, native agent chat, …) it is the live OpenTUI frame cropped to that pane — plain characters, no VT stream. A pane moved to another space gets a new space-qualified id; the move reports both the new id and \`previous_pane_id\`, so re-anchor from the result rather than the stale handle. A closed id is never reissued, so a stale handle no-ops instead of reaching the wrong pane.
+
+\`pane.expect --pattern <literal> [--timeout <ms>]\` blocks until the pane's visible text contains the pattern, then prints \`{"matched": true, "text": <capture>}\`. On timeout (default 30000ms) it prints \`{"matched": false, "text": <last capture>}\` instead of failing, so a timeout is data you can react to. Prefer it over polling \`pane.capture\` yourself: one RPC waits server-side instead of a hand-rolled sleep loop. Match on a literal substring you expect, and wait on that output rather than on elapsed time.
 
 ## Delegate work to another agent
 
