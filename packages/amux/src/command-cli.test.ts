@@ -185,3 +185,12 @@ test("a lone optional string absorbs a positional even when a boolean flag remai
     file: "src/a.ts",
   });
 });
+
+test("parseArgs keeps control characters in --flag=value", () => {
+  // The flag regex must not treat a value containing \r as a non-flag: `.`
+  // excludes line terminators, so `--keys=X\r` used to fall through to the
+  // positional path and send the literal flag text to the pane.
+  const result = parseArgs("pane.send-keys", ["--pane=s1:p3", "--keys=X\r"]);
+  expect(result.errors).toEqual([]);
+  expect(result.parsed).toEqual({ pane: "s1:p3", keys: "X\r" });
+});
