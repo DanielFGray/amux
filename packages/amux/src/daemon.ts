@@ -1371,14 +1371,18 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
 
   /**
-   * Which session `pane.capture` reads when the daemon can answer alone: the
-   * one named directly, or the one a named / calling pane shows. Null means
-   * the pane is client-only (plugin view, no pty) — not a resolution failure:
-   * the caller falls through to `runOnClient`, the only place a Solid pane's
-   * pixels exist. Cite: resolveSendKeysTarget's sessionless fallthrough.
+   * Which session `pane.capture` / `pane.expect` reads when the daemon can
+   * answer alone: the one named directly, or the one a named / calling pane
+   * shows. Null means the pane is client-only (plugin view, no pty) — not a
+   * resolution failure: the caller falls through to `runOnClient`, the only
+   * place a Solid pane's pixels exist. Cite: resolveSendKeysTarget's
+   * sessionless fallthrough.
    */
   const resolveCaptureSession = (
-    value: Extract<Command, { _tag: "pane.capture" }>,
+    value: Pick<
+      Extract<Command, { _tag: "pane.capture" | "pane.expect" }>,
+      "session" | "pane" | "current"
+    >,
     context: WorkspaceCommandRequestContext | undefined,
     workspace: WorkspaceSnapshot,
   ): Effect.Effect<string | null, ControlError> =>
@@ -1544,6 +1548,33 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         return {
           result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))),
         };
+      }
+    }
+    // pane.expect waits on the same replay screens pane.capture reads: poll
+    // the daemon-side capture until the visible text contains the pattern.
+    // A timeout returns the last capture with matched: false — data, not an
+    // error — so the caller can decide what to do next. Client-only panes
+    // fall through to the attached client exactly like pane.capture.
+    if (command._tag === "pane.expect") {
+      const cur = yield* model.get;
+      const session = yield* resolveCaptureSession(command, context, cur.workspace);
+      if (session) {
+        const host = yield* requireHost;
+        const deadline = (yield* Clock.currentTimeMillis) + (command.timeout ?? 30_000);
+        let text = "";
+        let matched = false;
+        for (;;) {
+          text = yield* host
+            .capture(session)
+            .pipe(Effect.mapError((error) => new ControlError({ message: describe(error) })));
+          if (text.includes(command.pattern)) {
+            matched = true;
+            break;
+          }
+          if ((yield* Clock.currentTimeMillis) >= deadline) break;
+          yield* Effect.sleep(50);
+        }
+        return { result: { matched, text } };
       }
     }
     if (meta.target === "view")
